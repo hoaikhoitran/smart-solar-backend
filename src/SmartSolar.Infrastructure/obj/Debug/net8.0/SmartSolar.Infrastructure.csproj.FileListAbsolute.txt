@@ -1,0 +1,17 @@
+/Users/khoiyami/smart-solar-backend/src/SmartSolar.Infrastructure/bin/Debug/net8.0/SmartSolar.Infrastructure.deps.json
+/Users/khoiyami/smart-solar-backend/src/SmartSolar.Infrastructure/bin/Debug/net8.0/SmartSolar.Infrastructure.dll
+/Users/khoiyami/smart-solar-backend/src/SmartSolar.Infrastructure/bin/Debug/net8.0/SmartSolar.Infrastructure.pdb
+/Users/khoiyami/smart-solar-backend/src/SmartSolar.Infrastructure/bin/Debug/net8.0/SmartSolar.Modules.dll
+/Users/khoiyami/smart-solar-backend/src/SmartSolar.Infrastructure/bin/Debug/net8.0/SmartSolar.Modules.pdb
+/Users/khoiyami/smart-solar-backend/src/SmartSolar.Infrastructure/obj/Debug/net8.0/SmartSolar.Infrastructure.csproj.AssemblyReference.cache
+/Users/khoiyami/smart-solar-backend/src/SmartSolar.Infrastructure/obj/Debug/net8.0/SmartSolar.Infrastructure.GeneratedMSBuildEditorConfig.editorconfig
+/Users/khoiyami/smart-solar-backend/src/SmartSolar.Infrastructure/obj/Debug/net8.0/SmartSolar.Infrastructure.AssemblyInfoInputs.cache
+/Users/khoiyami/smart-solar-backend/src/SmartSolar.Infrastructure/obj/Debug/net8.0/SmartSolar.Infrastructure.AssemblyInfo.cs
+/Users/khoiyami/smart-solar-backend/src/SmartSolar.Infrastructure/obj/Debug/net8.0/SmartSolar.Infrastructure.csproj.CoreCompileInputs.cache
+/Users/khoiyami/smart-solar-backend/src/SmartSolar.Infrastructure/obj/Debug/net8.0/SmartSol.D092D2C9.Up2Date
+/Users/khoiyami/smart-solar-backend/src/SmartSolar.Infrastructure/obj/Debug/net8.0/SmartSolar.Infrastructure.dll
+/Users/khoiyami/smart-solar-backend/src/SmartSolar.Infrastructure/obj/Debug/net8.0/refint/SmartSolar.Infrastructure.dll
+/Users/khoiyami/smart-solar-backend/src/SmartSolar.Infrastructure/obj/Debug/net8.0/SmartSolar.Infrastructure.pdb
+/Users/khoiyami/smart-solar-backend/src/SmartSolar.Infrastructure/obj/Debug/net8.0/ref/SmartSolar.Infrastructure.dll
+/Users/khoiyami/smart-solar-backend/src/SmartSolar.Infrastructure/bin/Debug/net8.0/SmartSolar.Infrastructure.runtimeconfig.json
+/Users/khoiyami/smart-solar-backend/src/SmartSolar.Infrastructure/obj/Debug/net8.0/SmartSolar.Infrastructure.genruntimeconfig.cache

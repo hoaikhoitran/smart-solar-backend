@@ -1,0 +1,50 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{4409941F-F3DC-4E0F-8EE9-3AA8D0AA06B4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SmartSolar.Api", "src\SmartSolar.Api\SmartSolar.Api.csproj", "{A99085D5-3743-444A-9C69-3026EED2511D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SmartSolar.Modules", "src\SmartSolar.Modules\SmartSolar.Modules.csproj", "{5FCA0874-9A2E-410D-B28A-DE186B39D3ED}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SmartSolar.Infrastructure", "src\SmartSolar.Infrastructure\SmartSolar.Infrastructure.csproj", "{68B19681-DA5C-4CA6-93DA-7C8FC58304E2}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{9025A445-769F-4D06-A324-357197EA849F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SmartSolar.Tests", "tests\SmartSolar.Tests\SmartSolar.Tests.csproj", "{9737E8C4-34F5-4182-A0DA-EF0CED78B748}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A99085D5-3743-444A-9C69-3026EED2511D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A99085D5-3743-444A-9C69-3026EED2511D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A99085D5-3743-444A-9C69-3026EED2511D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A99085D5-3743-444A-9C69-3026EED2511D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5FCA0874-9A2E-410D-B28A-DE186B39D3ED}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5FCA0874-9A2E-410D-B28A-DE186B39D3ED}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5FCA0874-9A2E-410D-B28A-DE186B39D3ED}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5FCA0874-9A2E-410D-B28A-DE186B39D3ED}.Release|Any CPU.Build.0 = Release|Any CPU
+		{68B19681-DA5C-4CA6-93DA-7C8FC58304E2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{68B19681-DA5C-4CA6-93DA-7C8FC58304E2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{68B19681-DA5C-4CA6-93DA-7C8FC58304E2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{68B19681-DA5C-4CA6-93DA-7C8FC58304E2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9737E8C4-34F5-4182-A0DA-EF0CED78B748}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9737E8C4-34F5-4182-A0DA-EF0CED78B748}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9737E8C4-34F5-4182-A0DA-EF0CED78B748}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9737E8C4-34F5-4182-A0DA-EF0CED78B748}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{A99085D5-3743-444A-9C69-3026EED2511D} = {4409941F-F3DC-4E0F-8EE9-3AA8D0AA06B4}
+		{5FCA0874-9A2E-410D-B28A-DE186B39D3ED} = {4409941F-F3DC-4E0F-8EE9-3AA8D0AA06B4}
+		{68B19681-DA5C-4CA6-93DA-7C8FC58304E2} = {4409941F-F3DC-4E0F-8EE9-3AA8D0AA06B4}
+		{9737E8C4-34F5-4182-A0DA-EF0CED78B748} = {9025A445-769F-4D06-A324-357197EA849F}
+	EndGlobalSection
+EndGlobal
