@@ -2,11 +2,20 @@ using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using SmartSolar.Infrastructure.Email;
 using SmartSolar.Infrastructure.Messaging;
 using SmartSolar.Infrastructure.Messaging.RabbitMQ;
+using SmartSolar.Infrastructure.Messaging.RabbitMQ.Consumers;
 using SmartSolar.Infrastructure.Persistence;
+using SmartSolar.Infrastructure.Persistence.Seed;
+using SmartSolar.Infrastructure.Security;
+using SmartSolar.Modules.Common.Email;
 using SmartSolar.Modules.Common.Messaging;
+using SmartSolar.Modules.Identity.Options;
+using SmartSolar.Modules.Identity.Contracts.Persistence;
+using SmartSolar.Modules.Identity.Contracts.Security;
 
 namespace SmartSolar.Infrastructure;
 
@@ -21,8 +30,15 @@ public static class DependencyInjection
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
+        GuardDeliveryConfiguration(configuration);
+
         AddPersistence(services, configuration);
+        AddEmail(services, configuration);
         AddMessaging(services, configuration);
+
+        services.AddScoped<IIdentityUnitOfWork, IdentityUnitOfWork>();
+        services.AddScoped<SystemRoleSeeder>();
+        services.AddSingleton<IPasswordHashingService, PasswordHashingService>();
 
         return services;
     }
@@ -48,6 +64,63 @@ public static class DependencyInjection
                     errorCodesToAdd: null)));
     }
 
+    /// <summary>
+    /// Messaging without a mailer would let the consumer acknowledge and discard
+    /// verification events, losing them silently. Startup fails instead.
+    /// <para>
+    /// The check is deliberately one-directional. The reverse combination
+    /// (mailer on, messaging off) is allowed: nothing is queued, so no message
+    /// is destroyed, and every dropped event is logged at the publish site.
+    /// </para>
+    /// Only configuration keys are named; no values are read into the message.
+    /// </summary>
+    private static void GuardDeliveryConfiguration(IConfiguration configuration)
+    {
+        var messagingEnabled = configuration.GetValue<bool>(
+            $"{RabbitMqOptions.SectionName}:{nameof(RabbitMqOptions.Enabled)}");
+        var emailEnabled = configuration.GetValue<bool>(
+            $"{EmailOptions.SectionName}:{nameof(EmailOptions.Enabled)}");
+
+        if (messagingEnabled && !emailEnabled)
+        {
+            throw new InvalidOperationException(
+                $"'{RabbitMqOptions.SectionName}:{nameof(RabbitMqOptions.Enabled)}' is true while "
+                + $"'{EmailOptions.SectionName}:{nameof(EmailOptions.Enabled)}' is false. "
+                + "Verification emails would be consumed and discarded. Enable "
+                + $"'{EmailOptions.SectionName}:{nameof(EmailOptions.Enabled)}' and configure the "
+                + $"'{EmailOptions.SectionName}:Smtp' settings, or set "
+                + $"'{RabbitMqOptions.SectionName}:{nameof(RabbitMqOptions.Enabled)}' to false.");
+        }
+    }
+
+    private static void AddEmail(
+        IServiceCollection services,
+        IConfiguration configuration)
+    {
+        var emailSection = configuration.GetSection(EmailOptions.SectionName);
+
+        services.AddSingleton<IValidateOptions<EmailOptions>, EmailOptionsValidator>();
+
+        services.AddOptions<EmailOptions>()
+            .Bind(emailSection)
+            .ValidateOnStart();
+
+        var verificationOptions = new EmailVerificationOptions();
+        configuration.GetSection(EmailVerificationOptions.SectionName).Bind(verificationOptions);
+        services.TryAddSingleton(verificationOptions);
+
+        services.AddSingleton<VerificationEmailService>();
+
+        if (emailSection.GetValue<bool>(nameof(EmailOptions.Enabled)))
+        {
+            services.AddSingleton<IEmailSender, SmtpEmailSender>();
+            return;
+        }
+
+        // Nothing is delivered, and each attempt logs a warning.
+        services.AddSingleton<IEmailSender, DisabledEmailSender>();
+    }
+
     private static void AddMessaging(
         IServiceCollection services,
         IConfiguration configuration)
@@ -56,6 +129,8 @@ public static class DependencyInjection
 
         if (!rabbitMqSection.GetValue<bool>(nameof(RabbitMqOptions.Enabled)))
         {
+            // No broker connection is made; events are dropped rather than queued.
+            services.AddSingleton<IIntegrationEventPublisher, NullIntegrationEventPublisher>();
             return;
         }
 
@@ -75,6 +150,8 @@ public static class DependencyInjection
 
         services.AddMassTransit(bus =>
         {
+            bus.AddConsumer<EmailVerificationRequestedConsumer>();
+
             bus.UsingRabbitMq((context, transport) =>
             {
                 var options = context.GetRequiredService<IOptions<RabbitMqOptions>>().Value;
@@ -84,6 +161,12 @@ public static class DependencyInjection
                     host.Username(options.Username);
                     host.Password(options.Password);
                 });
+
+                // One durable endpoint for verification email delivery, with
+                // bounded retries; exhausted messages go to the error queue.
+                transport.ReceiveEndpoint(
+                    EmailVerificationEndpoint.QueueName,
+                    endpoint => EmailVerificationEndpoint.Configure(endpoint, context));
             });
         });
 
