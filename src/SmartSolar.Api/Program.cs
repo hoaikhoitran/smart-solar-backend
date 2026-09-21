@@ -6,6 +6,21 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 
+var allowedOrigins = builder.Configuration
+    .GetSection("Cors:AllowedOrigins")
+    .Get<string[]>() ?? [];
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("Frontend", policy =>
+    {
+        policy
+            .WithOrigins(allowedOrigins)
+            .AllowAnyHeader()
+            .AllowAnyMethod();
+    });
+});
+
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddIdentityModule(builder.Configuration);
 builder.Services.AddJwtAuthentication(IdentityModuleExtensions.ReadJwtOptions(builder.Configuration));
@@ -37,7 +52,7 @@ app.UseHttpsRedirection();
 
 // Must run before rate limiting so the client IP partition is the real client.
 app.UseForwardedHeaders();
-
+app.UseCors("Frontend");
 app.UseRateLimiter();
 
 // Authentication must run before authorization so [Authorize] sees the principal.
