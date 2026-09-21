@@ -1,0 +1,43 @@
+services:
+  rabbitmq:
+    image: rabbitmq:4.3.6-management
+
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RabbitMq__Username}
+      RABBITMQ_DEFAULT_PASS: ${RabbitMq__Password}
+
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    image: hoaikhoitran/smartsolar-api:latest
+
+    env_file:
+      - .env
+
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: 5672
+
+    ports:
+      - "8080:8080"
+
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+volumes:
+  rabbitmq_data:
