@@ -11,6 +11,11 @@ public static class RateLimitingExtensions
     public const string RegisterPolicy = "auth-register";
     public const string VerifyEmailPolicy = "auth-verify-email";
     public const string ResendVerificationPolicy = "auth-resend-verification";
+    public const string LoginPolicy = "auth-login";
+    public const string RefreshPolicy = "auth-refresh";
+    public const string ForgotPasswordPolicy = "auth-forgot-password";
+    public const string ResetPasswordPolicy = "auth-reset-password";
+    public const string ChangePasswordPolicy = "auth-change-password";
 
     public static IServiceCollection AddAuthRateLimiting(
         this IServiceCollection services,
@@ -26,6 +31,21 @@ public static class RateLimitingExtensions
 
             options.AddPolicy(ResendVerificationPolicy, context => FixedWindowByClient(
                 context, configuration, "RateLimiting:ResendVerification", permitLimit: 3, windowMinutes: 15));
+
+            options.AddPolicy(LoginPolicy, context => FixedWindowByClient(
+                context, configuration, "RateLimiting:Login", permitLimit: 10, windowMinutes: 10));
+
+            options.AddPolicy(RefreshPolicy, context => FixedWindowByClient(
+                context, configuration, "RateLimiting:Refresh", permitLimit: 30, windowMinutes: 10));
+
+            options.AddPolicy(ForgotPasswordPolicy, context => FixedWindowByClient(
+                context, configuration, "RateLimiting:ForgotPassword", permitLimit: 3, windowMinutes: 15));
+
+            options.AddPolicy(ResetPasswordPolicy, context => FixedWindowByClient(
+                context, configuration, "RateLimiting:ResetPassword", permitLimit: 10, windowMinutes: 15));
+
+            options.AddPolicy(ChangePasswordPolicy, context => FixedWindowByClient(
+                context, configuration, "RateLimiting:ChangePassword", permitLimit: 10, windowMinutes: 15));
 
             options.OnRejected = async (context, cancellationToken) =>
             {

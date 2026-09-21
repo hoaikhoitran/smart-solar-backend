@@ -22,6 +22,36 @@ public interface IIdentityUnitOfWork
 
     Task<UserAccount?> FindUserByIdAsync(Guid userId, CancellationToken cancellationToken);
 
+    /// <summary>Tracked lookup used by login, which updates the account.</summary>
+    Task<UserAccount?> FindUserByEmailAsync(string normalizedEmail, CancellationToken cancellationToken);
+
+    /// <summary>Read-only role codes for the access token's role claims.</summary>
+    Task<IReadOnlyList<string>> GetRoleCodesAsync(Guid userId, CancellationToken cancellationToken);
+
+    /// <summary>Tracked lookup of a refresh token by its hash.</summary>
+    Task<RefreshToken?> FindRefreshTokenAsync(string tokenHash, CancellationToken cancellationToken);
+
+    void AddRefreshToken(RefreshToken refreshToken);
+
+    /// <summary>
+    /// Revokes one refresh token only if it is still unrevoked, in a single
+    /// conditional statement. Returns false when another request revoked it
+    /// first, which makes rotation single-use under concurrency.
+    /// </summary>
+    Task<bool> TryRevokeRefreshTokenAsync(
+        Guid refreshTokenId,
+        DateTimeOffset revokedAt,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Revokes every refresh token for the user that is still usable. Used after a
+    /// password reset or change so pre-existing tokens cannot mint access tokens.
+    /// </summary>
+    Task RevokeActiveRefreshTokensAsync(
+        Guid userId,
+        DateTimeOffset revokedAt,
+        CancellationToken cancellationToken);
+
     Task<AuthActionToken?> FindActionTokenAsync(
         string tokenHash,
         AuthActionTokenType type,

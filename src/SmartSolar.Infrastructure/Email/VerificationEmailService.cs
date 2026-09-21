@@ -48,7 +48,7 @@ public sealed class VerificationEmailService
         _logger.LogInformation("Verification email sent for user {UserId}.", message.UserId);
     }
 
-    internal static string DescribeLifetime(int lifetimeMinutes)
+    public static string DescribeLifetime(int lifetimeMinutes)
     {
         if (lifetimeMinutes % 60 != 0)
         {

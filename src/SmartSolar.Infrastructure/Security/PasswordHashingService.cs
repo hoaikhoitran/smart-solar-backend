@@ -13,4 +13,26 @@ public sealed class PasswordHashingService : IPasswordHashingService
 
     public string HashPassword(UserAccount userAccount, string password)
         => _hasher.HashPassword(userAccount, password);
+
+    public bool VerifyPassword(UserAccount userAccount, string storedHash, string password)
+    {
+        if (string.IsNullOrWhiteSpace(storedHash))
+        {
+            return false;
+        }
+
+        try
+        {
+            var result = _hasher.VerifyHashedPassword(userAccount, storedHash, password);
+
+            // SuccessRehashNeeded still means the password was correct.
+            return result is PasswordVerificationResult.Success
+                or PasswordVerificationResult.SuccessRehashNeeded;
+        }
+        catch (FormatException)
+        {
+            // A stored value that is not a valid hash cannot match anything.
+            return false;
+        }
+    }
 }

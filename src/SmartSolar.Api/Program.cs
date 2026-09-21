@@ -8,6 +8,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddIdentityModule(builder.Configuration);
+builder.Services.AddJwtAuthentication(IdentityModuleExtensions.ReadJwtOptions(builder.Configuration));
 builder.Services.AddAuthRateLimiting(builder.Configuration);
 builder.Services.AddForwardedHeaders(builder.Configuration);
 builder.Services.AddControllers();
@@ -38,6 +39,9 @@ app.UseHttpsRedirection();
 app.UseForwardedHeaders();
 
 app.UseRateLimiter();
+
+// Authentication must run before authorization so [Authorize] sees the principal.
+app.UseAuthentication();
 
 app.UseAuthorization();
 

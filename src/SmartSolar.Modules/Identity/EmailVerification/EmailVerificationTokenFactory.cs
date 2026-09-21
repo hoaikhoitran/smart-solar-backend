@@ -1,5 +1,4 @@
-using System.Security.Cryptography;
-using System.Text;
+using SmartSolar.Modules.Identity.Security;
 
 namespace SmartSolar.Modules.Identity.EmailVerification;
 
@@ -9,28 +8,16 @@ namespace SmartSolar.Modules.Identity.EmailVerification;
 /// </summary>
 public sealed class EmailVerificationTokenFactory
 {
-    private const int TokenBytes = 32;
+    private readonly SecureTokenFactory _tokens = new();
 
     public EmailVerificationToken Create()
     {
-        var raw = ToBase64Url(RandomNumberGenerator.GetBytes(TokenBytes));
+        var token = _tokens.Create();
 
-        return new EmailVerificationToken(raw, Hash(raw));
+        return new EmailVerificationToken(token.RawToken, token.TokenHash);
     }
 
-    public static string Hash(string rawToken)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(rawToken);
-
-        return Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes(rawToken))).ToLowerInvariant();
-    }
-
-    private static string ToBase64Url(byte[] bytes)
-        => Convert.ToBase64String(bytes)
-            .TrimEnd('=')
-            .Replace('+', '-')
-            .Replace('/', '_');
+    public static string Hash(string rawToken) => SecureTokenFactory.Hash(rawToken);
 }
 
 public sealed record EmailVerificationToken(string RawToken, string TokenHash);

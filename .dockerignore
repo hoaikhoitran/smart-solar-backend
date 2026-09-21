@@ -1,0 +1,11 @@
+**/bin/
+**/obj/
+.git/
+.github/
+.vscode/
+.vs/
+.env
+.env.*
+!.env.example
+tests/
+artifacts/

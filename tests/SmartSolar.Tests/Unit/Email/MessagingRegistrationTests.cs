@@ -57,6 +57,17 @@ public class MessagingRegistrationTests
     }
 
     [Fact]
+    public void Registers_the_password_reset_consumer_when_messaging_is_enabled()
+    {
+        var services = Build(RabbitEnabled(emailEnabled: true));
+
+        Assert.Contains(
+            services,
+            d => d.ImplementationType == typeof(PasswordResetRequestedConsumer)
+                 || d.ServiceType == typeof(PasswordResetRequestedConsumer));
+    }
+
+    [Fact]
     public void Uses_the_masstransit_publisher_when_messaging_is_enabled()
     {
         var services = Build(RabbitEnabled(emailEnabled: true));

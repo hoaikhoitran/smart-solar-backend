@@ -5,9 +5,15 @@ using SmartSolar.Api.Contracts;
 using SmartSolar.Infrastructure.Email;
 using SmartSolar.Infrastructure.Persistence.Seed;
 using SmartSolar.Modules.Identity.Constants;
+using SmartSolar.Infrastructure.Security;
+using SmartSolar.Modules.Identity.Contracts.Security;
 using SmartSolar.Modules.Identity.EmailVerification;
+using SmartSolar.Modules.Identity.Login;
 using SmartSolar.Modules.Identity.Options;
+using SmartSolar.Modules.Identity.PasswordRecovery;
+using SmartSolar.Modules.Identity.RefreshTokens;
 using SmartSolar.Modules.Identity.Register;
+using SmartSolar.Modules.Identity.Security;
 
 namespace SmartSolar.Api.Extensions;
 
@@ -39,17 +45,74 @@ public static class IdentityModuleExtensions
                 "'Frontend:EmailVerificationUrl' must be configured as an absolute URL.");
         }
 
+        if (!Uri.TryCreate(frontendOptions.PasswordResetUrl, UriKind.Absolute, out _))
+        {
+            throw new InvalidOperationException(
+                "'Frontend:PasswordResetUrl' must be configured as an absolute URL.");
+        }
+
         services.AddSingleton(frontendOptions);
 
+        var passwordResetOptions = new PasswordResetOptions();
+        configuration.GetSection(PasswordResetOptions.SectionName).Bind(passwordResetOptions);
+
+        if (passwordResetOptions.LifetimeMinutes <= 0)
+        {
+            throw new InvalidOperationException(
+                $"'{PasswordResetOptions.SectionName}:LifetimeMinutes' must be greater than zero.");
+        }
+
+        services.AddSingleton(passwordResetOptions);
+
+        var refreshTokenOptions = new RefreshTokenOptions();
+        configuration.GetSection(RefreshTokenOptions.SectionName).Bind(refreshTokenOptions);
+
+        if (refreshTokenOptions.LifetimeDays <= 0)
+        {
+            throw new InvalidOperationException(
+                $"'{RefreshTokenOptions.SectionName}:LifetimeDays' must be greater than zero.");
+        }
+
+        services.AddSingleton(refreshTokenOptions);
+
+        // Constructing the token service here means a missing or weak signing
+        // key fails startup rather than the first login.
+        var jwtOptions = ReadJwtOptions(configuration);
+        services.AddSingleton(jwtOptions);
+        services.AddSingleton<IAccessTokenService>(new JwtAccessTokenService(jwtOptions));
+
         services.AddSingleton<EmailVerificationTokenFactory>();
+        services.AddSingleton<SecureTokenFactory>();
 
         services.AddScoped<RegisterHandler>();
         services.AddScoped<VerifyEmailHandler>();
         services.AddScoped<ResendVerificationHandler>();
+        services.AddScoped<RefreshTokenIssuer>();
+        services.AddScoped<LoginHandler>();
+        services.AddScoped<RefreshTokenHandler>();
+        services.AddScoped<LogoutHandler>();
+        services.AddScoped<ForgotPasswordHandler>();
+        services.AddScoped<ResetPasswordHandler>();
+        services.AddScoped<ChangePasswordHandler>();
 
         services.AddValidatorsFromAssemblyContaining<RegisterCommandValidator>();
 
         return services;
+    }
+
+    /// <summary>Reads and validates the JWT settings, naming keys but never the key material.</summary>
+    public static JwtOptions ReadJwtOptions(IConfiguration configuration)
+    {
+        var jwtOptions = new JwtOptions();
+        configuration.GetSection(JwtOptions.SectionName).Bind(jwtOptions);
+
+        if (string.IsNullOrWhiteSpace(jwtOptions.Issuer) || string.IsNullOrWhiteSpace(jwtOptions.Audience))
+        {
+            throw new InvalidOperationException(
+                $"'{JwtOptions.SectionName}:Issuer' and '{JwtOptions.SectionName}:Audience' must be configured.");
+        }
+
+        return jwtOptions;
     }
 
     /// <summary>
@@ -104,12 +167,19 @@ public static class IdentityModuleExtensions
         {
             var response = context.HttpContext.Response;
 
+            var (code, message) = response.StatusCode switch
+            {
+                StatusCodes.Status401Unauthorized => (
+                    AuthErrorCodes.Unauthorized, "Authentication is required for this request."),
+                StatusCodes.Status403Forbidden => (
+                    AuthErrorCodes.Forbidden, "You do not have access to this resource."),
+                StatusCodes.Status404NotFound => (
+                    "RESOURCE_NOT_FOUND", "The request could not be processed."),
+                _ => ("REQUEST_NOT_ACCEPTABLE", "The request could not be processed.")
+            };
+
             var envelope = ApiResponse<object>.Failure(
-                new ApiError(
-                    response.StatusCode == StatusCodes.Status404NotFound
-                        ? "RESOURCE_NOT_FOUND"
-                        : "REQUEST_NOT_ACCEPTABLE",
-                    "The request could not be processed."),
+                new ApiError(code, message),
                 context.HttpContext.GetTraceId());
 
             response.ContentType = "application/json";

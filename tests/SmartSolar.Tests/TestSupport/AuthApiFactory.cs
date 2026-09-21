@@ -34,12 +34,24 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
         // provider is replaced below, so this value is never used to connect.
         builder.UseSetting("ConnectionStrings:DefaultConnection", "Host=localhost;Database=unused");
         builder.UseSetting("Frontend:EmailVerificationUrl", "https://app.test/verify-email");
+        builder.UseSetting("Frontend:PasswordResetUrl", "https://app.test/reset-password");
+
+        // Test-only signing key; production supplies its own from the environment.
+        builder.UseSetting("Jwt:Issuer", "SmartSolar");
+        builder.UseSetting("Jwt:Audience", "SmartSolarClients");
+        builder.UseSetting("Jwt:SigningKey", "integration-test-signing-key-32-bytes!!");
+        builder.UseSetting("Jwt:AccessTokenLifetimeMinutes", "15");
 
         // Generous limits by default so unrelated tests are not throttled;
         // the rate-limit test supplies its own values.
         builder.UseSetting("RateLimiting:Register:PermitLimit", "1000");
         builder.UseSetting("RateLimiting:VerifyEmail:PermitLimit", "1000");
         builder.UseSetting("RateLimiting:ResendVerification:PermitLimit", "1000");
+        builder.UseSetting("RateLimiting:Login:PermitLimit", "1000");
+        builder.UseSetting("RateLimiting:Refresh:PermitLimit", "1000");
+        builder.UseSetting("RateLimiting:ForgotPassword:PermitLimit", "1000");
+        builder.UseSetting("RateLimiting:ResetPassword:PermitLimit", "1000");
+        builder.UseSetting("RateLimiting:ChangePassword:PermitLimit", "1000");
 
         foreach (var (key, value) in _settings)
         {

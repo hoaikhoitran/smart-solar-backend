@@ -50,6 +50,55 @@ public sealed class IdentityUnitOfWork : IIdentityUnitOfWork
     public Task<UserAccount?> FindUserByIdAsync(Guid userId, CancellationToken cancellationToken)
         => _db.UserAccounts.FirstOrDefaultAsync(u => u.Id == userId, cancellationToken);
 
+    public Task<UserAccount?> FindUserByEmailAsync(string normalizedEmail, CancellationToken cancellationToken)
+        => _db.UserAccounts.FirstOrDefaultAsync(u => u.Email == normalizedEmail, cancellationToken);
+
+    public async Task<IReadOnlyList<string>> GetRoleCodesAsync(
+        Guid userId,
+        CancellationToken cancellationToken)
+        => await _db.UserRoles
+            .AsNoTracking()
+            .Where(ur => ur.UserId == userId)
+            .Select(ur => ur.Role.Code)
+            .OrderBy(code => code)
+            .ToListAsync(cancellationToken);
+
+    public Task<RefreshToken?> FindRefreshTokenAsync(string tokenHash, CancellationToken cancellationToken)
+        => _db.RefreshTokens.FirstOrDefaultAsync(t => t.TokenHash == tokenHash, cancellationToken);
+
+    public void AddRefreshToken(RefreshToken refreshToken) => _db.RefreshTokens.Add(refreshToken);
+
+    public async Task<bool> TryRevokeRefreshTokenAsync(
+        Guid refreshTokenId,
+        DateTimeOffset revokedAt,
+        CancellationToken cancellationToken)
+    {
+        // The WHERE clause carries the "still unrevoked" condition, so two
+        // concurrent rotations cannot both win.
+        var updated = await _db.RefreshTokens
+            .Where(t => t.Id == refreshTokenId && t.RevokedAt == null)
+            .ExecuteUpdateAsync(
+                setters => setters.SetProperty(t => t.RevokedAt, revokedAt),
+                cancellationToken);
+
+        return updated == 1;
+    }
+
+    public async Task RevokeActiveRefreshTokensAsync(
+        Guid userId,
+        DateTimeOffset revokedAt,
+        CancellationToken cancellationToken)
+    {
+        var active = await _db.RefreshTokens
+            .Where(t => t.UserId == userId && t.RevokedAt == null)
+            .ToListAsync(cancellationToken);
+
+        foreach (var token in active)
+        {
+            token.RevokedAt = revokedAt;
+        }
+    }
+
     public Task<AuthActionToken?> FindActionTokenAsync(
         string tokenHash,
         AuthActionTokenType type,
@@ -117,7 +166,8 @@ public sealed class IdentityUnitOfWork : IIdentityUnitOfWork
             { } inner when inner.GetType().Name == "PostgresException"
                 => GetProperty(inner, "SqlState") as string == PostgresUniqueViolation,
             { } inner when inner.GetType().Name == "SqliteException"
-                => GetProperty(inner, "SqliteErrorCode") as int? == SqliteConstraintViolation,
+                => GetProperty(inner, "SqliteErrorCode") as int? == SqliteConstraintViolation
+                    && inner.Message.Contains("UNIQUE constraint failed", StringComparison.OrdinalIgnoreCase),
             _ => false
         };
 

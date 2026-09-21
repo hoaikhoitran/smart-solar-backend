@@ -95,4 +95,27 @@ public class IdentityUnitOfWorkTests
         ctx.Db.ChangeTracker.Clear();
         Assert.Equal(1, await ctx.Db.UserAccounts.CountAsync());
     }
+
+    [Fact]
+    public async Task A_foreign_key_violation_is_not_reported_as_a_duplicate_email()
+    {
+        await using var ctx = new IdentityTestContext();
+
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() =>
+            ctx.UnitOfWork.ExecuteInTransactionAsync<object?>(_ =>
+            {
+                // No such user, so this violates the refresh_token foreign key.
+                ctx.UnitOfWork.AddRefreshToken(new RefreshToken
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = Guid.NewGuid(),
+                    TokenHash = "hash",
+                    ExpiresAt = DateTimeOffset.UtcNow.AddDays(1)
+                });
+
+                return Task.FromResult<object?>(null);
+            }, CancellationToken.None));
+
+        Assert.IsNotType<DuplicateEmailException>(ex);
+    }
 }

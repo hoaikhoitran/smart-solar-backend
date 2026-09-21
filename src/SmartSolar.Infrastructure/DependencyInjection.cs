@@ -109,7 +109,12 @@ public static class DependencyInjection
         configuration.GetSection(EmailVerificationOptions.SectionName).Bind(verificationOptions);
         services.TryAddSingleton(verificationOptions);
 
+        var passwordResetOptions = new PasswordResetOptions();
+        configuration.GetSection(PasswordResetOptions.SectionName).Bind(passwordResetOptions);
+        services.TryAddSingleton(passwordResetOptions);
+
         services.AddSingleton<VerificationEmailService>();
+        services.AddSingleton<PasswordResetEmailService>();
 
         if (emailSection.GetValue<bool>(nameof(EmailOptions.Enabled)))
         {
@@ -151,6 +156,7 @@ public static class DependencyInjection
         services.AddMassTransit(bus =>
         {
             bus.AddConsumer<EmailVerificationRequestedConsumer>();
+            bus.AddConsumer<PasswordResetRequestedConsumer>();
 
             bus.UsingRabbitMq((context, transport) =>
             {
@@ -167,6 +173,10 @@ public static class DependencyInjection
                 transport.ReceiveEndpoint(
                     EmailVerificationEndpoint.QueueName,
                     endpoint => EmailVerificationEndpoint.Configure(endpoint, context));
+
+                transport.ReceiveEndpoint(
+                    PasswordResetEndpoint.QueueName,
+                    endpoint => PasswordResetEndpoint.Configure(endpoint, context));
             });
         });
 
