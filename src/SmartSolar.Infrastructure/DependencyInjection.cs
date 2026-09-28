@@ -16,6 +16,9 @@ using SmartSolar.Modules.Common.Messaging;
 using SmartSolar.Modules.Identity.Options;
 using SmartSolar.Modules.Identity.Contracts.Persistence;
 using SmartSolar.Modules.Identity.Contracts.Security;
+using SmartSolar.Infrastructure.Caching;
+using SmartSolar.Modules.Common.Caching;
+using SmartSolar.Modules.Catalog.Contracts.Persistence;
 
 namespace SmartSolar.Infrastructure;
 
@@ -35,12 +38,56 @@ public static class DependencyInjection
         AddPersistence(services, configuration);
         AddEmail(services, configuration);
         AddMessaging(services, configuration);
+        AddPersistence(services, configuration);
+        AddCaching(services, configuration);
 
         services.AddScoped<IIdentityUnitOfWork, IdentityUnitOfWork>();
+        services.AddScoped<ICatalogUnitOfWork, CatalogUnitOfWork>();
         services.AddScoped<SystemRoleSeeder>();
         services.AddSingleton<IPasswordHashingService, PasswordHashingService>();
 
         return services;
+    }
+
+    
+    private static void AddCaching(
+    IServiceCollection services,
+    IConfiguration configuration)
+    {
+        var section = configuration.GetSection(RedisOptions.SectionName);
+
+        var enabled = section.GetValue<bool>(
+            nameof(RedisOptions.Enabled));
+
+        // RedisCacheStore only talks to IDistributedCache, so with Redis disabled
+        // it runs over the in-process cache and cache consumers still resolve.
+        services.AddSingleton<ICacheStore, RedisCacheStore>();
+
+        if (!enabled)
+        {
+            services.AddDistributedMemoryCache();
+            return;
+        }
+
+        var connectionString = section[
+            nameof(RedisOptions.ConnectionString)];
+
+        var instanceName = section[
+            nameof(RedisOptions.InstanceName)];
+
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            throw new InvalidOperationException(
+                "Redis:ConnectionString is required when Redis is enabled.");
+        }
+
+        services.AddStackExchangeRedisCache(options =>
+        {
+            options.Configuration = connectionString;
+            options.InstanceName = string.IsNullOrWhiteSpace(instanceName)
+                ? "SmartSolar:"
+                : instanceName;
+        });
     }
 
     private static void AddPersistence(

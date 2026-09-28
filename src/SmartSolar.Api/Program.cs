@@ -24,7 +24,9 @@ builder.Services.AddCors(options =>
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddIdentityModule(builder.Configuration);
 builder.Services.AddJwtAuthentication(IdentityModuleExtensions.ReadJwtOptions(builder.Configuration));
+builder.Services.AddCatalogModule();
 builder.Services.AddAuthRateLimiting(builder.Configuration);
+builder.Services.AddCatalogRateLimiting(builder.Configuration);
 builder.Services.AddForwardedHeaders(builder.Configuration);
 builder.Services.AddControllers();
 builder.Services.AddEnvelopedModelValidation();
@@ -53,10 +55,13 @@ app.UseHttpsRedirection();
 // Must run before rate limiting so the client IP partition is the real client.
 app.UseForwardedHeaders();
 app.UseCors("Frontend");
-app.UseRateLimiter();
 
 // Authentication must run before authorization so [Authorize] sees the principal.
 app.UseAuthentication();
+
+// After authentication so per-user policies can partition by the JWT subject;
+// anonymous auth endpoints still partition by client IP.
+app.UseRateLimiter();
 
 app.UseAuthorization();
 

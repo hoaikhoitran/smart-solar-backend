@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
+using SmartSolar.Modules.Catalog.Entities;
 using SmartSolar.Modules.Identity.Entities;
+using SmartSolar.Modules.PreSurvey.Entities;
 
 namespace SmartSolar.Infrastructure.Persistence;
 
@@ -23,6 +25,14 @@ public sealed class AppDbContext : DbContext
     public DbSet<AuthActionToken> AuthActionTokens => Set<AuthActionToken>();
 
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+
+    public DbSet<Customer> Customers => Set<Customer>();
+
+    public DbSet<PropertySite> PropertySites => Set<PropertySite>();
+
+    public DbSet<PreSurvey> PreSurveys => Set<PreSurvey>();
+
+    public DbSet<Product> Products => Set<Product>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
