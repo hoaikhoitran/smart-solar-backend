@@ -4,7 +4,6 @@ Backend service for **Smart Solar Installation, Monitoring and Maintenance Platf
 
 > 🚧 **Status:** In Development  
 > 🎓 **Project Type:** FPT University Software Engineering Capstone Project  
-> 📅 **Duration:** 09/2026 – 03/2027
 
 ---
 
