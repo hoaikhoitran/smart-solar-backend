@@ -1,5 +1,4 @@
 services:
-
   rabbitmq:
     image: rabbitmq:4.3.6-management
     container_name: smartsolar-rabbitmq
@@ -21,6 +20,18 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    container_name: smartsolar-redis
+
+    ports:
+      - "6379:6379"
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   api:
     build:
@@ -39,13 +50,18 @@ services:
       RabbitMq__Host: rabbitmq
       RabbitMq__Port: 5672
 
+      Redis__Enabled: true
+      Redis__ConnectionString: redis:6379
+      Redis__InstanceName: "SmartSolar:"
+
     ports:
       - "8080:8080"
 
     depends_on:
       rabbitmq:
         condition: service_healthy
-
+      redis:
+        condition: service_healthy
 
 volumes:
   rabbitmq_data:

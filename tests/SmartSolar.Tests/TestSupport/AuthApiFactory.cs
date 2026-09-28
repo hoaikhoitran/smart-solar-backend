@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using SmartSolar.Infrastructure.Persistence;
@@ -52,6 +53,8 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("RateLimiting:ForgotPassword:PermitLimit", "1000");
         builder.UseSetting("RateLimiting:ResetPassword:PermitLimit", "1000");
         builder.UseSetting("RateLimiting:ChangePassword:PermitLimit", "1000");
+        builder.UseSetting("RateLimiting:CatalogRead:PermitLimit", "1000");
+        builder.UseSetting("RateLimiting:CatalogWrite:PermitLimit", "1000");
 
         foreach (var (key, value) in _settings)
         {
@@ -64,7 +67,8 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
             services.RemoveAll<AppDbContext>();
             services.AddDbContext<AppDbContext>(options => options
                 .UseSqlite(_connection, sqlite => sqlite
-                    .ExecutionStrategy(dependencies => new TestRetryingExecutionStrategy(dependencies))));
+                    .ExecutionStrategy(dependencies => new TestRetryingExecutionStrategy(dependencies)))
+                .ReplaceService<IModelCustomizer, SqliteCatalogModelCustomizer>());
 
             services.RemoveAll<IIntegrationEventPublisher>();
             services.AddSingleton<IIntegrationEventPublisher>(Publisher);
@@ -78,7 +82,10 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
     }
 
     public AppDbContext CreateDbContext()
-        => new(new DbContextOptionsBuilder<AppDbContext>().UseSqlite(_connection).Options);
+        => new(new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlite(_connection)
+            .ReplaceService<IModelCustomizer, SqliteCatalogModelCustomizer>()
+            .Options);
 
     protected override void Dispose(bool disposing)
     {

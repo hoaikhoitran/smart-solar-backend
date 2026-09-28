@@ -1,3 +1,5 @@
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 using System.Text.Json;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
@@ -16,6 +18,8 @@ public static class RateLimitingExtensions
     public const string ForgotPasswordPolicy = "auth-forgot-password";
     public const string ResetPasswordPolicy = "auth-reset-password";
     public const string ChangePasswordPolicy = "auth-change-password";
+    public const string CatalogReadPolicy = "catalog-read";
+    public const string CatalogWritePolicy = "catalog-write";
 
     public static IServiceCollection AddAuthRateLimiting(
         this IServiceCollection services,
@@ -71,6 +75,72 @@ public static class RateLimitingExtensions
         });
 
         return services;
+    }
+
+    /// <summary>
+    /// Adds the Catalog policies to the same limiter options, so the auth
+    /// policies and the enveloped 429 from <see cref="AddAuthRateLimiting"/> still apply.
+    /// Requires UseRateLimiter() to run after UseAuthentication().
+    /// </summary>
+    public static IServiceCollection AddCatalogRateLimiting(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.AddRateLimiter(options =>
+        {
+            options.AddPolicy(CatalogReadPolicy, context => FixedWindowByUser(
+                context, configuration, "RateLimiting:CatalogRead", CatalogReadPolicy, permitLimit: 60, windowMinutes: 1));
+
+            options.AddPolicy(CatalogWritePolicy, context => FixedWindowByUser(
+                context, configuration, "RateLimiting:CatalogWrite", CatalogWritePolicy, permitLimit: 30, windowMinutes: 1));
+        });
+
+        return services;
+    }
+
+    /// <summary>
+    /// Partitions by the JWT subject so users behind one NAT or proxy do not
+    /// share a budget. Falls back to the client IP when there is no usable subject.
+    /// </summary>
+    private static RateLimitPartition<string> FixedWindowByUser(
+        HttpContext context,
+        IConfiguration configuration,
+        string sectionName,
+        string policyName,
+        int permitLimit,
+        int windowMinutes)
+    {
+        var section = configuration.GetSection(sectionName);
+        var limit = section.GetValue<int?>("PermitLimit") ?? permitLimit;
+        var window = section.GetValue<int?>("WindowMinutes") ?? windowMinutes;
+
+        return RateLimitPartition.GetFixedWindowLimiter(
+            UserKey(context, policyName),
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = limit,
+                Window = TimeSpan.FromMinutes(window),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            });
+    }
+
+    private static string UserKey(HttpContext context, string policyName)
+    {
+        if (context.User.Identity?.IsAuthenticated == true)
+        {
+            var subject = context.User.FindFirstValue(JwtRegisteredClaimNames.Sub)
+                ?? context.User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+            if (Guid.TryParse(subject, out var userId))
+            {
+                return $"{policyName}:user:{userId}";
+            }
+        }
+
+        var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        return $"{policyName}:ip:{ip}";
     }
 
     private static RateLimitPartition<string> FixedWindowByClient(
