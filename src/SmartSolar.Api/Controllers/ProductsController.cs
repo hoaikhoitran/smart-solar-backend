@@ -16,7 +16,6 @@ namespace SmartSolar.Api.Controllers;
 /// <summary>Catalog reads for any signed-in user; only ACTIVE, non-deleted products are visible.</summary>
 [ApiController]
 [Route("api/products")]
-[Authorize]
 [EnableRateLimiting(RateLimitingExtensions.CatalogReadPolicy)]
 public sealed class ProductsController : ControllerBase
 {
