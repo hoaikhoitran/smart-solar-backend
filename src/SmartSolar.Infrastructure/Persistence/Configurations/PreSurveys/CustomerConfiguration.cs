@@ -20,13 +20,6 @@ public sealed class CustomerConfiguration
             .HasColumnName("user_id")
             .IsRequired();
 
-        builder.Property(x => x.Code)
-            .HasColumnName("code")
-            .HasMaxLength(50)
-            .IsRequired();
-
-        builder.HasIndex(x => x.Code)
-            .IsUnique();
 
         builder.HasIndex(x => x.UserId)
             .IsUnique();
@@ -34,6 +27,7 @@ public sealed class CustomerConfiguration
         builder.Property(x => x.CustomerType)
             .HasColumnName("customer_type")
             .HasMaxLength(30)
+            .HasConversion<string>()
             .IsRequired(false);
 
         builder.Property(x => x.CompanyName)
@@ -46,14 +40,6 @@ public sealed class CustomerConfiguration
             .HasMaxLength(50)
             .IsRequired(false);
 
-        builder.Property(x => x.AssignedSaleId)
-            .HasColumnName("assigned_sale_id")
-            .IsRequired(false);
-
-        builder.Property(x => x.Status)
-            .HasColumnName("status")
-            .HasMaxLength(30)
-            .IsRequired();
 
         builder.Property(x => x.Note)
             .HasColumnName("note")
@@ -62,11 +48,6 @@ public sealed class CustomerConfiguration
         builder.HasOne(x => x.User)
             .WithMany()
             .HasForeignKey(x => x.UserId)
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasOne(x => x.AssignedSale)
-            .WithMany()
-            .HasForeignKey(x => x.AssignedSaleId)
             .OnDelete(DeleteBehavior.Restrict);
     }
 }

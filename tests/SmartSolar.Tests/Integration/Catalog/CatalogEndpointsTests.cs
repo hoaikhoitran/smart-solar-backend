@@ -67,17 +67,23 @@ public class CatalogEndpointsTests
     }
 
     [Fact]
-    public async Task Anonymous_requests_are_rejected_with_the_envelope()
+    public async Task Anonymous_requests_can_read_products_but_not_manage_them()
     {
         using var factory = new AuthApiFactory();
+        var id = await CreateAsync(ClientFor(factory, RoleCodes.Admin));
         var client = factory.CreateClient();
 
         var list = await client.GetAsync("/api/products");
-        var create = await client.PostAsJsonAsync("/api/admin/products", PanelBody());
+        var create = await client.PostAsJsonAsync("/api/admin/products", PanelBody("ANON"));
 
-        Assert.Equal(HttpStatusCode.Unauthorized, list.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, list.StatusCode);
+        var body = await BodyOf(list);
+        Assert.True(body.GetProperty("isSuccess").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, body.GetProperty("error").ValueKind);
+        Assert.Equal(id, body.GetProperty("data").GetProperty("items")[0].GetProperty("id").GetGuid());
+
         Assert.Equal(HttpStatusCode.Unauthorized, create.StatusCode);
-        AssertFailure(await BodyOf(list), AuthErrorCodes.Unauthorized);
+        AssertFailure(await BodyOf(create), AuthErrorCodes.Unauthorized);
     }
 
     [Theory]
