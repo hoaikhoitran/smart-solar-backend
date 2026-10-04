@@ -19,6 +19,7 @@ using SmartSolar.Modules.Identity.Contracts.Security;
 using SmartSolar.Infrastructure.Caching;
 using SmartSolar.Modules.Common.Caching;
 using SmartSolar.Modules.Catalog.Contracts.Persistence;
+using SmartSolar.Modules.PreSurvey.Contracts.Persistence;
 
 namespace SmartSolar.Infrastructure;
 
@@ -38,12 +39,12 @@ public static class DependencyInjection
         AddPersistence(services, configuration);
         AddEmail(services, configuration);
         AddMessaging(services, configuration);
-        AddPersistence(services, configuration);
         AddCaching(services, configuration);
 
         services.AddScoped<IIdentityUnitOfWork, IdentityUnitOfWork>();
         services.AddScoped<ICatalogUnitOfWork, CatalogUnitOfWork>();
         services.AddScoped<SystemRoleSeeder>();
+        services.AddScoped<IPreSurveyUnitOfWork, PreSurveyUnitOfWork>();
         services.AddSingleton<IPasswordHashingService, PasswordHashingService>();
 
         return services;

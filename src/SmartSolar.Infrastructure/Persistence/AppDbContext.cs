@@ -33,6 +33,8 @@ public sealed class AppDbContext : DbContext
     public DbSet<PreSurvey> PreSurveys => Set<PreSurvey>();
 
     public DbSet<Product> Products => Set<Product>();
+    public DbSet<SurveyRequest> SurveyRequests
+    => Set<SurveyRequest>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

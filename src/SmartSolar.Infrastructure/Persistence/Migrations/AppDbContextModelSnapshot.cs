@@ -22,6 +22,44 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Customer", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("CompanyName")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("company_name");
+
+                    b.Property<string>("CustomerType")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("customer_type");
+
+                    b.Property<string>("Note")
+                        .HasColumnType("text")
+                        .HasColumnName("note");
+
+                    b.Property<string>("TaxCode")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("tax_code");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId")
+                        .IsUnique();
+
+                    b.ToTable("customer", (string)null);
+                });
+
             modelBuilder.Entity("SmartSolar.Modules.Catalog.Entities.Product", b =>
                 {
                     b.Property<Guid>("Id")
@@ -360,65 +398,6 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.ToTable("user_role", (string)null);
                 });
 
-            modelBuilder.Entity("SmartSolar.Modules.PreSurvey.Entities.Customer", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<Guid?>("AssignedSaleId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("assigned_sale_id");
-
-                    b.Property<string>("Code")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)")
-                        .HasColumnName("code");
-
-                    b.Property<string>("CompanyName")
-                        .HasMaxLength(255)
-                        .HasColumnType("character varying(255)")
-                        .HasColumnName("company_name");
-
-                    b.Property<string>("CustomerType")
-                        .HasMaxLength(30)
-                        .HasColumnType("character varying(30)")
-                        .HasColumnName("customer_type");
-
-                    b.Property<string>("Note")
-                        .HasColumnType("text")
-                        .HasColumnName("note");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(30)
-                        .HasColumnType("character varying(30)")
-                        .HasColumnName("status");
-
-                    b.Property<string>("TaxCode")
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)")
-                        .HasColumnName("tax_code");
-
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("user_id");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("AssignedSaleId");
-
-                    b.HasIndex("Code")
-                        .IsUnique();
-
-                    b.HasIndex("UserId")
-                        .IsUnique();
-
-                    b.ToTable("customer", (string)null);
-                });
-
             modelBuilder.Entity("SmartSolar.Modules.PreSurvey.Entities.PreSurvey", b =>
                 {
                     b.Property<Guid>("Id")
@@ -487,6 +466,11 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(100)")
                         .HasColumnName("district");
 
+                    b.Property<string>("InstallationSurfaceType")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("installation_surface_type");
+
                     b.Property<decimal?>("Latitude")
                         .HasColumnType("numeric")
                         .HasColumnName("latitude");
@@ -511,20 +495,15 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(100)")
                         .HasColumnName("province");
 
-                    b.Property<string>("RoofMaterial")
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)")
-                        .HasColumnName("roof_material");
-
-                    b.Property<string>("RoofType")
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)")
-                        .HasColumnName("roof_type");
-
                     b.Property<string>("StreetLine")
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)")
                         .HasColumnName("street_line");
+
+                    b.Property<string>("SurfaceMaterial")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("surface_material");
 
                     b.Property<string>("Ward")
                         .HasMaxLength(100)
@@ -536,6 +515,65 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.HasIndex("CustomerId");
 
                     b.ToTable("property_site", (string)null);
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.PreSurvey.Entities.SurveyRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset?>("AssignedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("assigned_at");
+
+                    b.Property<Guid?>("AssignedSaleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("assigned_sale_id");
+
+                    b.Property<Guid>("PreSurveyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("pre_survey_id");
+
+                    b.Property<string>("SalesNote")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("sales_note");
+
+                    b.Property<DateTimeOffset?>("ScheduledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("scheduled_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("SubmittedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("submitted_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AssignedSaleId");
+
+                    b.HasIndex("PreSurveyId")
+                        .IsUnique();
+
+                    b.ToTable("survey_request", (string)null);
+                });
+
+            modelBuilder.Entity("Customer", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.Identity.Entities.AuthActionToken", b =>
@@ -598,24 +636,6 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.Navigation("User");
                 });
 
-            modelBuilder.Entity("SmartSolar.Modules.PreSurvey.Entities.Customer", b =>
-                {
-                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", "AssignedSale")
-                        .WithMany()
-                        .HasForeignKey("AssignedSaleId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", "User")
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("AssignedSale");
-
-                    b.Navigation("User");
-                });
-
             modelBuilder.Entity("SmartSolar.Modules.PreSurvey.Entities.PreSurvey", b =>
                 {
                     b.HasOne("SmartSolar.Modules.PreSurvey.Entities.PropertySite", "Property")
@@ -629,13 +649,36 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("SmartSolar.Modules.PreSurvey.Entities.PropertySite", b =>
                 {
-                    b.HasOne("SmartSolar.Modules.PreSurvey.Entities.Customer", "Customer")
+                    b.HasOne("Customer", "Customer")
                         .WithMany("PropertySites")
                         .HasForeignKey("CustomerId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.Navigation("Customer");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.PreSurvey.Entities.SurveyRequest", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", "AssignedSale")
+                        .WithMany()
+                        .HasForeignKey("AssignedSaleId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("SmartSolar.Modules.PreSurvey.Entities.PreSurvey", "PreSurvey")
+                        .WithOne("SurveyRequest")
+                        .HasForeignKey("SmartSolar.Modules.PreSurvey.Entities.SurveyRequest", "PreSurveyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("AssignedSale");
+
+                    b.Navigation("PreSurvey");
+                });
+
+            modelBuilder.Entity("Customer", b =>
+                {
+                    b.Navigation("PropertySites");
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.Identity.Entities.Permission", b =>
@@ -655,9 +698,9 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.Navigation("UserRoles");
                 });
 
-            modelBuilder.Entity("SmartSolar.Modules.PreSurvey.Entities.Customer", b =>
+            modelBuilder.Entity("SmartSolar.Modules.PreSurvey.Entities.PreSurvey", b =>
                 {
-                    b.Navigation("PropertySites");
+                    b.Navigation("SurveyRequest");
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.PreSurvey.Entities.PropertySite", b =>

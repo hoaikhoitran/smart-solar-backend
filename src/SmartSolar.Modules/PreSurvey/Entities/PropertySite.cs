@@ -1,4 +1,6 @@
 
+using SmartSolar.Modules.PreSurvey.Enums;
+
 namespace SmartSolar.Modules.PreSurvey.Entities;
 
 public sealed class PropertySite
@@ -21,9 +23,9 @@ public sealed class PropertySite
 
     public decimal? Longitude { get; set; }
 
-    public string? RoofType { get; set; }
+    public InstallationSurfaceType? InstallationSurfaceType { get; set; }
 
-    public string? RoofMaterial { get; set; }
+    public string? SurfaceMaterial { get; set; }
 
     public string? Note { get; set; }
 
