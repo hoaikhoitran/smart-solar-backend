@@ -53,14 +53,15 @@ public sealed class PropertySiteConfiguration
             .HasColumnName("longitude")
             .IsRequired(false);
 
-        builder.Property(x => x.RoofType)
-            .HasColumnName("roof_type")
-            .HasMaxLength(50)
+        builder.Property(x => x.InstallationSurfaceType)
+            .HasColumnName("installation_surface_type")
+            .HasMaxLength(30)
+            .HasConversion<string>()
             .IsRequired(false);
 
-        builder.Property(x => x.RoofMaterial)
-            .HasColumnName("roof_material")
-            .HasMaxLength(50)
+        builder.Property(x => x.SurfaceMaterial)
+            .HasColumnName("surface_material")
+            .HasMaxLength(100)
             .IsRequired(false);
 
         builder.Property(x => x.Note)

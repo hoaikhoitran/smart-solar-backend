@@ -25,4 +25,5 @@ public sealed class PreSurvey
     public DateTimeOffset UpdatedAt { get; set; }
 
     public PropertySite Property { get; set; } = null!;
+    public SurveyRequest? SurveyRequest { get; set; }
 }

@@ -28,6 +28,7 @@ builder.Services.AddJwtAuthentication(IdentityModuleExtensions.ReadJwtOptions(bu
 builder.Services.AddCatalogModule();
 builder.Services.AddAuthRateLimiting(builder.Configuration);
 builder.Services.AddCatalogRateLimiting(builder.Configuration);
+builder.Services.AddPreSurveyModule();
 builder.Services.AddForwardedHeaders(builder.Configuration);
 builder.Services.AddControllers();
 builder.Services.AddEnvelopedModelValidation();
