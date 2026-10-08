@@ -7,7 +7,8 @@ public enum SubmitPreSurveyOutcome
     PreSurveyNotFound,
     NotOwned,
     AlreadySubmitted,
-    Incomplete
+    Incomplete,
+    ConcurrentlyModified
 }
 
 public sealed record SubmitPreSurveyResult(
@@ -43,5 +44,10 @@ public sealed record SubmitPreSurveyResult(
     public static SubmitPreSurveyResult Incomplete()
         => new(
             SubmitPreSurveyOutcome.Incomplete,
+            null);
+
+    public static SubmitPreSurveyResult ConcurrentlyModified()
+        => new(
+            SubmitPreSurveyOutcome.ConcurrentlyModified,
             null);
 }

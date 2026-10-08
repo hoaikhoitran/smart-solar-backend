@@ -29,6 +29,8 @@ builder.Services.AddCatalogModule();
 builder.Services.AddAuthRateLimiting(builder.Configuration);
 builder.Services.AddCatalogRateLimiting(builder.Configuration);
 builder.Services.AddPreSurveyModule();
+builder.Services.AddSolarSimulationModule(builder.Configuration);
+builder.Services.AddSimulationRateLimiting(builder.Configuration);
 builder.Services.AddForwardedHeaders(builder.Configuration);
 builder.Services.AddControllers();
 builder.Services.AddEnvelopedModelValidation();

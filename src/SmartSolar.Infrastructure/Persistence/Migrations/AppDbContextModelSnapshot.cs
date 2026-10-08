@@ -401,7 +401,6 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
             modelBuilder.Entity("SmartSolar.Modules.PreSurvey.Entities.PreSurvey", b =>
                 {
                     b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
@@ -413,19 +412,44 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
+                    b.Property<int>("GeometryVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("geometry_version");
+
                     b.Property<bool?>("HasObstruction")
                         .HasColumnType("boolean")
                         .HasColumnName("has_obstruction");
 
+                    b.Property<string>("Obstacles")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("obstacles");
+
                     b.Property<Guid>("PropertyId")
                         .HasColumnType("uuid")
                         .HasColumnName("property_id");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<Guid?>("SelectedSimulationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("selected_simulation_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(30)
                         .HasColumnType("character varying(30)")
                         .HasColumnName("status");
+
+                    b.Property<decimal?>("SurfaceLengthM")
+                        .HasColumnType("numeric")
+                        .HasColumnName("surface_length_m");
+
+                    b.Property<decimal?>("SurfaceWidthM")
+                        .HasColumnType("numeric")
+                        .HasColumnName("surface_width_m");
 
                     b.Property<decimal?>("TiltDegree")
                         .HasColumnType("numeric")
@@ -447,7 +471,14 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("PropertyId");
 
-                    b.ToTable("pre_survey", (string)null);
+                    b.HasIndex("Id", "SelectedSimulationId");
+
+                    b.ToTable("pre_survey", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_pre_survey_surface_dimensions_paired", "(surface_length_m IS NULL) = (surface_width_m IS NULL)");
+
+                            t.HasCheckConstraint("ck_pre_survey_versions_non_negative", "geometry_version >= 0 AND revision >= 0");
+                        });
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.PreSurvey.Entities.PropertySite", b =>
@@ -565,6 +596,254 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.ToTable("survey_request", (string)null);
                 });
 
+            modelBuilder.Entity("SmartSolar.Modules.SolarSimulation.Entities.SolarSimulation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AlgorithmVersion")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("algorithm_version");
+
+                    b.Property<decimal?>("AnnualEnergyKwh")
+                        .HasColumnType("numeric")
+                        .HasColumnName("annual_energy_kwh");
+
+                    b.Property<decimal>("AvailableSurfaceAreaM2")
+                        .HasColumnType("numeric")
+                        .HasColumnName("available_surface_area_m2");
+
+                    b.Property<string>("Climate")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("climate");
+
+                    b.Property<string>("ClimateStatus")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("climate_status");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<string>("Energy")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("energy");
+
+                    b.Property<string>("EnergyStatus")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("energy_status");
+
+                    b.Property<decimal>("GrossSurfaceAreaM2")
+                        .HasColumnType("numeric")
+                        .HasColumnName("gross_surface_area_m2");
+
+                    b.Property<string>("InputFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("char(64)")
+                        .HasColumnName("input_fingerprint")
+                        .IsFixedLength();
+
+                    b.Property<decimal>("InstallableAreaM2")
+                        .HasColumnType("numeric")
+                        .HasColumnName("installable_area_m2");
+
+                    b.Property<string>("Installation")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("installation");
+
+                    b.Property<decimal>("InstalledCapacityKwp")
+                        .HasColumnType("numeric")
+                        .HasColumnName("installed_capacity_kwp");
+
+                    b.Property<bool>("IsReusable")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_reusable");
+
+                    b.Property<decimal?>("Latitude")
+                        .HasColumnType("numeric")
+                        .HasColumnName("latitude");
+
+                    b.Property<string>("Layout")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("layout");
+
+                    b.Property<string>("LayoutOrientation")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("layout_orientation");
+
+                    b.Property<decimal?>("Longitude")
+                        .HasColumnType("numeric")
+                        .HasColumnName("longitude");
+
+                    b.Property<string>("MountingType")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("mounting_type");
+
+                    b.Property<decimal>("ObstacleOccupiedAreaM2")
+                        .HasColumnType("numeric")
+                        .HasColumnName("obstacle_occupied_area_m2");
+
+                    b.Property<string>("Obstacles")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("obstacles");
+
+                    b.Property<decimal>("PanelAzimuthDegree")
+                        .HasColumnType("numeric")
+                        .HasColumnName("panel_azimuth_degree");
+
+                    b.Property<int>("PanelCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("panel_count");
+
+                    b.Property<decimal>("PanelCoveredAreaM2")
+                        .HasColumnType("numeric")
+                        .HasColumnName("panel_covered_area_m2");
+
+                    b.Property<decimal>("PanelTiltDegree")
+                        .HasColumnType("numeric")
+                        .HasColumnName("panel_tilt_degree");
+
+                    b.Property<int>("PreSurveyGeometryVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("pre_survey_geometry_version");
+
+                    b.Property<Guid>("PreSurveyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("pre_survey_id");
+
+                    b.Property<string>("ProductBrand")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("product_brand");
+
+                    b.Property<decimal>("ProductHeightMm")
+                        .HasColumnType("numeric")
+                        .HasColumnName("product_height_mm");
+
+                    b.Property<Guid>("ProductId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("product_id");
+
+                    b.Property<string>("ProductInstallationSpec")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("product_installation_spec");
+
+                    b.Property<string>("ProductModel")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("product_model");
+
+                    b.Property<string>("ProductName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("product_name");
+
+                    b.Property<decimal>("ProductRatedPowerW")
+                        .HasColumnType("numeric")
+                        .HasColumnName("product_rated_power_w");
+
+                    b.Property<string>("ProductSku")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("product_sku");
+
+                    b.Property<decimal>("ProductWidthMm")
+                        .HasColumnType("numeric")
+                        .HasColumnName("product_width_mm");
+
+                    b.Property<decimal?>("SpecificYieldKwhPerKwpYear")
+                        .HasColumnType("numeric")
+                        .HasColumnName("specific_yield_kwh_per_kwp_year");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("status");
+
+                    b.Property<decimal>("SurfaceAzimuthDegree")
+                        .HasColumnType("numeric")
+                        .HasColumnName("surface_azimuth_degree");
+
+                    b.Property<decimal>("SurfaceLengthM")
+                        .HasColumnType("numeric")
+                        .HasColumnName("surface_length_m");
+
+                    b.Property<decimal>("SurfaceTiltDegree")
+                        .HasColumnType("numeric")
+                        .HasColumnName("surface_tilt_degree");
+
+                    b.Property<decimal>("SurfaceWidthM")
+                        .HasColumnType("numeric")
+                        .HasColumnName("surface_width_m");
+
+                    b.Property<decimal>("TotalModuleAreaM2")
+                        .HasColumnType("numeric")
+                        .HasColumnName("total_module_area_m2");
+
+                    b.Property<string>("Warnings")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("warnings");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("PreSurveyId", "Id")
+                        .HasName("ak_solar_simulation_pre_survey_id_id");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("ProductId");
+
+                    b.HasIndex("PreSurveyId", "CreatedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_solar_simulation_pre_survey_id_created_at");
+
+                    b.HasIndex("PreSurveyId", "InputFingerprint")
+                        .IsUnique()
+                        .HasDatabaseName("ux_solar_simulation_reusable_fingerprint")
+                        .HasFilter("\"is_reusable\"");
+
+                    b.ToTable("solar_simulation", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_solar_simulation_climate_status", "climate_status IN ('SUCCEEDED', 'UNAVAILABLE', 'FAILED')");
+
+                            t.HasCheckConstraint("ck_solar_simulation_energy_status", "energy_status IN ('SUCCEEDED', 'NOT_APPLICABLE', 'UNAVAILABLE', 'FAILED')");
+
+                            t.HasCheckConstraint("ck_solar_simulation_geometry_version_non_negative", "pre_survey_geometry_version >= 0");
+
+                            t.HasCheckConstraint("ck_solar_simulation_mounting_type", "mounting_type IN ('FLUSH', 'RACK')");
+
+                            t.HasCheckConstraint("ck_solar_simulation_panel_count_non_negative", "panel_count >= 0");
+
+                            t.HasCheckConstraint("ck_solar_simulation_status", "status IN ('COMPLETED', 'PARTIALLY_COMPLETED')");
+                        });
+                });
+
             modelBuilder.Entity("Customer", b =>
                 {
                     b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", "User")
@@ -644,6 +923,13 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("SmartSolar.Modules.SolarSimulation.Entities.SolarSimulation", null)
+                        .WithMany()
+                        .HasForeignKey("Id", "SelectedSimulationId")
+                        .HasPrincipalKey("PreSurveyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_pre_survey_selected_simulation_same_pre_survey");
+
                     b.Navigation("Property");
                 });
 
@@ -674,6 +960,27 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.Navigation("AssignedSale");
 
                     b.Navigation("PreSurvey");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.SolarSimulation.Entities.SolarSimulation", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("SmartSolar.Modules.PreSurvey.Entities.PreSurvey", null)
+                        .WithMany()
+                        .HasForeignKey("PreSurveyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("SmartSolar.Modules.Catalog.Entities.Product", null)
+                        .WithMany()
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Customer", b =>

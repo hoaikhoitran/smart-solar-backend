@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FluentValidation;
 using SmartSolar.Modules.Catalog.Constants;
+using SmartSolar.Modules.Catalog.Installation;
 
 namespace SmartSolar.Modules.Catalog.ManageProducts;
 
@@ -87,6 +88,17 @@ public abstract class ProductDetailsValidator<T> : AbstractValidator<T>
             .Must(BeJsonObject)
             .When(x => x.Spec is not null)
             .WithMessage("'Spec' must be a JSON object.");
+
+        // The optional installation block is strict; specs without it are unaffected.
+        RuleFor(x => x.Spec)
+            .Custom((spec, context) =>
+            {
+                foreach (var error in ProductInstallationSpecParser.Parse(spec).Errors)
+                {
+                    context.AddFailure(nameof(IProductDetails.Spec), error);
+                }
+            })
+            .When(x => x.Spec is not null && BeJsonObject(x.Spec));
     }
 
     private static bool IsSolarPanel(string? productType)

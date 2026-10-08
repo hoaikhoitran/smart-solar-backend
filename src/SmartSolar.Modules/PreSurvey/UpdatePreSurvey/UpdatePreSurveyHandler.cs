@@ -53,6 +53,12 @@ public sealed class UpdatePreSurveyHandler
             return UpdatePreSurveyResult.NotEditable();
         }
 
+        // Tilt and azimuth are the surface orientation: changing them makes existing
+        // simulations stale. The revision check below guarantees these values are current.
+        var geometryChanged =
+            preSurvey.TiltDegree != command.TiltDegree ||
+            preSurvey.AzimuthDegree != command.AzimuthDegree;
+
         preSurvey.TotalAreaM2 = command.TotalAreaM2;
         preSurvey.UsableAreaM2 = command.UsableAreaM2;
         preSurvey.TiltDegree = command.TiltDegree;
@@ -60,9 +66,23 @@ public sealed class UpdatePreSurveyHandler
         preSurvey.HasObstruction = command.HasObstruction;
 
         preSurvey.UpdatedAt = DateTimeOffset.UtcNow;
+        preSurvey.Revision++;
 
-        await _unitOfWork.SaveChangesAsync(
-            cancellationToken);
+        if (geometryChanged)
+        {
+            preSurvey.GeometryVersion++;
+        }
+
+        // Conditional on the revision that was read: a concurrent submit or edit makes this
+        // match no row, so a stale read can never overwrite a submitted pre-survey.
+        if (!await _unitOfWork.TrySaveDraftChangesAsync(cancellationToken))
+        {
+            var status = await _unitOfWork.GetPreSurveyStatusAsync(command.PreSurveyId, cancellationToken);
+
+            return status == PreSurveyStatus.Draft
+                ? UpdatePreSurveyResult.ConcurrentlyModified()
+                : UpdatePreSurveyResult.NotEditable();
+        }
 
         return UpdatePreSurveyResult.Updated();
     }

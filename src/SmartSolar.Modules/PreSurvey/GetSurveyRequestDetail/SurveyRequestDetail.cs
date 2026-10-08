@@ -34,4 +34,6 @@ public sealed record SurveyRequestDetail(
     DateTimeOffset? AssignedAt,
     DateTimeOffset? ScheduledAt,
 
-    string? SalesNote);
+    string? SalesNote,
+
+    SelectedSimulationSummary? SelectedSimulation);

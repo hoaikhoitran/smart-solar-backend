@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using SmartSolar.Modules.Catalog.Entities;
 using SmartSolar.Modules.Identity.Entities;
 using SmartSolar.Modules.PreSurvey.Entities;
+using SimulationEntity = SmartSolar.Modules.SolarSimulation.Entities.SolarSimulation;
 
 namespace SmartSolar.Infrastructure.Persistence;
 
@@ -35,6 +36,8 @@ public sealed class AppDbContext : DbContext
     public DbSet<Product> Products => Set<Product>();
     public DbSet<SurveyRequest> SurveyRequests
     => Set<SurveyRequest>();
+
+    public DbSet<SimulationEntity> SolarSimulations => Set<SimulationEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

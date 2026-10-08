@@ -1,6 +1,14 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.Extensions.Logging.Abstractions;
+using SmartSolar.Modules.Catalog.Constants;
+using SmartSolar.Modules.Catalog.Entities;
+using SmartSolar.Modules.Catalog.Enums;
+using SmartSolar.Modules.PreSurvey.Surface;
+using SmartSolar.Modules.SolarSimulation.CreateSimulation;
+using SmartSolar.Modules.SolarSimulation.GetSimulation;
+using SmartSolar.Modules.SolarSimulation.Options;
 using SmartSolar.Infrastructure.Persistence;
 using SmartSolar.Modules.Identity.Entities;
 using SmartSolar.Modules.Identity.Enums;
@@ -12,6 +20,8 @@ using SmartSolar.Modules.PreSurvey.Entities;
 using SmartSolar.Modules.PreSurvey.Enums;
 using SmartSolar.Modules.PreSurvey.GetMySurveyRequests;
 using SmartSolar.Modules.PreSurvey.GetPendingSurveyRequests;
+using SmartSolar.Modules.PreSurvey.GetPreSurveySurface;
+using SmartSolar.Modules.PreSurvey.UpdatePreSurveySurface;
 using SmartSolar.Modules.PreSurvey.GetSurveyRequestDetail;
 using SmartSolar.Modules.PreSurvey.SubmitPreSurvey;
 using SmartSolar.Modules.PreSurvey.UpdatePreSurvey;
@@ -84,6 +94,100 @@ public sealed class PreSurveyTestContext : IAsyncDisposable
     public ClaimSurveyRequestHandler ClaimSurveyRequestHandler() => new(UnitOfWork);
     public GetMySurveyRequestsHandler GetMySurveyRequestsHandler() => new(UnitOfWork);
     public GetSurveyRequestDetailHandler GetSurveyRequestDetailHandler() => new(UnitOfWork);
+    public UpdatePreSurveySurfaceHandler UpdatePreSurveySurfaceHandler() => new(UnitOfWork);
+
+    // ---------- Solar simulation ----------
+
+    public FakePvEnergyEstimator PvEnergy { get; } = new();
+    public FakeClimateContextProvider Climate { get; } = new();
+    public SolarSimulationOptions SimulationOptions { get; } = new();
+    public SimulationSingleFlight SingleFlight { get; } = new();
+
+    public SolarSimulationUnitOfWork SimulationUnitOfWork => new(Db);
+
+    public CreateSimulationHandler CreateSimulationHandler() => NewCreateSimulationHandler(Db);
+
+    /// <summary>A create handler on its own connection (file-backed contexts only), sharing fakes and single-flight.</summary>
+    public CreateSimulationHandler CreateSimulationHandlerOnNewConnection()
+    {
+        if (_databaseFile is null)
+        {
+            throw new InvalidOperationException("Use CreateFileBacked() for multi-connection tests.");
+        }
+
+        var db = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlite(ConnectionString)
+            .ReplaceService<IModelCustomizer, SqliteCatalogModelCustomizer>()
+            .Options);
+        _extraContexts.Add(db);
+        return NewCreateSimulationHandler(db);
+    }
+
+    private CreateSimulationHandler NewCreateSimulationHandler(AppDbContext db) => new(
+        new SolarSimulationUnitOfWork(db),
+        new CatalogUnitOfWork(db),
+        PvEnergy,
+        Climate,
+        SimulationOptions,
+        SingleFlight,
+        NullLogger<CreateSimulationHandler>.Instance);
+
+    public GetSimulationHandler GetSimulationHandler() => new(SimulationUnitOfWork);
+    public ListSimulationsHandler ListSimulationsHandler() => new(SimulationUnitOfWork);
+
+    public static Product NewPanelProduct(
+        string sku = "PNL-550",
+        decimal? ratedPowerW = 550m,
+        decimal? widthMm = 1134m,
+        decimal? heightMm = 2278m,
+        string productType = ProductTypes.SolarPanel,
+        ProductStatus status = ProductStatus.Active,
+        string? spec = null)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return new Product
+        {
+            Id = Guid.NewGuid(), Sku = sku, ProductType = productType, Name = "Mono 550", Brand = "Jinko", Model = "Tiger Neo",
+            Unit = "PCS", UnitPrice = 2_500_000m, Currency = "VND", RatedPowerW = ratedPowerW, WidthMm = widthMm, HeightMm = heightMm,
+            Spec = spec, Status = status, CreatedAt = now, UpdatedAt = now
+        };
+    }
+
+    public Task<Product> SeedPanelProductAsync(
+        string sku = "PNL-550", decimal? ratedPowerW = 550m, decimal? widthMm = 1134m, decimal? heightMm = 2278m,
+        string productType = ProductTypes.SolarPanel, ProductStatus status = ProductStatus.Active, string? spec = null)
+        => SeedAsync(NewPanelProduct(sku, ratedPowerW, widthMm, heightMm, productType, status, spec));
+
+    /// <summary>Draft with a saved 12 x 8 m surface (tilt 15, south) and the given obstacles; geometry version 1.</summary>
+    public async Task<(UserAccount User, Modules.PreSurvey.Entities.PreSurvey PreSurvey)> SeedDraftWithSurfaceAsync(
+        IReadOnlyList<SurfaceObstacle>? obstacles = null,
+        decimal length = 12m,
+        decimal width = 8m,
+        decimal tilt = 15m,
+        decimal azimuth = 180m,
+        bool withCoordinates = true)
+    {
+        var user = await SeedUserAsync();
+        var customer = await SeedCustomerAsync(user.Id);
+        var site = NewPropertySite(customer.Id);
+        if (!withCoordinates)
+        {
+            site.Latitude = null;
+            site.Longitude = null;
+        }
+        await SeedAsync(site);
+        var preSurvey = NewPreSurvey(site.Id);
+        preSurvey.SurfaceLengthM = length;
+        preSurvey.SurfaceWidthM = width;
+        preSurvey.TiltDegree = tilt;
+        preSurvey.AzimuthDegree = azimuth;
+        preSurvey.Obstacles = SurfaceObstacleSerializer.Serialize(obstacles ?? []);
+        preSurvey.GeometryVersion = 1;
+        preSurvey.Revision = 1;
+        await SeedAsync(preSurvey);
+        return (user, preSurvey);
+    }
+    public GetPreSurveySurfaceHandler GetPreSurveySurfaceHandler() => new(UnitOfWork);
 
     public static UserAccount NewUser(
         string fullName = "Tran Hoai Khoi test",

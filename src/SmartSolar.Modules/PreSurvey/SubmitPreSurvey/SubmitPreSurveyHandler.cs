@@ -73,13 +73,23 @@ public sealed class SubmitPreSurveyHandler
             SalesNote = null
         };
 
+        // Requires the revision that passed the completeness check above, so a concurrent
+        // update cannot slip incomplete data into a submitted pre-survey.
         var submitted =
             await _unitOfWork.TrySubmitPreSurveyAsync(
                 surveyRequest,
-                cancellationToken);
+                cancellationToken,
+                preSurvey.Revision);
 
-        return submitted
-            ? SubmitPreSurveyResult.Submitted(surveyRequest.Id)
+        if (submitted)
+        {
+            return SubmitPreSurveyResult.Submitted(surveyRequest.Id);
+        }
+
+        var status = await _unitOfWork.GetPreSurveyStatusAsync(preSurvey.Id, cancellationToken);
+
+        return status == PreSurveyStatus.Draft
+            ? SubmitPreSurveyResult.ConcurrentlyModified()
             : SubmitPreSurveyResult.AlreadySubmitted();
     }
 

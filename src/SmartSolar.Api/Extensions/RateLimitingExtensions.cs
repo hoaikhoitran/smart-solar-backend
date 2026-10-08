@@ -20,6 +20,7 @@ public static class RateLimitingExtensions
     public const string ChangePasswordPolicy = "auth-change-password";
     public const string CatalogReadPolicy = "catalog-read";
     public const string CatalogWritePolicy = "catalog-write";
+    public const string SimulationWritePolicy = "simulation-write";
 
     public static IServiceCollection AddAuthRateLimiting(
         this IServiceCollection services,
@@ -93,6 +94,23 @@ public static class RateLimitingExtensions
 
             options.AddPolicy(CatalogWritePolicy, context => FixedWindowByUser(
                 context, configuration, "RateLimiting:CatalogWrite", CatalogWritePolicy, permitLimit: 30, windowMinutes: 1));
+        });
+
+        return services;
+    }
+
+    /// <summary>
+    /// Per-user limit for simulation creation (each creation may call PVGIS and NASA POWER).
+    /// Adds to the same limiter options so the enveloped 429 still applies.
+    /// </summary>
+    public static IServiceCollection AddSimulationRateLimiting(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.AddRateLimiter(options =>
+        {
+            options.AddPolicy(SimulationWritePolicy, context => FixedWindowByUser(
+                context, configuration, "RateLimiting:SimulationWrite", SimulationWritePolicy, permitLimit: 10, windowMinutes: 1));
         });
 
         return services;

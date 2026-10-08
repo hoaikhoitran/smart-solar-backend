@@ -6,7 +6,8 @@ public enum UpdatePreSurveyOutcome
     CustomerNotFound,
     PreSurveyNotFound,
     NotOwned,
-    NotEditable
+    NotEditable,
+    ConcurrentlyModified
 }
 
 public sealed record UpdatePreSurveyResult(
@@ -26,4 +27,7 @@ public sealed record UpdatePreSurveyResult(
 
     public static UpdatePreSurveyResult NotEditable()
         => new(UpdatePreSurveyOutcome.NotEditable);
+
+    public static UpdatePreSurveyResult ConcurrentlyModified()
+        => new(UpdatePreSurveyOutcome.ConcurrentlyModified);
 }
