@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using SmartSolar.Infrastructure.Persistence;
 using SmartSolar.Modules.Common.Messaging;
+using SmartSolar.Modules.SolarSimulation.Energy;
 
 namespace SmartSolar.Tests.TestSupport;
 
@@ -26,6 +27,11 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
     }
 
     public FakeIntegrationEventPublisher Publisher { get; } = new();
+
+    /// <summary>Synthetic providers: integration tests never call PVGIS or NASA POWER.</summary>
+    public FakePvEnergyEstimator PvEnergy { get; } = new();
+
+    public FakeClimateContextProvider Climate { get; } = new();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -55,6 +61,7 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("RateLimiting:ChangePassword:PermitLimit", "1000");
         builder.UseSetting("RateLimiting:CatalogRead:PermitLimit", "1000");
         builder.UseSetting("RateLimiting:CatalogWrite:PermitLimit", "1000");
+        builder.UseSetting("RateLimiting:SimulationWrite:PermitLimit", "1000");
 
         foreach (var (key, value) in _settings)
         {
@@ -72,6 +79,11 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
 
             services.RemoveAll<IIntegrationEventPublisher>();
             services.AddSingleton<IIntegrationEventPublisher>(Publisher);
+
+            services.RemoveAll<IPvEnergyEstimator>();
+            services.AddSingleton<IPvEnergyEstimator>(PvEnergy);
+            services.RemoveAll<IClimateContextProvider>();
+            services.AddSingleton<IClimateContextProvider>(Climate);
 
             // Create the schema before the host starts, because startup seeding
             // writes roles into this database.

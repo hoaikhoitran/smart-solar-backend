@@ -4,6 +4,8 @@ using SmartSolar.Modules.PreSurvey.CreatePreSurvey;
 using SmartSolar.Modules.PreSurvey.CreatePropertySite;
 using SmartSolar.Modules.PreSurvey.GetMySurveyRequests;
 using SmartSolar.Modules.PreSurvey.GetPendingSurveyRequests;
+using SmartSolar.Modules.PreSurvey.GetPreSurveySurface;
+using SmartSolar.Modules.PreSurvey.UpdatePreSurveySurface;
 using SmartSolar.Modules.PreSurvey.GetSurveyRequestDetail;
 using SmartSolar.Modules.PreSurvey.SubmitPreSurvey;
 using SmartSolar.Modules.PreSurvey.UpdatePreSurvey;
@@ -24,6 +26,8 @@ public static class PreSurveyModuleExtensions
         services.AddScoped<GetPendingSurveyRequestsHandler>();
         services.AddScoped<GetMySurveyRequestsHandler>();
         services.AddScoped<GetSurveyRequestDetailHandler>();
+        services.AddScoped<UpdatePreSurveySurfaceHandler>();
+        services.AddScoped<GetPreSurveySurfaceHandler>();
         return services;
     }
 }

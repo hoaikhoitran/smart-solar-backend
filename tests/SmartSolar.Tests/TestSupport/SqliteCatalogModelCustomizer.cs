@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SmartSolar.Modules.Catalog.Entities;
 using SmartSolar.Modules.PreSurvey.Entities;
+using SmartSolar.Modules.SolarSimulation.Entities;
 
 namespace SmartSolar.Tests.TestSupport;
 
@@ -27,6 +28,7 @@ public sealed class SqliteCatalogModelCustomizer : ModelCustomizer
 
         ConvertSortableColumns(modelBuilder.Entity<Product>());
         ConvertSortableColumns(modelBuilder.Entity<SurveyRequest>());
+        ConvertSortableColumns(modelBuilder.Entity<SolarSimulation>());
     }
 
     private static void ConvertSortableColumns(EntityTypeBuilder entity)

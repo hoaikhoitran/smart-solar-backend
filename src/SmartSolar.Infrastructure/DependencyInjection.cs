@@ -20,6 +20,8 @@ using SmartSolar.Infrastructure.Caching;
 using SmartSolar.Modules.Common.Caching;
 using SmartSolar.Modules.Catalog.Contracts.Persistence;
 using SmartSolar.Modules.PreSurvey.Contracts.Persistence;
+using SmartSolar.Modules.SolarSimulation.Contracts.Persistence;
+using SmartSolar.Infrastructure.ExternalProviders;
 
 namespace SmartSolar.Infrastructure;
 
@@ -45,6 +47,8 @@ public static class DependencyInjection
         services.AddScoped<ICatalogUnitOfWork, CatalogUnitOfWork>();
         services.AddScoped<SystemRoleSeeder>();
         services.AddScoped<IPreSurveyUnitOfWork, PreSurveyUnitOfWork>();
+        services.AddScoped<ISolarSimulationUnitOfWork, SolarSimulationUnitOfWork>();
+        services.AddSolarProviders(configuration);
         services.AddSingleton<IPasswordHashingService, PasswordHashingService>();
 
         return services;

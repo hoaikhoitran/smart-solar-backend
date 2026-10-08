@@ -68,9 +68,39 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
                 x => x.Id == preSurveyId,
                 cancellationToken);
     }
+    public async Task<bool> TrySaveDraftChangesAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Revision is a concurrency token: EF adds "AND revision = @original" to the UPDATE.
+            await _db.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            _db.ChangeTracker.Clear();
+            return false;
+        }
+    }
+
+    public async Task<PreSurveyStatus?> GetPreSurveyStatusAsync(
+        Guid preSurveyId,
+        CancellationToken cancellationToken)
+    {
+        var status = await _db.PreSurveys
+            .AsNoTracking()
+            .Where(x => x.Id == preSurveyId)
+            .Select(x => (PreSurveyStatus?)x.Status)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return status;
+    }
+
     public Task<bool> TrySubmitPreSurveyAsync(
         SurveyRequest surveyRequest,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? expectedRevision = null)
     {
         // EnableRetryOnFailure forbids user transactions outside the execution strategy.
         var strategy = _db.Database.CreateExecutionStrategy();
@@ -89,11 +119,13 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
                 var moved = await _db.PreSurveys
                     .Where(x =>
                         x.Id == surveyRequest.PreSurveyId &&
-                        x.Status == PreSurveyStatus.Draft)
+                        x.Status == PreSurveyStatus.Draft &&
+                        (expectedRevision == null || x.Revision == expectedRevision))
                     .ExecuteUpdateAsync(
                         setters => setters
                             .SetProperty(x => x.Status, PreSurveyStatus.Submitted)
-                            .SetProperty(x => x.UpdatedAt, surveyRequest.SubmittedAt),
+                            .SetProperty(x => x.UpdatedAt, surveyRequest.SubmittedAt)
+                            .SetProperty(x => x.Revision, x => x.Revision + 1),
                         token);
 
                 if (moved == 0)
@@ -180,15 +212,17 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
                 x.ScheduledAt))
             .ToListAsync(cancellationToken);
     }
-    public Task<SurveyRequestDetail?>
+    public async Task<SurveyRequestDetail?>
     GetSurveyRequestDetailAsync(
         Guid surveyRequestId,
         CancellationToken cancellationToken)
     {
-        return _db.SurveyRequests
+        var row = await _db.SurveyRequests
         .AsNoTracking()
         .Where(x => x.Id == surveyRequestId)
-       .Select(x => new SurveyRequestDetail(
+       .Select(x => new
+       {
+           Detail = new SurveyRequestDetail(
             x.Id,
             x.PreSurveyId,
             x.AssignedSaleId,
@@ -220,7 +254,37 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
             x.AssignedAt,
             x.ScheduledAt,
 
-            x.SalesNote))
+            x.SalesNote,
+
+            null),
+           x.PreSurvey.SelectedSimulationId,
+           x.PreSurvey.GeometryVersion
+       })
         .FirstOrDefaultAsync(cancellationToken);
-    }   
+
+        if (row is null || row.SelectedSimulationId is not { } selectedId)
+        {
+            return row?.Detail;
+        }
+
+        // Second, simple query (no correlated subquery) so it runs on PostgreSQL and SQLite alike.
+        var summary = await _db.SolarSimulations
+            .AsNoTracking()
+            .Where(s => s.Id == selectedId && s.PreSurveyId == row.Detail.PreSurveyId)
+            .Select(s => new SelectedSimulationSummary(
+                s.Id,
+                s.Status,
+                s.EnergyStatus,
+                s.PreSurveyGeometryVersion != row.GeometryVersion,
+                s.MountingType,
+                s.ProductSku,
+                s.ProductName,
+                s.PanelCount,
+                s.InstalledCapacityKwp,
+                s.AnnualEnergyKwh,
+                s.CreatedAt))
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return row.Detail with { SelectedSimulation = summary };
+    }
 }

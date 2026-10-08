@@ -200,6 +200,12 @@ namespace SmartSolar.Api.Controllers
                         PreSurveyErrorCodes.PreSurveyIncomplete,
                         "Pre-survey does not contain all required information.")),
 
+            SubmitPreSurveyOutcome.ConcurrentlyModified
+                => Conflict(
+                    Failure(
+                        PreSurveyErrorCodes.PreSurveyConcurrentlyModified,
+                        "Pre-survey changed while it was being submitted. Reload and try again.")),
+
             _ => Ok(
                 Success(
                     new SubmitPreSurveyResponse(
@@ -285,6 +291,12 @@ namespace SmartSolar.Api.Controllers
                     Failure(
                         PreSurveyErrorCodes.PreSurveyNotEditable,
                         "Only draft pre-surveys can be edited.")),
+
+            UpdatePreSurveyOutcome.ConcurrentlyModified
+                => Conflict(
+                    Failure(
+                        PreSurveyErrorCodes.PreSurveyConcurrentlyModified,
+                        "Pre-survey was changed by another request. Reload and try again.")),
 
             _ => NoContent()
         };

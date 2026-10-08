@@ -31,4 +31,8 @@ public static class PreSurveyErrorCodes
 
     public const string SurveyRequestNotAssigned =
     "SURVEY_REQUEST_NOT_ASSIGNED";
+
+    /// <summary>Another write changed the pre-survey since it was read; reload and retry.</summary>
+    public const string PreSurveyConcurrentlyModified =
+    "PRE_SURVEY_CONCURRENTLY_MODIFIED";
 }
