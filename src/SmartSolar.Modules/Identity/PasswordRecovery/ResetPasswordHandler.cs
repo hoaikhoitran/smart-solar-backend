@@ -50,6 +50,16 @@ public sealed class ResetPasswordHandler
 
         var now = DateTimeOffset.UtcNow;
 
+        if (resetToken is null)
+        {
+            // Admin-provisioned accounts receive an ACCOUNT_SETUP link that posts here too.
+            var setupToken = await _unitOfWork.FindActionTokenAsync(tokenHash, AuthActionTokenType.AccountSetup, cancellationToken);
+            if (setupToken is not null)
+            {
+                return await CompleteAccountSetupAsync(setupToken, newPassword, now, cancellationToken);
+            }
+        }
+
         // One outcome for unknown, used and expired tokens.
         if (resetToken is null || resetToken.UsedAt is not null || resetToken.ExpiresAt <= now)
         {
@@ -72,6 +82,44 @@ public sealed class ResetPasswordHandler
         await _unitOfWork.RevokeActiveRefreshTokensAsync(user.Id, now, cancellationToken);
 
         _logger.LogInformation("Password reset completed for user {UserId}.", user.Id);
+
+        return ResetPasswordResult.Succeeded;
+    }
+
+    /// <summary>
+    /// First password of an admin-provisioned account. Opening the emailed single-use link is the
+    /// proof of email ownership, so only here does the account become verified and ACTIVE.
+    /// Suspended, disabled and deleted accounts are refused with the same answer as a bad token.
+    /// </summary>
+    private async Task<ResetPasswordResult> CompleteAccountSetupAsync(
+        Entities.AuthActionToken setupToken,
+        string newPassword,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        if (setupToken.UsedAt is not null || setupToken.ExpiresAt <= now)
+        {
+            return ResetPasswordResult.InvalidOrExpired;
+        }
+
+        var user = await _unitOfWork.FindUserByIdAsync(setupToken.UserId, cancellationToken);
+
+        if (user is null
+            || user.DeletedAt is not null
+            || user.Status is not (UserStatus.PendingVerification or UserStatus.Active))
+        {
+            return ResetPasswordResult.InvalidOrExpired;
+        }
+
+        user.PasswordHash = _passwordHasher.HashPassword(user, newPassword);
+        user.EmailVerifiedAt ??= now;
+        user.Status = UserStatus.Active;
+        user.UpdatedAt = now;
+        setupToken.UsedAt = now;
+
+        await _unitOfWork.RevokeActiveRefreshTokensAsync(user.Id, now, cancellationToken);
+
+        _logger.LogInformation("Account setup completed for user {UserId}.", user.Id);
 
         return ResetPasswordResult.Succeeded;
     }

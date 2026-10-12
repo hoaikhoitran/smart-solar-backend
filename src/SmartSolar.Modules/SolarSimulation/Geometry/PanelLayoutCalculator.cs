@@ -9,10 +9,28 @@ public enum LayoutOrientation
     Landscape
 }
 
+/// <summary>
+/// Why no panel fits, most fundamental first. Area checks give precise reasons, but only the
+/// geometric layout decides feasibility: enough area is never treated as proof of fit.
+/// </summary>
 public static class NoPanelsReasons
 {
+    /// <summary>Edge setbacks leave no installation region.</summary>
     public const string SetbackConsumesSurface = "SETBACK_CONSUMES_SURFACE";
+
+    /// <summary>The union of obstacles covers the whole surface (overlaps counted once).</summary>
+    public const string ObstaclesCoverSurface = "OBSTACLES_COVER_SURFACE";
+
+    /// <summary>Even without obstacles no complete panel footprint fits inside the setback region.</summary>
     public const string PanelLargerThanInstallableRegion = "PANEL_LARGER_THAN_INSTALLABLE_REGION";
+
+    /// <summary>Surface minus obstacle union is smaller than one panel's physical area.</summary>
+    public const string AvailableAreaBelowPanelArea = "AVAILABLE_AREA_BELOW_PANEL_AREA";
+
+    /// <summary>After setbacks and obstacle clearances, less than one panel footprint of area remains.</summary>
+    public const string InstallableAreaBelowPanelFootprint = "INSTALLABLE_AREA_BELOW_PANEL_FOOTPRINT";
+
+    /// <summary>Area would suffice, but obstacles and clearances leave no position for a complete panel.</summary>
     public const string ObstaclesBlockAllPositions = "OBSTACLES_BLOCK_ALL_POSITIONS";
 }
 
@@ -139,11 +157,7 @@ public static class PanelLayoutCalculator
         string? reason = null;
         if (!budget.Stopped && best.Count == 0)
         {
-            reason = region.IsEmpty
-                ? NoPanelsReasons.SetbackConsumesSurface
-                : FitsWithoutObstacles(region, request, budget)
-                    ? NoPanelsReasons.ObstaclesBlockAllPositions
-                    : NoPanelsReasons.PanelLargerThanInstallableRegion;
+            reason = NoPanelsReason(region, gross, occupied, installable, request, budget);
         }
 
         if (budget.Stopped)
@@ -169,6 +183,23 @@ public static class PanelLayoutCalculator
             best.Count * moduleArea);
 
         return new LayoutResult(bestOrientation, best, areas, reason, false, bestOffset);
+    }
+
+    private static string NoPanelsReason(Rect region, double gross, double occupied, double installable, LayoutRequest request, WorkBudget budget)
+    {
+        const double areaTolerance = 1e-9;
+        if (region.IsEmpty) return NoPanelsReasons.SetbackConsumesSurface;
+        if (occupied >= gross - areaTolerance) return NoPanelsReasons.ObstaclesCoverSurface;
+        if (!FitsWithoutObstacles(region, request, budget)) return NoPanelsReasons.PanelLargerThanInstallableRegion;
+
+        var moduleArea = request.Candidates.Values.Min(c => c.Footprint.PhysicalWidthM * c.Footprint.PhysicalLengthM);
+        if (gross - occupied < moduleArea - areaTolerance) return NoPanelsReasons.AvailableAreaBelowPanelArea;
+
+        // Rotated or rack panels: use the calculated footprint, not width x height.
+        var footprintArea = request.Candidates.Values.Min(c => c.Footprint.WidthAlongRowM * c.Footprint.DepthAcrossRowM);
+        if (installable < footprintArea - areaTolerance) return NoPanelsReasons.InstallableAreaBelowPanelFootprint;
+
+        return NoPanelsReasons.ObstaclesBlockAllPositions;
     }
 
     private static bool FitsWithoutObstacles(Rect region, LayoutRequest request, WorkBudget budget)

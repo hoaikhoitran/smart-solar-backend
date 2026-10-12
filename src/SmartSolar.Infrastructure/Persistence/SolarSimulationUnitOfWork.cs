@@ -20,8 +20,9 @@ public sealed class SolarSimulationUnitOfWork : ISolarSimulationUnitOfWork
         _db = db;
     }
 
-    public Task<SimulationSource?> GetSourceAsync(Guid preSurveyId, CancellationToken cancellationToken)
-        => _db.PreSurveys
+    public async Task<SimulationSource?> GetSourceAsync(Guid preSurveyId, CancellationToken cancellationToken)
+    {
+        var source = await _db.PreSurveys
             .AsNoTracking()
             .Where(x => x.Id == preSurveyId)
             .Select(x => new SimulationSource(
@@ -38,8 +39,26 @@ public sealed class SolarSimulationUnitOfWork : ISolarSimulationUnitOfWork
                 x.Obstacles,
                 x.TotalAreaM2,
                 x.Property.Latitude,
-                x.Property.Longitude))
+                x.Property.Longitude,
+                null))
             .FirstOrDefaultAsync(cancellationToken);
+        if (source is null)
+        {
+            return null;
+        }
+
+        // Separate simple query (portable to SQLite): technicians officially assigned to the
+        // active appointment of this pre-survey's survey request.
+        var technicians = await _db.TechnicianAppointments.AsNoTracking()
+            .Where(a => a.AssignedTechnicianUserId != null
+                        && (a.Status == SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.Assigned
+                            || a.Status == SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.Acknowledged)
+                        && _db.SurveyRequests.Any(r => r.Id == a.SurveyRequestId && r.PreSurveyId == preSurveyId))
+            .Select(a => a.AssignedTechnicianUserId!.Value)
+            .ToListAsync(cancellationToken);
+
+        return source with { AssignedTechnicianUserIds = technicians };
+    }
 
     public Task<SimulationEntity?> FindReusableAsync(Guid preSurveyId, string fingerprint, CancellationToken cancellationToken)
         => _db.SolarSimulations

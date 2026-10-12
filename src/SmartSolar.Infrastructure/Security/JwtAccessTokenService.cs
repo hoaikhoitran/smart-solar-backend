@@ -56,7 +56,8 @@ public sealed class JwtAccessTokenService : IAccessTokenService
         {
             new(JwtRegisteredClaimNames.Sub, userAccount.Id.ToString()),
             new(JwtRegisteredClaimNames.Email, userAccount.Email),
-            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+            new(AuthVersionClaim.Type, userAccount.AuthVersion.ToString(System.Globalization.CultureInfo.InvariantCulture), ClaimValueTypes.Integer32)
         };
 
         claims.AddRange(roleCodes.Select(role => new Claim(ClaimTypes.Role, role)));

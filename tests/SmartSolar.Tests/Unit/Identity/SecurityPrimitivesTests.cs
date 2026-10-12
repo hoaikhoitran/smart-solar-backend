@@ -2,6 +2,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using Microsoft.IdentityModel.Tokens;
 using SmartSolar.Infrastructure.Security;
+using SmartSolar.Modules.Identity.Contracts.Security;
 using SmartSolar.Modules.Identity.Entities;
 using SmartSolar.Modules.Identity.Enums;
 using SmartSolar.Modules.Identity.Options;
@@ -147,8 +148,20 @@ public class JwtAccessTokenServiceTests
             JwtRegisteredClaimNames.Email,
             JwtRegisteredClaimNames.Jti,
             ClaimTypes.Role,
+            AuthVersionClaim.Type,
             "exp", "iss", "aud", "nbf", "iat"
         }));
+    }
+
+    [Fact]
+    public void Carries_the_account_auth_version_so_stale_tokens_can_be_rejected()
+    {
+        var user = User();
+        user.AuthVersion = 7;
+
+        var issued = new JwtAccessTokenService(Options()).Generate(user, new[] { "CUSTOMER" });
+
+        Assert.Equal("7", Read(issued.Token).Claims.Single(c => c.Type == AuthVersionClaim.Type).Value);
     }
 
     [Fact]

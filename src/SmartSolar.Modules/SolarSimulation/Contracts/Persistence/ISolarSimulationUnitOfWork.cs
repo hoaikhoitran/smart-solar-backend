@@ -17,7 +17,8 @@ public sealed record SimulationSource(
     string? ObstaclesJson,
     decimal? DeclaredTotalAreaM2,
     decimal? Latitude,
-    decimal? Longitude);
+    decimal? Longitude,
+    IReadOnlyList<Guid>? AssignedTechnicianUserIds = null);
 
 /// <summary>List row; excludes the large JSON documents.</summary>
 public sealed record SimulationSummary(

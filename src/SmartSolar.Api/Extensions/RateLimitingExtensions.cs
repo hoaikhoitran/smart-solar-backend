@@ -21,6 +21,11 @@ public static class RateLimitingExtensions
     public const string CatalogReadPolicy = "catalog-read";
     public const string CatalogWritePolicy = "catalog-write";
     public const string SimulationWritePolicy = "simulation-write";
+    public const string SchedulingReadPolicy = "scheduling-read";
+    public const string SchedulingWritePolicy = "scheduling-write";
+    public const string AdminUsersReadPolicy = "admin-users-read";
+    public const string AdminUsersWritePolicy = "admin-users-write";
+    public const string AdminUsersRecoveryPolicy = "admin-users-recovery";
 
     public static IServiceCollection AddAuthRateLimiting(
         this IServiceCollection services,
@@ -94,6 +99,39 @@ public static class RateLimitingExtensions
 
             options.AddPolicy(CatalogWritePolicy, context => FixedWindowByUser(
                 context, configuration, "RateLimiting:CatalogWrite", CatalogWritePolicy, permitLimit: 30, windowMinutes: 1));
+        });
+
+        return services;
+    }
+
+    /// <summary>
+    /// Per-user limits for scheduling endpoints that may call the routing provider (slot listing,
+    /// technician availability, booking changes). Protects the Vietmap quota.
+    /// </summary>
+    public static IServiceCollection AddSchedulingRateLimiting(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.AddRateLimiter(options =>
+        {
+            options.AddPolicy(SchedulingReadPolicy, context => FixedWindowByUser(
+                context, configuration, "RateLimiting:SchedulingRead", SchedulingReadPolicy, permitLimit: 20, windowMinutes: 1));
+            options.AddPolicy(SchedulingWritePolicy, context => FixedWindowByUser(
+                context, configuration, "RateLimiting:SchedulingWrite", SchedulingWritePolicy, permitLimit: 10, windowMinutes: 1));
+        });
+
+        return services;
+    }
+
+    /// <summary>Per-admin limits for account administration; recovery links are the most limited (each sends an email).</summary>
+    public static IServiceCollection AddAdminUsersRateLimiting(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.AddRateLimiter(options =>
+        {
+            options.AddPolicy(AdminUsersReadPolicy, context => FixedWindowByUser(
+                context, configuration, "RateLimiting:AdminUsersRead", AdminUsersReadPolicy, permitLimit: 60, windowMinutes: 1));
+            options.AddPolicy(AdminUsersWritePolicy, context => FixedWindowByUser(
+                context, configuration, "RateLimiting:AdminUsersWrite", AdminUsersWritePolicy, permitLimit: 20, windowMinutes: 1));
+            options.AddPolicy(AdminUsersRecoveryPolicy, context => FixedWindowByUser(
+                context, configuration, "RateLimiting:AdminUsersRecovery", AdminUsersRecoveryPolicy, permitLimit: 5, windowMinutes: 10));
         });
 
         return services;

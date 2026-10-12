@@ -8,6 +8,7 @@ using Microsoft.Extensions.Hosting;
 using SmartSolar.Infrastructure.Persistence;
 using SmartSolar.Modules.Common.Messaging;
 using SmartSolar.Modules.SolarSimulation.Energy;
+using SmartSolar.Modules.Scheduling.Travel;
 
 namespace SmartSolar.Tests.TestSupport;
 
@@ -32,6 +33,12 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
     public FakePvEnergyEstimator PvEnergy { get; } = new();
 
     public FakeClimateContextProvider Climate { get; } = new();
+
+    /// <summary>Synthetic travel times: integration tests never call Vietmap.</summary>
+    public FakeTravelTimeEstimator Travel { get; } = new();
+
+    /// <summary>Pretends the broker and SMTP are both on, so admin flows publish their links to <see cref="Publisher"/>.</summary>
+    public bool EmailCanDeliver { get; init; }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -62,6 +69,13 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("RateLimiting:CatalogRead:PermitLimit", "1000");
         builder.UseSetting("RateLimiting:CatalogWrite:PermitLimit", "1000");
         builder.UseSetting("RateLimiting:SimulationWrite:PermitLimit", "1000");
+        builder.UseSetting("RateLimiting:SchedulingRead:PermitLimit", "1000");
+        builder.UseSetting("RateLimiting:SchedulingWrite:PermitLimit", "1000");
+        builder.UseSetting("RateLimiting:AdminUsersRead:PermitLimit", "1000");
+        builder.UseSetting("RateLimiting:AdminUsersWrite:PermitLimit", "1000");
+        builder.UseSetting("RateLimiting:AdminUsersRecovery:PermitLimit", "1000");
+        // The durable recalculation worker is driven explicitly by tests.
+        builder.UseSetting("Scheduling:RecalculationWorkerEnabled", "false");
 
         foreach (var (key, value) in _settings)
         {
@@ -84,6 +98,11 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
             services.AddSingleton<IPvEnergyEstimator>(PvEnergy);
             services.RemoveAll<IClimateContextProvider>();
             services.AddSingleton<IClimateContextProvider>(Climate);
+            services.RemoveAll<ITravelTimeEstimator>();
+            services.AddSingleton<ITravelTimeEstimator>(Travel);
+            services.RemoveAll<SmartSolar.Modules.Common.Email.IEmailDeliveryStatus>();
+            services.AddSingleton<SmartSolar.Modules.Common.Email.IEmailDeliveryStatus>(
+                new SmartSolar.Infrastructure.Email.ConfiguredEmailDeliveryStatus(EmailCanDeliver));
 
             // Create the schema before the host starts, because startup seeding
             // writes roles into this database.

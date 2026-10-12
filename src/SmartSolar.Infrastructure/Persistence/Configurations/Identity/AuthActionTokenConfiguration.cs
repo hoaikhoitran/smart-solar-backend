@@ -10,6 +10,7 @@ public sealed class AuthActionTokenConfiguration
 {
     private const string EmailVerification = "EMAIL_VERIFICATION";
     private const string PasswordReset = "PASSWORD_RESET";
+    private const string AccountSetup = "ACCOUNT_SETUP";
 
     public void Configure(EntityTypeBuilder<AuthActionToken> builder)
     {
@@ -54,6 +55,7 @@ public sealed class AuthActionTokenConfiguration
     {
         AuthActionTokenType.EmailVerification => EmailVerification,
         AuthActionTokenType.PasswordReset => PasswordReset,
+        AuthActionTokenType.AccountSetup => AccountSetup,
         _ => throw new ArgumentOutOfRangeException(
             nameof(type), type, "Unsupported auth action token type.")
     };
@@ -62,6 +64,7 @@ public sealed class AuthActionTokenConfiguration
     {
         EmailVerification => AuthActionTokenType.EmailVerification,
         PasswordReset => AuthActionTokenType.PasswordReset,
+        AccountSetup => AuthActionTokenType.AccountSetup,
         _ => throw new ArgumentOutOfRangeException(
             nameof(value), value, "Unsupported auth action token type.")
     };

@@ -256,15 +256,23 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
 
             x.SalesNote,
 
+            null,
             null),
            x.PreSurvey.SelectedSimulationId,
            x.PreSurvey.GeometryVersion
        })
         .FirstOrDefaultAsync(cancellationToken);
 
-        if (row is null || row.SelectedSimulationId is not { } selectedId)
+        if (row is null)
         {
-            return row?.Detail;
+            return null;
+        }
+
+        var detail = row.Detail with { Appointment = await GetActiveAppointmentSummaryAsync(surveyRequestId, cancellationToken) };
+
+        if (row.SelectedSimulationId is not { } selectedId)
+        {
+            return detail;
         }
 
         // Second, simple query (no correlated subquery) so it runs on PostgreSQL and SQLite alike.
@@ -285,6 +293,38 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
                 s.CreatedAt))
             .FirstOrDefaultAsync(cancellationToken);
 
-        return row.Detail with { SelectedSimulation = summary };
+        return detail with { SelectedSimulation = summary };
+    }
+
+    private async Task<SurveyAppointmentSummary?> GetActiveAppointmentSummaryAsync(Guid surveyRequestId, CancellationToken cancellationToken)
+    {
+        var appointment = await _db.TechnicianAppointments
+            .AsNoTracking()
+            .Where(a => a.SurveyRequestId == surveyRequestId && a.Status != SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.Cancelled)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (appointment is null)
+        {
+            return null;
+        }
+
+        var technicianIds = new[] { appointment.ReservedTechnicianUserId, appointment.AssignedTechnicianUserId ?? Guid.Empty };
+        var names = await _db.UserAccounts
+            .AsNoTracking()
+            .Where(u => technicianIds.Contains(u.Id))
+            .ToDictionaryAsync(u => u.Id, u => u.FullName, cancellationToken);
+
+        return new SurveyAppointmentSummary(
+            appointment.Id,
+            appointment.StartsAt,
+            appointment.EndsAt,
+            appointment.Status,
+            appointment.ReservedTechnicianUserId,
+            names.GetValueOrDefault(appointment.ReservedTechnicianUserId, ""),
+            appointment.AssignedTechnicianUserId,
+            appointment.AssignedTechnicianUserId is { } assigned ? names.GetValueOrDefault(assigned) : null,
+            appointment.CustomerNote,
+            appointment.BookedAt,
+            appointment.AssignedAt,
+            appointment.AcknowledgedAt);
     }
 }

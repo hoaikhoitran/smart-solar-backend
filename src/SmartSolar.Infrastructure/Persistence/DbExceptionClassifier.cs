@@ -20,6 +20,17 @@ internal static class DbExceptionClassifier
             _ => false
         };
 
+    /// <summary>PostgreSQL SQLSTATE and constraint name of the provider exception, when available.</summary>
+    public static (string? SqlState, string? ConstraintName) PostgresDetails(Exception exception)
+        => exception.InnerException is { } inner && inner.GetType().Name == "PostgresException"
+            ? (GetProperty(inner, "SqlState") as string, GetProperty(inner, "ConstraintName") as string)
+            : (null, null);
+
+    public static bool IsSqliteUniqueOn(Exception exception, string tableDotColumn)
+        => exception.InnerException is { } inner && inner.GetType().Name == "SqliteException"
+           && inner.Message.Contains("UNIQUE constraint failed", StringComparison.OrdinalIgnoreCase)
+           && inner.Message.Contains(tableDotColumn, StringComparison.OrdinalIgnoreCase);
+
     private static object? GetProperty(Exception exception, string propertyName)
         => exception.GetType().GetProperty(propertyName)?.GetValue(exception);
 }

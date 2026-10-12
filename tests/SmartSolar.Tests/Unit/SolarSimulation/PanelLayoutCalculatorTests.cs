@@ -127,7 +127,8 @@ public class PanelLayoutCalculatorTests
         var result = PanelLayoutCalculator.Calculate(Request(2, 2, obstacles: [new LayoutObstacle(0, 0, 2, 2)]));
 
         Assert.Empty(result.Placements);
-        Assert.Equal(NoPanelsReasons.ObstaclesBlockAllPositions, result.NoPanelsReason);
+        // Section 11 refinement: full coverage now has its own precise reason.
+        Assert.Equal(NoPanelsReasons.ObstaclesCoverSurface, result.NoPanelsReason);
         Near(4, result.Areas.ObstacleOccupiedAreaM2);
         Near(0, result.Areas.AvailableSurfaceAreaM2);
     }

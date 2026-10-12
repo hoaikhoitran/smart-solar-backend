@@ -21,6 +21,7 @@ using SmartSolar.Modules.Common.Caching;
 using SmartSolar.Modules.Catalog.Contracts.Persistence;
 using SmartSolar.Modules.PreSurvey.Contracts.Persistence;
 using SmartSolar.Modules.SolarSimulation.Contracts.Persistence;
+using SmartSolar.Modules.Scheduling.Contracts.Persistence;
 using SmartSolar.Infrastructure.ExternalProviders;
 
 namespace SmartSolar.Infrastructure;
@@ -48,6 +49,9 @@ public static class DependencyInjection
         services.AddScoped<SystemRoleSeeder>();
         services.AddScoped<IPreSurveyUnitOfWork, PreSurveyUnitOfWork>();
         services.AddScoped<ISolarSimulationUnitOfWork, SolarSimulationUnitOfWork>();
+        services.AddScoped<ISchedulingUnitOfWork, SchedulingUnitOfWork>();
+        services.AddScoped<IAccessTokenRevocationCheck, AccessTokenRevocationCheck>();
+        services.AddScoped<IAdminUserStore, AdminUserStore>();
         services.AddSolarProviders(configuration);
         services.AddSingleton<IPasswordHashingService, PasswordHashingService>();
 
@@ -168,6 +172,15 @@ public static class DependencyInjection
         services.AddSingleton<VerificationEmailService>();
         services.AddSingleton<PasswordResetEmailService>();
 
+        var accountSetupOptions = new AccountSetupOptions();
+        configuration.GetSection(AccountSetupOptions.SectionName).Bind(accountSetupOptions);
+        services.TryAddSingleton(accountSetupOptions);
+        services.AddSingleton<AccountSetupEmailService>();
+
+        services.TryAddSingleton<IEmailDeliveryStatus>(new ConfiguredEmailDeliveryStatus(EmailDeliveryReadiness.Describe(
+            configuration.GetValue<bool>($"{RabbitMqOptions.SectionName}:{nameof(RabbitMqOptions.Enabled)}"),
+            emailSection.GetValue<bool>(nameof(EmailOptions.Enabled))).CanDeliver));
+
         if (emailSection.GetValue<bool>(nameof(EmailOptions.Enabled)))
         {
             services.AddSingleton<IEmailSender, SmtpEmailSender>();
@@ -209,6 +222,7 @@ public static class DependencyInjection
         {
             bus.AddConsumer<EmailVerificationRequestedConsumer>();
             bus.AddConsumer<PasswordResetRequestedConsumer>();
+            bus.AddConsumer<AccountSetupRequestedConsumer>();
 
             bus.UsingRabbitMq((context, transport) =>
             {
@@ -229,6 +243,10 @@ public static class DependencyInjection
                 transport.ReceiveEndpoint(
                     PasswordResetEndpoint.QueueName,
                     endpoint => PasswordResetEndpoint.Configure(endpoint, context));
+
+                transport.ReceiveEndpoint(
+                    AccountSetupEndpoint.QueueName,
+                    endpoint => AccountSetupEndpoint.Configure(endpoint, context));
             });
         });
 

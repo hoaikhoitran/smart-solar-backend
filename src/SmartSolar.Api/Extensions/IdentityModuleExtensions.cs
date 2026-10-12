@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.Mvc;
 using SmartSolar.Api.Contracts;
 using SmartSolar.Infrastructure.Email;
 using SmartSolar.Infrastructure.Persistence.Seed;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using SmartSolar.Modules.Identity.AdminUsers;
 using SmartSolar.Modules.Identity.Constants;
 using SmartSolar.Infrastructure.Security;
 using SmartSolar.Modules.Identity.Contracts.Security;
@@ -94,6 +96,17 @@ public static class IdentityModuleExtensions
         services.AddScoped<ForgotPasswordHandler>();
         services.AddScoped<ResetPasswordHandler>();
         services.AddScoped<ChangePasswordHandler>();
+
+        var accountSetupOptions = new AccountSetupOptions();
+        configuration.GetSection(AccountSetupOptions.SectionName).Bind(accountSetupOptions);
+        if (accountSetupOptions.LifetimeMinutes <= 0)
+        {
+            throw new InvalidOperationException(
+                $"'{AccountSetupOptions.SectionName}:LifetimeMinutes' must be greater than zero.");
+        }
+        services.TryAddSingleton(accountSetupOptions);
+        services.TryAddSingleton(TimeProvider.System);
+        services.AddScoped<AdminUserHandlers>();
 
         services.AddValidatorsFromAssemblyContaining<RegisterCommandValidator>();
 

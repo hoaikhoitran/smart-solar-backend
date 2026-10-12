@@ -12,6 +12,9 @@ using SmartSolar.Modules.PreSurvey.Constants;
 using SmartSolar.Modules.PreSurvey.GetMySurveyRequests;
 using SmartSolar.Modules.PreSurvey.GetPendingSurveyRequests;
 using SmartSolar.Modules.PreSurvey.GetSurveyRequestDetail;
+using SmartSolar.Modules.Scheduling.PreSurveyAppointments;
+using SmartSolar.Api.Contracts.Scheduling;
+using FluentValidation;
 
 namespace SmartSolar.Api.Controllers;
 
@@ -137,6 +140,82 @@ public sealed class SurveyRequestsController : ControllerBase
 
             _ => Ok(Success(result.Detail!))
         };
+    }
+
+    /// <summary>
+    /// Officially assigns a technician to the claimed request's booked appointment (the internally
+    /// reserved one or another eligible technician). The request becomes Scheduled.
+    /// </summary>
+    /// <summary>
+    /// Official assignment (POST) or reassignment (PUT …/reassign-technician): same rules, one handler.
+    /// Reassigning after the technician acknowledged invalidates that acknowledgment.
+    /// </summary>
+    [HttpPost("{surveyRequestId:guid}/assign-technician")]
+    [HttpPut("{surveyRequestId:guid}/reassign-technician")]
+    public async Task<IActionResult> AssignTechnician(
+        Guid surveyRequestId,
+        [FromBody] AssignTechnicianRequest request,
+        [FromServices] AssignTechnicianHandler assignHandler,
+        [FromServices] IValidator<AssignTechnicianCommand> assignValidator,
+        CancellationToken cancellationToken)
+    {
+        var saleUserId = GetAuthenticatedUserId();
+
+        if (saleUserId is null)
+        {
+            return UnauthorizedFailure();
+        }
+
+        var command = new AssignTechnicianCommand(saleUserId.Value, surveyRequestId, request.TechnicianUserId, request.Reason);
+        var validation = await assignValidator.ValidateAsync(command, cancellationToken);
+        if (!validation.IsValid)
+        {
+            return BadRequest(Failure(
+                Modules.Scheduling.Constants.SchedulingErrorCodes.ValidationFailed,
+                "One or more fields are invalid.",
+                validation.Errors.GroupBy(e => e.PropertyName).ToDictionary(g => g.Key, g => g.Select(e => e.ErrorMessage).ToArray())));
+        }
+
+        var result = await assignHandler.HandleAsync(command, cancellationToken);
+        return result.Succeeded
+            ? Ok(Success(result.Value!))
+            : StatusCode(SchedulingControllerBase.StatusFor(result.ErrorCode!), Failure(result.ErrorCode!, result.Message!));
+    }
+
+    /// <summary>
+    /// Sales reschedule of an owned request after (or before) official assignment. The new time is
+    /// re-validated for the assigned technician; pass technicianUserId to reschedule and reassign together.
+    /// </summary>
+    [HttpPut("{surveyRequestId:guid}/reschedule")]
+    [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting(RateLimitingExtensions.SchedulingWritePolicy)]
+    public async Task<IActionResult> Reschedule(
+        Guid surveyRequestId,
+        [FromBody] SalesRescheduleRequest request,
+        [FromServices] SalesRescheduleHandler rescheduleHandler,
+        CancellationToken cancellationToken)
+    {
+        if (GetAuthenticatedUserId() is not { } saleUserId)
+        {
+            return UnauthorizedFailure();
+        }
+
+        if (!IsoTimestamp.TryParse(request.StartsAt, out var startsAt))
+        {
+            return BadRequest(Failure(Modules.Scheduling.Constants.SchedulingErrorCodes.ValidationFailed, "One or more fields are invalid.",
+                new Dictionary<string, string[]> { ["startsAt"] = ["'startsAt' must be ISO 8601 with an offset, e.g. 2026-10-22T13:30:00+07:00."] }));
+        }
+
+        if (request.Reason is { Length: > 500 })
+        {
+            return BadRequest(Failure(Modules.Scheduling.Constants.SchedulingErrorCodes.ValidationFailed, "One or more fields are invalid.",
+                new Dictionary<string, string[]> { ["reason"] = ["'reason' must be at most 500 characters."] }));
+        }
+
+        var result = await rescheduleHandler.HandleAsync(
+            new SalesRescheduleCommand(saleUserId, surveyRequestId, startsAt, request.Reason, request.TechnicianUserId), cancellationToken);
+        return result.Succeeded
+            ? Ok(Success(result.Value!))
+            : StatusCode(SchedulingControllerBase.StatusFor(result.ErrorCode!), Failure(result.ErrorCode!, result.Message!));
     }
 
     private IActionResult UnauthorizedFailure()

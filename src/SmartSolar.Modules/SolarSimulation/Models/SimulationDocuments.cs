@@ -155,7 +155,14 @@ public sealed record LayoutView(
     int PanelCount,
     decimal InstalledCapacityKwp,
     ComputedAreasView ComputedAreas,
-    LayoutDocument Details);
+    LayoutDocument Details)
+{
+    /// <summary>False when no complete panel fits: a zero-panel result is never a viable design.</summary>
+    public bool IsFeasible => PanelCount > 0;
+
+    /// <summary>Precise reason when <see cref="IsFeasible"/> is false.</summary>
+    public string? InfeasibleReason => PanelCount > 0 ? null : Details.NoPanelsReason;
+}
 
 /// <summary>Full simulation payload for 2D/3D rendering, energy charts and limitations.</summary>
 public sealed record SimulationDetail(
