@@ -23,7 +23,7 @@ namespace SmartSolar.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/pre-surveys/{preSurveyId:guid}/simulations")]
-[Authorize(Roles = $"{RoleCodes.Customer},{RoleCodes.Sales}")]
+[Authorize(Roles = $"{RoleCodes.Customer},{RoleCodes.Sales},{RoleCodes.Technician}")]
 public sealed class SimulationsController : ControllerBase
 {
     private readonly CreateSimulationHandler _createHandler;
@@ -126,7 +126,7 @@ public sealed class SimulationsController : ControllerBase
 
     private SimulationViewer? Viewer()
         => GetAuthenticatedUserId() is { } userId
-            ? new SimulationViewer(userId, User.IsInRole(RoleCodes.Customer), User.IsInRole(RoleCodes.Sales))
+            ? new SimulationViewer(userId, User.IsInRole(RoleCodes.Customer), User.IsInRole(RoleCodes.Sales), User.IsInRole(RoleCodes.Technician))
             : null;
 
     private IActionResult UnauthorizedFailure()

@@ -28,6 +28,13 @@ public sealed class UserAccount
 
     public DateTimeOffset? DeletedAt { get; set; }
 
+    /// <summary>
+    /// Authorization version. Every change that must invalidate already-issued access tokens
+    /// (status, roles, soft delete, email change) increments it; tokens carry the value they
+    /// were issued with and are rejected once it no longer matches.
+    /// </summary>
+    public int AuthVersion { get; set; }
+
     public ICollection<UserRole> UserRoles { get; set; }
         = new List<UserRole>();
 }

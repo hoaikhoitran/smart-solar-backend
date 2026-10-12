@@ -36,4 +36,6 @@ public sealed record SurveyRequestDetail(
 
     string? SalesNote,
 
-    SelectedSimulationSummary? SelectedSimulation);
+    SelectedSimulationSummary? SelectedSimulation,
+
+    SurveyAppointmentSummary? Appointment = null);

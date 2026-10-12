@@ -1,8 +1,11 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Http.Resilience;
 using Microsoft.Extensions.Options;
 using Polly;
+using SmartSolar.Infrastructure.ExternalProviders.Vietmap;
+using SmartSolar.Modules.Scheduling.Travel;
 using SmartSolar.Modules.SolarSimulation.Energy;
 
 namespace SmartSolar.Infrastructure.ExternalProviders;
@@ -18,6 +21,7 @@ public static class ExternalProvidersRegistration
     {
         AddPvgisClient(services, configuration);
         AddNasaPowerClient(services, configuration);
+        AddVietmapClient(services, configuration);
         return services;
     }
 
@@ -70,6 +74,66 @@ public static class ExternalProvidersRegistration
         {
             var options = context.ServiceProvider.GetRequiredService<IOptions<NasaPowerOptions>>().Value;
             Configure(pipeline, options.MaxRetryAttempts, options.RetryBaseDelayMilliseconds, options.AttemptTimeoutMilliseconds);
+        });
+
+        return builder;
+    }
+
+    /// <summary>
+    /// Vietmap Route v4 typed client. The default HttpClient logging handlers are removed because
+    /// the request URL carries the API key. Retries cover only timeouts and transport/5xx errors;
+    /// quota and rate-limit responses are never retried (that would burn quota).
+    /// </summary>
+    public static IHttpClientBuilder AddVietmapClient(IServiceCollection services, IConfiguration configuration)
+    {
+        services.AddOptions<VietmapOptions>()
+            .Bind(configuration.GetSection(VietmapOptions.SectionName))
+            .PostConfigure(o =>
+            {
+                o.ApiKey = VietmapOptions.Clean(o.ApiKey);
+                o.BaseUrl = VietmapOptions.Clean(o.BaseUrl) ?? "";
+                o.Vehicle = VietmapOptions.Clean(o.Vehicle) ?? "";
+            })
+            .Validate(o => !o.Enabled || !string.IsNullOrWhiteSpace(o.ApiKey), "Providers:Vietmap:ApiKey is required when Vietmap is enabled.")
+            .Validate(o => !o.Enabled || IsHttpsUrl(o.BaseUrl), "Providers:Vietmap:BaseUrl must be an absolute https URL.")
+            .Validate(o => string.Equals(o.Vehicle, VietmapOptions.RequiredVehicle, StringComparison.OrdinalIgnoreCase),
+                "Providers:Vietmap:Vehicle must be 'motorcycle' (all technicians ride motorcycles in V1).")
+            .Validate(o => ValidResilience(o.AttemptTimeoutMilliseconds, o.MaxRetryAttempts, o.RetryBaseDelayMilliseconds)
+                && o.MaxConcurrentRequests is >= 1 and <= 32 && o.CacheMinutes is >= 1 and <= 1440 && o.DepartureBucketMinutes is >= 1 and <= 60,
+                "Providers:Vietmap timeouts, retries, concurrency, cache or bucket settings are out of range.")
+            .ValidateOnStart();
+
+        services.TryAddSingleton(TimeProvider.System);
+        services.AddSingleton<VietmapRequestLimiter>();
+
+        var builder = services.AddHttpClient<ITravelTimeEstimator, VietmapTravelTimeEstimator>((sp, client) =>
+        {
+            var options = sp.GetRequiredService<IOptions<VietmapOptions>>().Value;
+            var baseUrl = IsHttpsUrl(options.BaseUrl) ? options.BaseUrl.TrimEnd('/') + "/" : "https://maps.vietmap.vn/";
+            client.BaseAddress = new Uri(baseUrl);
+            client.Timeout = Timeout.InfiniteTimeSpan;
+        });
+
+        builder.RemoveAllLoggers();
+
+        builder.AddResilienceHandler("vietmap", (pipeline, context) =>
+        {
+            var options = context.ServiceProvider.GetRequiredService<IOptions<VietmapOptions>>().Value;
+            if (options.MaxRetryAttempts > 0)
+            {
+                pipeline.AddRetry(new HttpRetryStrategyOptions
+                {
+                    MaxRetryAttempts = options.MaxRetryAttempts,
+                    Delay = TimeSpan.FromMilliseconds(options.RetryBaseDelayMilliseconds),
+                    BackoffType = DelayBackoffType.Exponential,
+                    UseJitter = true,
+                    ShouldHandle = args => ValueTask.FromResult(
+                        args.Outcome.Exception is HttpRequestException or Polly.Timeout.TimeoutRejectedException
+                        || args.Outcome.Result is { } response && (int)response.StatusCode >= 500),
+                });
+            }
+
+            pipeline.AddTimeout(TimeSpan.FromMilliseconds(options.AttemptTimeoutMilliseconds));
         });
 
         return builder;

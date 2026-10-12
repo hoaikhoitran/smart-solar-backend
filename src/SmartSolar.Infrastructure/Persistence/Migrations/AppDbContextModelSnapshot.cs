@@ -313,6 +313,10 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<int>("AuthVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("auth_version");
+
                     b.Property<Guid?>("AvatarFileId")
                         .HasColumnType("uuid")
                         .HasColumnName("avatar_file_id");
@@ -371,6 +375,46 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("user_account", (string)null);
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Identity.Entities.UserAccountAuditEntry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("action");
+
+                    b.Property<Guid?>("ActorUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Detail")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("detail");
+
+                    b.Property<Guid>("TargetUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("target_user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ActorUserId");
+
+                    b.HasIndex("TargetUserId", "CreatedAt")
+                        .HasDatabaseName("ix_user_account_audit_target_created_at");
+
+                    b.ToTable("user_account_audit", (string)null);
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.Identity.Entities.UserRole", b =>
@@ -594,6 +638,563 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("survey_request", (string)null);
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.SchedulingNotification", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AppointmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("appointment_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("DeliveryStatus")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("delivery_status");
+
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("event_id");
+
+                    b.Property<Guid>("RecipientUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("recipient_user_id");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("type");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AppointmentId");
+
+                    b.HasIndex("EventId");
+
+                    b.HasIndex("RecipientUserId", "CreatedAt")
+                        .HasDatabaseName("ix_scheduling_notification_recipient_created_at");
+
+                    b.ToTable("scheduling_notification", (string)null);
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.TechnicianAppointment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset?>("AcknowledgedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("acknowledged_at");
+
+                    b.Property<string>("AppointmentType")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("appointment_type");
+
+                    b.Property<DateTimeOffset?>("AssignedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("assigned_at");
+
+                    b.Property<Guid?>("AssignedBySaleUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("assigned_by_sale_user_id");
+
+                    b.Property<Guid?>("AssignedTechnicianUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("assigned_technician_user_id");
+
+                    b.Property<DateTimeOffset>("BookedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("booked_at");
+
+                    b.Property<Guid>("BookedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("booked_by_user_id");
+
+                    b.Property<string>("CancellationReason")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("cancellation_reason");
+
+                    b.Property<DateTimeOffset?>("CancelledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cancelled_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("CustomerNote")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("customer_note");
+
+                    b.Property<DateTimeOffset>("EndsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ends_at");
+
+                    b.Property<Guid>("PropertySiteId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("property_site_id");
+
+                    b.Property<Guid?>("ReplacedByAppointmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("replaced_by_appointment_id");
+
+                    b.Property<Guid>("ReservedTechnicianUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reserved_technician_user_id");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<DateTimeOffset>("StartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("starts_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid?>("SurveyRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("survey_request_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AssignedBySaleUserId");
+
+                    b.HasIndex("BookedByUserId");
+
+                    b.HasIndex("PropertySiteId");
+
+                    b.HasIndex("ReplacedByAppointmentId");
+
+                    b.HasIndex("SurveyRequestId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_technician_appointment_active_survey_request")
+                        .HasFilter("status <> 'CANCELLED'");
+
+                    b.HasIndex("AssignedTechnicianUserId", "StartsAt")
+                        .HasDatabaseName("ix_technician_appointment_assigned_starts_at");
+
+                    b.HasIndex("ReservedTechnicianUserId", "StartsAt")
+                        .HasDatabaseName("ix_technician_appointment_reserved_starts_at");
+
+                    b.ToTable("technician_appointment", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_technician_appointment_acknowledged", "status <> 'ACKNOWLEDGED' OR acknowledged_at IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_technician_appointment_assignment", "status NOT IN ('ASSIGNED', 'ACKNOWLEDGED') OR (assigned_technician_user_id IS NOT NULL AND assigned_technician_user_id = reserved_technician_user_id AND assigned_at IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_technician_appointment_cancelled_at", "(status = 'CANCELLED') = (cancelled_at IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_technician_appointment_pre_survey_link", "appointment_type <> 'PRE_SURVEY' OR survey_request_id IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_technician_appointment_range", "ends_at > starts_at");
+
+                            t.HasCheckConstraint("ck_technician_appointment_status", "status IN ('BOOKED', 'ASSIGNED', 'ACKNOWLEDGED', 'CANCELLED')");
+
+                            t.HasCheckConstraint("ck_technician_appointment_type", "appointment_type IN ('PRE_SURVEY')");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.TechnicianAppointmentEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("ActorUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<Guid>("AppointmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("appointment_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("event_type");
+
+                    b.Property<DateTimeOffset?>("NewStartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("new_starts_at");
+
+                    b.Property<Guid?>("NewTechnicianUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("new_technician_user_id");
+
+                    b.Property<DateTimeOffset?>("PreviousStartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("previous_starts_at");
+
+                    b.Property<Guid?>("PreviousTechnicianUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("previous_technician_user_id");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("reason");
+
+                    b.Property<Guid?>("SurveyRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("survey_request_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AppointmentId", "CreatedAt")
+                        .HasDatabaseName("ix_technician_appointment_event_appointment_created_at");
+
+                    b.HasIndex("SurveyRequestId", "CreatedAt")
+                        .HasDatabaseName("ix_technician_appointment_event_survey_request_created_at");
+
+                    b.ToTable("technician_appointment_event", (string)null);
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.TechnicianProfile", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<string>("BaseLabel")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("base_label");
+
+                    b.Property<decimal?>("BaseLatitude")
+                        .HasColumnType("numeric")
+                        .HasColumnName("base_latitude");
+
+                    b.Property<decimal?>("BaseLongitude")
+                        .HasColumnType("numeric")
+                        .HasColumnName("base_longitude");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<TimeOnly?>("EarliestBaseDeparture")
+                        .HasColumnType("time without time zone")
+                        .HasColumnName("earliest_base_departure");
+
+                    b.Property<bool>("HasCustomWorkingSchedule")
+                        .HasColumnType("boolean")
+                        .HasColumnName("has_custom_working_schedule");
+
+                    b.Property<bool>("IsSchedulingActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_scheduling_active");
+
+                    b.Property<int?>("MaxAppointmentsPerDay")
+                        .HasColumnType("integer")
+                        .HasColumnName("max_appointments_per_day");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("UserId");
+
+                    b.ToTable("technician_profile", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_technician_profile_base_paired", "(base_latitude IS NULL) = (base_longitude IS NULL)");
+
+                            t.HasCheckConstraint("ck_technician_profile_max_per_day_positive", "max_appointments_per_day IS NULL OR max_appointments_per_day > 0");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.TechnicianScheduleRecalculation", b =>
+                {
+                    b.Property<Guid>("TechnicianUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("technician_user_id");
+
+                    b.Property<DateOnly>("LocalDate")
+                        .HasColumnType("date")
+                        .HasColumnName("local_date");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempts");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("last_error");
+
+                    b.Property<DateTimeOffset?>("LockedUntil")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("locked_until");
+
+                    b.Property<DateTimeOffset>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("next_attempt_at");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("reason");
+
+                    b.Property<DateTimeOffset>("RequestedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("requested_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("TechnicianUserId", "LocalDate");
+
+                    b.HasIndex("NextAttemptAt")
+                        .HasDatabaseName("ix_technician_schedule_recalculation_next_attempt_at");
+
+                    b.ToTable("technician_schedule_recalculation", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_technician_schedule_recalculation_attempts", "attempts >= 0");
+
+                            t.HasCheckConstraint("ck_technician_schedule_recalculation_status", "status IN ('PENDING', 'FAILED')");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.TechnicianTravelEstimate", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AppointmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("appointment_id");
+
+                    b.Property<string>("CongestionSummary")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("congestion_summary");
+
+                    b.Property<string>("Context")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("context");
+
+                    b.Property<DateTimeOffset>("DepartureAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("departure_at");
+
+                    b.Property<decimal>("DestinationLatitude")
+                        .HasColumnType("numeric")
+                        .HasColumnName("destination_latitude");
+
+                    b.Property<decimal>("DestinationLongitude")
+                        .HasColumnType("numeric")
+                        .HasColumnName("destination_longitude");
+
+                    b.Property<decimal?>("DistanceMeters")
+                        .HasColumnType("numeric")
+                        .HasColumnName("distance_meters");
+
+                    b.Property<int?>("DurationSeconds")
+                        .HasColumnType("integer")
+                        .HasColumnName("duration_seconds");
+
+                    b.Property<DateTimeOffset?>("EstimatedArrivalAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("estimated_arrival_at");
+
+                    b.Property<DateTimeOffset>("EstimatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("estimated_at");
+
+                    b.Property<Guid?>("OriginAppointmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("origin_appointment_id");
+
+                    b.Property<string>("OriginKind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("origin_kind");
+
+                    b.Property<decimal>("OriginLatitude")
+                        .HasColumnType("numeric")
+                        .HasColumnName("origin_latitude");
+
+                    b.Property<decimal>("OriginLongitude")
+                        .HasColumnType("numeric")
+                        .HasColumnName("origin_longitude");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("provider");
+
+                    b.Property<string>("ProviderVersion")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("provider_version");
+
+                    b.Property<int>("SafetyBufferMinutes")
+                        .HasColumnType("integer")
+                        .HasColumnName("safety_buffer_minutes");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset?>("SupersededAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("superseded_at");
+
+                    b.Property<Guid>("TechnicianUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("technician_user_id");
+
+                    b.Property<string>("Vehicle")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("vehicle");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OriginAppointmentId");
+
+                    b.HasIndex("TechnicianUserId");
+
+                    b.HasIndex("AppointmentId", "EstimatedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_technician_travel_estimate_appointment_estimated_at");
+
+                    b.ToTable("technician_travel_estimate", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_technician_travel_estimate_non_negative", "(distance_meters IS NULL OR distance_meters >= 0) AND (duration_seconds IS NULL OR duration_seconds >= 0) AND safety_buffer_minutes >= 0");
+
+                            t.HasCheckConstraint("ck_technician_travel_estimate_ok_has_values", "status <> 'OK' OR (distance_meters IS NOT NULL AND duration_seconds IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_technician_travel_estimate_origin_kind", "origin_kind IN ('BASE', 'APPOINTMENT')");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.TechnicianUnavailablePeriod", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<DateTimeOffset>("EndsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ends_at");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("reason");
+
+                    b.Property<DateTimeOffset>("StartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("starts_at");
+
+                    b.Property<Guid>("TechnicianUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("technician_user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TechnicianUserId", "StartsAt")
+                        .HasDatabaseName("ix_technician_unavailable_period_technician_starts_at");
+
+                    b.ToTable("technician_unavailable_period", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_technician_unavailable_period_range", "ends_at > starts_at");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.TechnicianWorkingPeriod", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int>("DayOfWeek")
+                        .HasColumnType("integer")
+                        .HasColumnName("day_of_week");
+
+                    b.Property<TimeOnly>("EndTime")
+                        .HasColumnType("time without time zone")
+                        .HasColumnName("end_time");
+
+                    b.Property<TimeOnly>("StartTime")
+                        .HasColumnType("time without time zone")
+                        .HasColumnName("start_time");
+
+                    b.Property<Guid>("TechnicianUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("technician_user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TechnicianUserId", "DayOfWeek", "StartTime")
+                        .IsUnique()
+                        .HasDatabaseName("ux_technician_working_period_day_start");
+
+                    b.ToTable("technician_working_period", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_technician_working_period_day", "day_of_week BETWEEN 0 AND 6");
+
+                            t.HasCheckConstraint("ck_technician_working_period_range", "end_time > start_time");
+                        });
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.SolarSimulation.Entities.SolarSimulation", b =>
@@ -896,6 +1497,20 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.Navigation("Role");
                 });
 
+            modelBuilder.Entity("SmartSolar.Modules.Identity.Entities.UserAccountAuditEntry", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("ActorUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("TargetUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("SmartSolar.Modules.Identity.Entities.UserRole", b =>
                 {
                     b.HasOne("SmartSolar.Modules.Identity.Entities.Role", "Role")
@@ -960,6 +1575,133 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.Navigation("AssignedSale");
 
                     b.Navigation("PreSurvey");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.SchedulingNotification", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Scheduling.Entities.TechnicianAppointment", null)
+                        .WithMany()
+                        .HasForeignKey("AppointmentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("SmartSolar.Modules.Scheduling.Entities.TechnicianAppointmentEvent", null)
+                        .WithMany()
+                        .HasForeignKey("EventId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("RecipientUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.TechnicianAppointment", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("AssignedBySaleUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("AssignedTechnicianUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("BookedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("SmartSolar.Modules.PreSurvey.Entities.PropertySite", null)
+                        .WithMany()
+                        .HasForeignKey("PropertySiteId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("SmartSolar.Modules.Scheduling.Entities.TechnicianAppointment", null)
+                        .WithMany()
+                        .HasForeignKey("ReplacedByAppointmentId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("ReservedTechnicianUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("SmartSolar.Modules.PreSurvey.Entities.SurveyRequest", null)
+                        .WithMany()
+                        .HasForeignKey("SurveyRequestId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.TechnicianAppointmentEvent", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Scheduling.Entities.TechnicianAppointment", null)
+                        .WithMany()
+                        .HasForeignKey("AppointmentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.TechnicianProfile", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithOne()
+                        .HasForeignKey("SmartSolar.Modules.Scheduling.Entities.TechnicianProfile", "UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.TechnicianScheduleRecalculation", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("TechnicianUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.TechnicianTravelEstimate", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Scheduling.Entities.TechnicianAppointment", null)
+                        .WithMany()
+                        .HasForeignKey("AppointmentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("SmartSolar.Modules.Scheduling.Entities.TechnicianAppointment", null)
+                        .WithMany()
+                        .HasForeignKey("OriginAppointmentId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("TechnicianUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.TechnicianUnavailablePeriod", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("TechnicianUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.TechnicianWorkingPeriod", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Scheduling.Entities.TechnicianProfile", null)
+                        .WithMany()
+                        .HasForeignKey("TechnicianUserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.SolarSimulation.Entities.SolarSimulation", b =>

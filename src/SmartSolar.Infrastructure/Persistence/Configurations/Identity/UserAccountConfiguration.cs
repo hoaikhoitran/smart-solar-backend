@@ -76,6 +76,10 @@ public sealed class UserAccountConfiguration
         builder.Property(x => x.DeletedAt)
             .HasColumnName("deleted_at")
             .IsRequired(false);
+
+        builder.Property(x => x.AuthVersion)
+            .HasColumnName("auth_version")
+            .IsRequired();
     }
 
     private static string ToDatabase(UserStatus status) => status switch

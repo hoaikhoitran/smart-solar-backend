@@ -40,12 +40,34 @@ public class CatalogEndpointsTests
     internal static HttpClient ClientFor(AuthApiFactory factory, string role, Guid? userId = null)
     {
         var tokens = factory.Services.GetRequiredService<IAccessTokenService>();
-        var user = new UserAccount { Id = userId ?? Guid.NewGuid(), Email = $"{role.ToLowerInvariant()}@example.com" };
+
+        // Every authenticated request now re-checks the account (ACTIVE, not deleted, same auth
+        // version), so a token is only usable for a user that really exists in the database.
+        var id = userId ?? Guid.NewGuid();
+        UserAccount user;
+        using (var db = factory.CreateDbContext())
+        {
+            user = db.UserAccounts.AsNoTracking().FirstOrDefault(u => u.Id == id)
+                ?? SeedTokenUser(db, id, role);
+        }
 
         var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", tokens.Generate(user, new[] { role }).Token);
         return client;
+    }
+
+    private static UserAccount SeedTokenUser(SmartSolar.Infrastructure.Persistence.AppDbContext db, Guid id, string role)
+    {
+        var user = PreSurveyTestContext.NewUser($"{role} user", email: $"{role.ToLowerInvariant()}-{id:N}@example.com");
+        user.Id = id;
+        db.UserAccounts.Add(user);
+        if (db.Roles.AsNoTracking().FirstOrDefault(r => r.Code == role) is { } roleRow)
+        {
+            db.UserRoles.Add(new UserRole { UserId = id, RoleId = roleRow.Id, AssignedAt = DateTimeOffset.UtcNow });
+        }
+        db.SaveChanges();
+        return user;
     }
 
     private static async Task<JsonElement> BodyOf(HttpResponseMessage response)

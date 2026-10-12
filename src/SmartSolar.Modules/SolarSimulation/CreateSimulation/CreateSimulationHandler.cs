@@ -316,6 +316,11 @@ public sealed class CreateSimulationHandler
             new(SimulationWarningCodes.MountingSystemRequirementsUnavailable, "Mounting-system installation requirements are not available in the catalog and were not applied."),
             new(SimulationWarningCodes.BuildingFireCodeNotChecked, "Building and fire code setbacks or access requirements are not checked."),
         };
+        if (panelCount == 0)
+        {
+            warnings.Add(new(SimulationWarningCodes.LayoutInfeasible,
+                $"No complete panel fits ({layout.NoPanelsReason}). This preliminary result is not a viable installation design; a site survey can still verify the measurements."));
+        }
         warnings.AddRange(InstallationWarnings(installation, layout.RowGap, specParse));
         warnings.AddRange(layout.Warnings);
 

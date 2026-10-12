@@ -28,7 +28,7 @@ public static class ComponentStatusCodes
 public static class AlgorithmVersions
 {
     /// <summary>Bump when layout, footprint, shading or energy-mapping logic changes, so fingerprints change.</summary>
-    public const string Current = "layout-v1";
+    public const string Current = "layout-v2";
 
     /// <summary>Version of the canonical fingerprint document.</summary>
     public const string Fingerprint = "fp-v1";
@@ -76,6 +76,7 @@ public static class SimulationWarningCodes
     public const string FlushMountThermalAssumption = "FLUSH_MOUNT_THERMAL_ASSUMPTION";
     public const string EnergyProviderFailed = "ENERGY_PROVIDER_FAILED";
     public const string ClimateProviderFailed = "CLIMATE_PROVIDER_FAILED";
+    public const string LayoutInfeasible = "LAYOUT_INFEASIBLE";
 }
 
 public sealed record SimulationWarning(string Code, string Message);

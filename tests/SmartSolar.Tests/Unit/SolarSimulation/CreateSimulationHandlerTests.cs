@@ -113,6 +113,10 @@ public sealed class CreateSimulationHandlerTests
         Assert.Null(detail.Energy.AnnualEnergyKwh);
         Assert.Empty(ctx.PvEnergy.Requests);
         Assert.Equal(SimulationStatusCodes.Completed, detail.Status);
+        // Section 11: a zero-panel result is explicitly not a viable design.
+        Assert.False(detail.Layout.IsFeasible);
+        Assert.Equal(detail.Layout.Details.NoPanelsReason, detail.Layout.InfeasibleReason);
+        Assert.Contains(detail.Warnings, w => w.Code == SimulationWarningCodes.LayoutInfeasible);
     }
 
     [Fact]

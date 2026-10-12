@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SmartSolar.Modules.Catalog.Entities;
 using SmartSolar.Modules.PreSurvey.Entities;
 using SmartSolar.Modules.SolarSimulation.Entities;
+using SmartSolar.Modules.Scheduling.Entities;
 
 namespace SmartSolar.Tests.TestSupport;
 
@@ -29,6 +30,15 @@ public sealed class SqliteCatalogModelCustomizer : ModelCustomizer
         ConvertSortableColumns(modelBuilder.Entity<Product>());
         ConvertSortableColumns(modelBuilder.Entity<SurveyRequest>());
         ConvertSortableColumns(modelBuilder.Entity<SolarSimulation>());
+        ConvertSortableColumns(modelBuilder.Entity<TechnicianAppointment>());
+        ConvertSortableColumns(modelBuilder.Entity<TechnicianUnavailablePeriod>());
+        ConvertSortableColumns(modelBuilder.Entity<TechnicianTravelEstimate>());
+        ConvertSortableColumns(modelBuilder.Entity<TechnicianProfile>());
+        ConvertSortableColumns(modelBuilder.Entity<TechnicianScheduleRecalculation>());
+        ConvertSortableColumns(modelBuilder.Entity<TechnicianAppointmentEvent>());
+        ConvertSortableColumns(modelBuilder.Entity<SchedulingNotification>());
+        ConvertSortableColumns(modelBuilder.Entity<SmartSolar.Modules.Identity.Entities.UserAccountAuditEntry>());
+        ConvertSortableColumns(modelBuilder.Entity<SmartSolar.Modules.Identity.Entities.UserAccount>());
     }
 
     private static void ConvertSortableColumns(EntityTypeBuilder entity)
