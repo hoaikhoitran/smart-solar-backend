@@ -325,17 +325,23 @@ Request: `GET {BaseUrl}/api/route/v4?apikey=…&point=lat,lng&point=lat,lng&vehi
 - Retry: one retry, and only for timeouts, transport errors and 5xx.
 - Limits and cache: 4 concurrent requests; only successful results are cached, for 30 minutes.
 - Logging: the URL holds the key, so request logging is removed from that client.
-- **Congestion:** per the official docs, congestion lives in `paths[].annotations`:
-  - `congestion` is one level per route segment: `low`, `moderate`, `heavy`, `severe` or `unknown`;
-  - `congestion_distance` is the meters of segments at heavy or worse, and must be requested separately.
-- **What the previous adapter got wrong:** it read `path.congestion` and `path.congestion_distance`, expected the two
-  arrays to line up, and so never found any data. It now:
-  - counts segments per level;
-  - sums the heavy-or-worse meters only when the provider returns them;
+- **Congestion, documented shape:** per the official docs, congestion lives in `paths[].annotations`:
+  - `congestion` is one level per segment: `low`, `moderate`, `heavy`, `severe` or `unknown`;
+  - `congestion_distance` is described as the meters of heavy-or-worse segments.
+- **Congestion, live shape (one manual request on 2026-10-12, not part of the test suite):** the response did contain
+  `annotations.congestion`, `annotations.congestion_distance` and `annotations.history_speed`. It differs from the docs:
+  - each item is an object `{ "value", "first", "last" }`, where `first` and `last` are point indexes;
+  - the two arrays have the same length and the same ranges, so `congestion_distance` gives meters for every segment,
+    not only heavy ones.
+- **What the previous adapter got wrong:** it read `path.congestion` instead of `path.annotations.congestion`, so it
+  never found any data. That was the cause of the earlier "no congestion returned" observation.
+- **What the adapter does now:** it accepts both shapes and:
+  - counts segments per level (`segmentsByLevel`);
+  - computes `metersByLevel` when the arrays are aligned, with heavy-or-worse = heavy + severe;
+  - otherwise treats the distances as the documented heavy-or-worse list;
   - ignores malformed annotations without failing the route.
-- When congestion is absent the dashboard shows `congestion.status = NOT_RETURNED_BY_PROVIDER`. Nothing is ever derived
-  from the duration. Whether the current API plan returns annotations for a given route has to be checked against the
-  live response.
+- **When congestion is absent:** the dashboard shows `congestion.status = NOT_RETURNED_BY_PROVIDER`. Nothing is ever
+  derived from the duration, and `history_speed` is not stored.
 
 ---
 
@@ -419,3 +425,24 @@ If `AddTechnicianScheduling` is not applied yet, `database update` applies both 
 SMARTSOLAR_TEST_POSTGRES="Host=127.0.0.1;Port=55433;Username=…;Password=…;Database=postgres" \
   dotnet test tests/SmartSolar.Tests --filter "FullyQualifiedName~Postgres"
 ```
+
+---
+
+## Interaction with Installation Flow shifts
+
+Only active when `Features__InstallationWorkflowEnabled=true` (after the Installation Flow migration); otherwise Flow 1 behaves
+exactly as described above and never queries the Installation Flow tables.
+
+- ACTIVE installation shift assignments are loaded as stops in the technician's day: survey slots
+  respect them with the same Vietmap travel time and safety buffer, but they do **not** count toward
+  `MaxAppointmentsPerTechnicianPerDay`.
+- Survey booking/reassignment and installation scheduling take the same `technician_profile` row lock;
+  PostgreSQL additionally rejects overlapping installation assignments
+  (`ex_installation_shift_assignment_no_overlap`, part of the pending Installation Flow migration).
+- Travel estimates are stored only between survey appointments; legs to/from an installation shift are
+  validated but not persisted.
+- Disabling a technician's scheduling, or deactivating / removing the TECHNICIAN role from the account,
+  is refused while the technician has upcoming installation shifts (reported with status
+  `INSTALLATION_SHIFT`). Change the installation team first.
+
+Details: [installation-workflow-business-flow.md](installation-workflow-business-flow.md).

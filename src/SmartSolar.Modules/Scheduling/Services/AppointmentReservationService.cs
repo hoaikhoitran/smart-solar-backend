@@ -148,9 +148,13 @@ public sealed class AppointmentReservationService
         var inboundDeparture = option.Plan.Previous is null
             ? candidate.StartsAtUtc - buffer - option.Inbound.Duration!.Value
             : option.Plan.Inbound.DepartureAtUtc;
-        yield return Estimate(option.Day.TechnicianUserId, appointmentId, option.Plan.Inbound, option.Inbound, inboundDeparture, context);
+        // Route snapshots belong to survey appointments only. A neighbouring installation shift (Installation Flow)
+        // is not a technician_appointment: its id is never stored as origin, and no snapshot is written for it.
+        var inboundLeg = option.Plan.Previous is { CountsTowardDailyLimit: false } ? option.Plan.Inbound with { OriginAppointmentId = null } : option.Plan.Inbound;
+        yield return Estimate(option.Day.TechnicianUserId, appointmentId, inboundLeg, option.Inbound, inboundDeparture, context);
 
-        if (option.Plan.Outbound is { } outLeg && option.Outbound is { } outbound && outLeg.DestinationAppointmentId is { } nextId)
+        if (option.Plan.Outbound is { } outLeg && option.Outbound is { } outbound && outLeg.DestinationAppointmentId is { } nextId
+            && option.Plan.Next is { CountsTowardDailyLimit: true })
         {
             yield return Estimate(option.Day.TechnicianUserId, nextId, outLeg with { OriginAppointmentId = appointmentId }, outbound, outLeg.DepartureAtUtc, context);
         }

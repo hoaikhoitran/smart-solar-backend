@@ -117,6 +117,11 @@ public sealed class AdminTechnicianHandlers(
             if (!command.IsSchedulingActive && upcoming.Count > 0)
                 return (Conflicts<TechnicianProfile>(upcoming.Select(a => Conflict(a, "SCHEDULING_DISABLED")),
                     "The technician still has upcoming appointments. Reassign them before disabling scheduling."), false);
+            // Installation crews (Installation Flow) are booked under the same technician lock, so this check cannot race a confirmation.
+            var installationShifts = command.IsSchedulingActive ? [] : await unitOfWork.ListUpcomingInstallationAssignmentsAsync(command.TechnicianUserId, now, token);
+            if (installationShifts.Count > 0)
+                return (Conflicts<TechnicianProfile>(installationShifts.Select(a => Conflict(a, "INSTALLATION_SHIFT")),
+                    "The technician is booked on upcoming installation shifts. Change the installation team before disabling scheduling."), false);
 
             var newEarliest = command.EarliestBaseDeparture ?? calendar.DefaultEarliestBaseDeparture;
             var oldEarliest = existing?.EarliestBaseDeparture ?? calendar.DefaultEarliestBaseDeparture;

@@ -10,7 +10,8 @@ using SmartSolar.Modules.Scheduling.Constants;
 namespace SmartSolar.Infrastructure.Persistence;
 
 /// <summary>Administrative account queries and writes. Never selects password hashes or token hashes into results.</summary>
-public sealed class AdminUserStore(AppDbContext db) : IAdminUserStore
+/// <param name="includeInstallationShifts">Installation Flow enabled: installation shift assignments also block deactivation.</param>
+public sealed class AdminUserStore(AppDbContext db, bool includeInstallationShifts = false) : IAdminUserStore
 {
     public async Task<PagedResult<AdminUserRow>> ListAsync(AdminUserQuery query, CancellationToken cancellationToken)
     {
@@ -84,6 +85,16 @@ public sealed class AdminUserStore(AppDbContext db) : IAdminUserStore
             .OrderBy(a => a.StartsAt)
             .Select(a => new BlockingAppointment(a.Id, a.SurveyRequestId, a.StartsAt, a.Status))
             .ToList();
+        if (includeInstallationShifts)
+        {
+            // Reported with status INSTALLATION_SHIFT; the id is the installation shift assignment.
+            appointments.AddRange((await db.InstallationShiftAssignments.AsNoTracking()
+                    .Where(a => a.TechnicianUserId == userId && a.Status == "ACTIVE" && a.EndsAt > nowUtc)
+                    .Select(a => new { a.Id, a.StartsAt })
+                    .ToListAsync(cancellationToken))
+                .OrderBy(a => a.StartsAt)
+                .Select(a => new BlockingAppointment(a.Id, null, a.StartsAt, "INSTALLATION_SHIFT")));
+        }
 
         var requests = await db.SurveyRequests.AsNoTracking()
             .Where(s => s.AssignedSaleId == userId

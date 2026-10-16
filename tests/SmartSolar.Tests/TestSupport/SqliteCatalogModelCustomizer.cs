@@ -39,7 +39,21 @@ public sealed class SqliteCatalogModelCustomizer : ModelCustomizer
         ConvertSortableColumns(modelBuilder.Entity<SchedulingNotification>());
         ConvertSortableColumns(modelBuilder.Entity<SmartSolar.Modules.Identity.Entities.UserAccountAuditEntry>());
         ConvertSortableColumns(modelBuilder.Entity<SmartSolar.Modules.Identity.Entities.UserAccount>());
+
+        // Installation Flow and knowledge-base entities.
+        foreach (var entity in modelBuilder.Model.GetEntityTypes().ToList())
+        {
+            var ns = entity.ClrType.Namespace ?? "";
+            if (Namespaces.Any(n => ns.StartsWith(n, StringComparison.Ordinal)))
+                ConvertSortableColumns(modelBuilder.Entity(entity.ClrType));
+        }
     }
+
+    private static readonly string[] Namespaces =
+    [
+        "SmartSolar.Modules.Files", "SmartSolar.Modules.OnSiteSurveys", "SmartSolar.Modules.Quotations", "SmartSolar.Modules.CustomerContracts",
+        "SmartSolar.Modules.Payments", "SmartSolar.Modules.Installations", "SmartSolar.Modules.KnowledgeBase",
+    ];
 
     private static void ConvertSortableColumns(EntityTypeBuilder entity)
     {

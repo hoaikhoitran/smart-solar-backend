@@ -37,6 +37,8 @@ public sealed class SchedulingTestContext : IAsyncDisposable
 
     public static SchedulingTestContext CreateFileBacked() => new(PreSurveyTestContext.CreateFileBacked());
 
+    public static SchedulingTestContext CreateOn(AppDbContext db) => new(PreSurveyTestContext.ForExisting(db));
+
     public PreSurveyTestContext Inner { get; }
     public AppDbContext Db => Inner.Db;
     public SchedulingOptions Options { get; } = new();

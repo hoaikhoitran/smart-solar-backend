@@ -40,6 +40,9 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
     /// <summary>Pretends the broker and SMTP are both on, so admin flows publish their links to <see cref="Publisher"/>.</summary>
     public bool EmailCanDeliver { get; init; }
 
+    /// <summary>Extra service replacements (for example synthetic storage or RAG clients).</summary>
+    public Action<IServiceCollection>? ConfigureTestServices { get; init; }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Development");
@@ -74,6 +77,14 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("RateLimiting:AdminUsersRead:PermitLimit", "1000");
         builder.UseSetting("RateLimiting:AdminUsersWrite:PermitLimit", "1000");
         builder.UseSetting("RateLimiting:AdminUsersRecovery:PermitLimit", "1000");
+        foreach (var policy in SmartSolar.Api.Extensions.RateLimitingExtensions.InstallationWorkflowPolicies
+                     .Concat(SmartSolar.Api.Extensions.RateLimitingExtensions.KnowledgeBasePolicies))
+        {
+            builder.UseSetting($"{policy.Section}:PermitLimit", "1000");
+        }
+        // Installation Flow background sweeps are driven explicitly by tests.
+        builder.UseSetting("Payments:ReconciliationWorkerEnabled", "false");
+        builder.UseSetting("Rag:IngestionWorkerEnabled", "false");
         // The durable recalculation worker is driven explicitly by tests.
         builder.UseSetting("Scheduling:RecalculationWorkerEnabled", "false");
 
@@ -103,6 +114,7 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
             services.RemoveAll<SmartSolar.Modules.Common.Email.IEmailDeliveryStatus>();
             services.AddSingleton<SmartSolar.Modules.Common.Email.IEmailDeliveryStatus>(
                 new SmartSolar.Infrastructure.Email.ConfiguredEmailDeliveryStatus(EmailCanDeliver));
+            ConfigureTestServices?.Invoke(services);
 
             // Create the schema before the host starts, because startup seeding
             // writes roles into this database.

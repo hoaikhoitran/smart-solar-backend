@@ -49,9 +49,10 @@ public static class DependencyInjection
         services.AddScoped<SystemRoleSeeder>();
         services.AddScoped<IPreSurveyUnitOfWork, PreSurveyUnitOfWork>();
         services.AddScoped<ISolarSimulationUnitOfWork, SolarSimulationUnitOfWork>();
-        services.AddScoped<ISchedulingUnitOfWork, SchedulingUnitOfWork>();
+        var includeInstallationShifts = SmartSolar.Infrastructure.Features.FeatureConfiguration.Read(configuration).InstallationWorkflowEnabled;
+        services.AddScoped<ISchedulingUnitOfWork>(sp => new SchedulingUnitOfWork(sp.GetRequiredService<AppDbContext>(), includeInstallationShifts));
         services.AddScoped<IAccessTokenRevocationCheck, AccessTokenRevocationCheck>();
-        services.AddScoped<IAdminUserStore, AdminUserStore>();
+        services.AddScoped<IAdminUserStore>(sp => new AdminUserStore(sp.GetRequiredService<AppDbContext>(), includeInstallationShifts));
         services.AddSolarProviders(configuration);
         services.AddSingleton<IPasswordHashingService, PasswordHashingService>();
 
@@ -97,6 +98,21 @@ public static class DependencyInjection
                 ? "SmartSolar:"
                 : instanceName;
         });
+
+        // Shared counters for the cluster-wide rate-limit policies. The connection is lazy and never
+        // aborts startup: while Redis is unreachable those policies fall back to per-instance limits.
+        services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(_ =>
+        {
+            var redis = StackExchange.Redis.ConfigurationOptions.Parse(connectionString);
+            redis.AbortOnConnectFail = false;
+            redis.ConnectTimeout = 2000;
+            redis.SyncTimeout = 1000;
+            redis.AsyncTimeout = 1000;
+            return StackExchange.Redis.ConnectionMultiplexer.Connect(redis);
+        });
+        services.AddSingleton<SmartSolar.Modules.Common.RateLimiting.IDistributedRateLimitCounter>(sp => new RedisRateLimitCounter(
+            sp.GetRequiredService<StackExchange.Redis.IConnectionMultiplexer>(),
+            (string.IsNullOrWhiteSpace(instanceName) ? "SmartSolar:" : instanceName) + "ratelimit:"));
     }
 
     private static void AddPersistence(

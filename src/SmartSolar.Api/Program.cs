@@ -34,6 +34,11 @@ builder.Services.AddSimulationRateLimiting(builder.Configuration);
 builder.Services.AddSchedulingModule(builder.Configuration);
 builder.Services.AddSchedulingRateLimiting(builder.Configuration);
 builder.Services.AddAdminUsersRateLimiting(builder.Configuration);
+builder.Services.AddFeatureFlagsAndFileStorage(builder.Configuration);
+builder.Services.AddInstallationWorkflow(builder.Configuration);
+builder.Services.AddInstallationWorkflowRateLimiting(builder.Configuration);
+builder.Services.AddKnowledgeBase(builder.Configuration);
+builder.Services.AddKnowledgeBaseRateLimiting(builder.Configuration);
 builder.Services.AddForwardedHeaders(builder.Configuration);
 builder.Services.AddControllers();
 builder.Services.AddEnvelopedModelValidation();
@@ -67,6 +72,11 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 var app = builder.Build();
+
+if (app.Services.GetRequiredService<SmartSolar.Modules.Common.Features.FeatureOptions>().UsesLegacyFlag)
+{
+    app.Logger.LogWarning("'Features:Flow2Enabled' is deprecated; set 'Features:InstallationWorkflowEnabled' and 'Features:KnowledgeBaseEnabled' instead.");
+}
 
 await app.SeedSystemRolesAsync();
 

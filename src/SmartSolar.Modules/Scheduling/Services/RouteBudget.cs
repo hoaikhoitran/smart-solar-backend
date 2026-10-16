@@ -25,6 +25,13 @@ public sealed class RouteBudget
 
     public Task<TravelEstimateResult> EstimateAsync(TravelEstimateRequest request, CancellationToken cancellationToken)
     {
+        // Consecutive work at the same coordinates (e.g. two installation shifts at one site): exactly zero travel, no provider call.
+        if (request.Origin == request.Destination)
+        {
+            return Task.FromResult(new TravelEstimateResult(RouteCalculationStatuses.Ok, "SAME_LOCATION", "-", "motorcycle",
+                request.DepartureAtUtc, DateTimeOffset.UtcNow, 0, TimeSpan.Zero, null, null));
+        }
+
         var key = $"{request.Origin.Latitude}|{request.Origin.Longitude}|{request.Destination.Latitude}|{request.Destination.Longitude}|{request.DepartureAtUtc.UtcTicks}";
         return _legs.GetOrAdd(key, _ => new Lazy<Task<TravelEstimateResult>>(() =>
         {

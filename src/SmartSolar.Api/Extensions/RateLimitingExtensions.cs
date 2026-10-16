@@ -8,7 +8,7 @@ using SmartSolar.Modules.Identity.Constants;
 
 namespace SmartSolar.Api.Extensions;
 
-public static class RateLimitingExtensions
+public static partial class RateLimitingExtensions
 {
     public const string RegisterPolicy = "auth-register";
     public const string VerifyEmailPolicy = "auth-verify-email";

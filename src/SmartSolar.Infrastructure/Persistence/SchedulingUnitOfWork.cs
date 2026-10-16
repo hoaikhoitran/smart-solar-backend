@@ -27,10 +27,17 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
     private const string ActiveSurveyRequestIndex = "ux_technician_appointment_active_survey_request";
 
     private readonly AppDbContext _db;
+    private readonly bool _includeInstallationShifts;
 
-    public SchedulingUnitOfWork(AppDbContext db)
+    /// <param name="includeInstallationShifts">
+    /// True once the Installation Flow tables exist (Features:InstallationWorkflowEnabled): installation shift assignments are
+    /// then part of every technician day state, so survey bookings and installation planning share
+    /// one conflict and travel model. False keeps Flow 1 independent of tables that may not exist yet.
+    /// </param>
+    public SchedulingUnitOfWork(AppDbContext db, bool includeInstallationShifts = false)
     {
         _db = db;
+        _includeInstallationShifts = includeInstallationShifts;
     }
 
     private IQueryable<TechnicianAppointment> Active => _db.TechnicianAppointments.Where(a => a.Status != AppointmentStatuses.Cancelled);
@@ -98,6 +105,14 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
             .Select(b => new { b.TechnicianUserId, b.StartsAt, b.EndsAt })
             .ToListAsync(cancellationToken);
 
+        var installation = !_includeInstallationShifts
+            ? []
+            : await _db.InstallationShiftAssignments.AsNoTracking()
+                .Where(s => ids.Contains(s.TechnicianUserId) && s.Status == "ACTIVE" && s.StartsAt < windowEndUtc && s.EndsAt > windowStartUtc)
+                .Join(_db.InstallationProjects, s => s.ProjectId, p => p.Id, (s, p) => new { s.Id, s.TechnicianUserId, s.StartsAt, s.EndsAt, p.PropertySiteId })
+                .Join(_db.PropertySites, x => x.PropertySiteId, site => site.Id, (x, site) => new { x.Id, x.TechnicianUserId, x.StartsAt, x.EndsAt, site.Latitude, site.Longitude })
+                .ToListAsync(cancellationToken);
+
         var customIds = technicians.Where(t => t.Profile.HasCustomWorkingSchedule).Select(t => t.Profile.UserId).ToList();
         var weekly = customIds.Count == 0
             ? []
@@ -108,8 +123,10 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
             t.FullName,
             GeoPoint.From(t.Profile.BaseLatitude, t.Profile.BaseLongitude),
             appointments.Where(a => a.ReservedTechnicianUserId == t.Profile.UserId)
-                .OrderBy(a => a.StartsAt)
                 .Select(a => new ScheduledStop(a.Id, a.StartsAt, a.EndsAt, GeoPoint.From(a.Latitude, a.Longitude)))
+                .Concat(installation.Where(s => s.TechnicianUserId == t.Profile.UserId)
+                    .Select(s => new ScheduledStop(s.Id, s.StartsAt, s.EndsAt, GeoPoint.From(s.Latitude, s.Longitude), CountsTowardDailyLimit: false)))
+                .OrderBy(a => a.StartsAtUtc)
                 .ToList(),
             blocked.Where(b => b.TechnicianUserId == t.Profile.UserId).Select(b => new BlockedPeriod(b.StartsAt, b.EndsAt)).ToList(),
             t.Profile.MaxAppointmentsPerDay,
@@ -458,6 +475,17 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
             .OrderBy(e => e.CreatedAt).ToList();
 
     // ---- Technician configuration ----
+
+    public async Task<IReadOnlyList<UpcomingAppointment>> ListUpcomingInstallationAssignmentsAsync(Guid technicianUserId, DateTimeOffset fromUtc, CancellationToken cancellationToken)
+        => !_includeInstallationShifts
+            ? []
+            : (await _db.InstallationShiftAssignments.AsNoTracking()
+                    .Where(a => a.TechnicianUserId == technicianUserId && a.Status == "ACTIVE" && a.EndsAt > fromUtc)
+                    .Select(a => new { a.Id, a.StartsAt, a.EndsAt })
+                    .ToListAsync(cancellationToken))
+                .OrderBy(a => a.StartsAt)
+                .Select(a => new UpcomingAppointment(a.Id, null, a.StartsAt, a.EndsAt, "INSTALLATION_SHIFT"))
+                .ToList();
 
     public async Task<IReadOnlyList<UpcomingAppointment>> ListUpcomingAppointmentsAsync(Guid technicianUserId, DateTimeOffset fromUtc, CancellationToken cancellationToken)
         => (await Active.AsNoTracking()

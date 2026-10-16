@@ -170,6 +170,9 @@ public interface ISchedulingUnitOfWork
 
     // ---- Technician configuration ----
     Task<IReadOnlyList<UpcomingAppointment>> ListUpcomingAppointmentsAsync(Guid technicianUserId, DateTimeOffset fromUtc, CancellationToken cancellationToken);
+
+    /// <summary>Active installation shift assignments (Installation Flow) ending after <paramref name="fromUtc"/>; empty while Installation Flow is disabled.</summary>
+    Task<IReadOnlyList<UpcomingAppointment>> ListUpcomingInstallationAssignmentsAsync(Guid technicianUserId, DateTimeOffset fromUtc, CancellationToken cancellationToken);
     Task<IReadOnlyList<TechnicianWorkingPeriod>> GetWorkingPeriodsAsync(Guid technicianUserId, CancellationToken cancellationToken);
 
     /// <summary>Replaces the technician's custom weekly periods (part of the caller's transaction).</summary>

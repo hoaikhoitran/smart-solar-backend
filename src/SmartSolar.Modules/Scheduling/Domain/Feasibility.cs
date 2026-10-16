@@ -2,8 +2,12 @@ using SmartSolar.Modules.Scheduling.Travel;
 
 namespace SmartSolar.Modules.Scheduling.Domain;
 
-/// <summary>An active appointment on a technician's day.</summary>
-public sealed record ScheduledStop(Guid AppointmentId, DateTimeOffset StartsAtUtc, DateTimeOffset EndsAtUtc, GeoPoint? Location);
+/// <summary>
+/// A commitment on a technician's day: a survey appointment, or (Installation Flow) an installation shift.
+/// Every stop blocks overlapping work and takes part in travel checks; only survey appointments
+/// count toward the per-day survey limit (<see cref="CountsTowardDailyLimit"/>).
+/// </summary>
+public sealed record ScheduledStop(Guid AppointmentId, DateTimeOffset StartsAtUtc, DateTimeOffset EndsAtUtc, GeoPoint? Location, bool CountsTowardDailyLimit = true);
 
 public sealed record BlockedPeriod(DateTimeOffset StartsAtUtc, DateTimeOffset EndsAtUtc);
 
@@ -90,7 +94,7 @@ public static class FeasibilityRules
             return FeasibilityReasons.OutsideWorkingHours;
 
         var others = Others(day, candidate);
-        if (others.Count >= maxPerDay) return FeasibilityReasons.DailyLimitReached;
+        if (others.Count(a => a.CountsTowardDailyLimit) >= maxPerDay) return FeasibilityReasons.DailyLimitReached;
         if (others.Any(a => a.StartsAtUtc < candidate.EndsAtUtc && candidate.StartsAtUtc < a.EndsAtUtc)) return FeasibilityReasons.Overlap;
         if (others.Any(a => a.Location is null)) return FeasibilityReasons.AppointmentLocationMissing;
         if (day.Blocked.Any(b => b.StartsAtUtc < candidate.EndsAtUtc && candidate.StartsAtUtc < b.EndsAtUtc)) return FeasibilityReasons.Unavailable;

@@ -30,7 +30,7 @@ namespace SmartSolar.Tests.TestSupport;
 
 public sealed class PreSurveyTestContext : IAsyncDisposable
 {
-    private readonly SqliteConnection _connection;
+    private readonly SqliteConnection? _connection;
     private readonly string? _databaseFile;
     private readonly List<AppDbContext> _extraContexts = [];
 
@@ -48,6 +48,15 @@ public sealed class PreSurveyTestContext : IAsyncDisposable
         Db.Database.EnsureCreated();
         UnitOfWork = new PreSurveyUnitOfWork(Db);
     }
+
+    /// <summary>Wraps an existing context (for example a disposable PostgreSQL test database); the caller owns its schema and lifetime.</summary>
+    private PreSurveyTestContext(AppDbContext external)
+    {
+        Db = external;
+        UnitOfWork = new PreSurveyUnitOfWork(Db);
+    }
+
+    public static PreSurveyTestContext ForExisting(AppDbContext db) => new(db);
 
     /// <summary>
     /// A temp-file database, so several independent connections can contend for the
@@ -336,7 +345,10 @@ public sealed class PreSurveyTestContext : IAsyncDisposable
         }
 
         await Db.DisposeAsync();
-        await _connection.DisposeAsync();
+        if (_connection is not null)
+        {
+            await _connection.DisposeAsync();
+        }
 
         if (_databaseFile is not null)
         {

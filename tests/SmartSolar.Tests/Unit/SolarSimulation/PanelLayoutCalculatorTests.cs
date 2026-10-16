@@ -281,12 +281,47 @@ public class PanelLayoutCalculatorTests
     [Fact]
     public void Extremely_thin_rows_exceed_the_computation_budget_instead_of_looping()
     {
-        // 1 µm deep rows over 200 m would be 200 million row iterations per offset.
-        var (result, elapsed, _) = Measure(Request(1.5, 200, panelShort: 1e-6, panelLong: 1.2, maxPlacements: int.MaxValue));
+        // 1 µm panels over 200 m: 200 million rows in one orientation, 1.5 million panels per row in the
+        // other, and no placement limit. Work is charged before it is done, so a budget below one row
+        // stops both orientations before anything is packed. Asserted on outcome and per-thread allocation
+        // (both deterministic), not wall-clock time. (With the 10 million-unit default and no placement
+        // limit this input allocates ~0.8 GB before stopping, which made a timing assertion load-dependent;
+        // production always caps placements, see the test below.)
+        var (result, _, allocated) = Measure(Request(1.5, 200, panelShort: 1e-6, panelLong: 1.2, maxPlacements: int.MaxValue)
+            with { MaxWorkUnits = 1_000_000 });
 
-        Assert.True(result.ExceededComputationBudget || result.ExceededMaxPlacements);
+        Assert.True(result.ExceededComputationBudget);
+        Assert.False(result.ExceededMaxPlacements);
         Assert.Empty(result.Placements);
-        Assert.True(elapsed < TimeSpan.FromSeconds(3), $"Took {elapsed}.");
+        Assert.True(allocated < 1_000_000, $"Allocated {allocated:N0} bytes before stopping.");
+    }
+
+    [Fact]
+    public void Work_and_memory_grow_with_the_work_budget_and_never_beyond_it()
+    {
+        // 0.1 mm panels: 15 000 per 1.5 m row, 166 rows. Each budget unit is at most one placement.
+        var request = Request(1.5, 200, panelShort: 1e-4, panelLong: 1.2, maxPlacements: int.MaxValue);
+        var (small, _, smallBytes) = Measure(request with { MaxWorkUnits = 100_000 });
+        var (large, _, largeBytes) = Measure(request with { MaxWorkUnits = 200_000 });
+
+        Assert.True(small.ExceededComputationBudget && large.ExceededComputationBudget);
+        Assert.Empty(small.Placements);
+        Assert.True(smallBytes <= 100_000 * 256L, $"Allocated {smallBytes:N0} bytes for a 100 000-unit budget.");
+        Assert.True(largeBytes <= 200_000 * 256L, $"Allocated {largeBytes:N0} bytes for a 200 000-unit budget.");
+        var ratio = (double)largeBytes / smallBytes;
+        Assert.True(ratio is > 1.4 and < 2.8, $"Doubling the budget scaled allocation by {ratio:F2}.");
+    }
+
+    [Fact]
+    public void Thin_rows_under_the_production_placement_limit_stop_at_the_limit_with_little_work()
+    {
+        // Production requests always carry MaxPlacements (5000 by default): a row creates at most
+        // MaxPlacements + 1 placements before the calculation stops, whatever the panel width.
+        var (result, _, allocated) = Measure(Request(1.5, 200, panelShort: 1e-6, panelLong: 1.2, maxPlacements: 5000));
+
+        Assert.True(result.ExceededMaxPlacements);
+        Assert.Empty(result.Placements);
+        Assert.True(allocated < 2_000_000, $"Allocated {allocated:N0} bytes.");
     }
 
     [Fact]
