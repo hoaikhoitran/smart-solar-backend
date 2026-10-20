@@ -35,7 +35,15 @@ Admin reviews → publish (old published version → SUPERSEDED atomically)
 
 * Scanned PDFs (≈ no text layer) → `OCR_REQUIRED`; OCR is not performed (known limitation).
 * Limits: 50 MB object, 1 000 pages, 3 M characters, 5 000 chunks, DOCX uncompressed ≤ 200 MB (zip-bomb guard), encrypted PDFs rejected.
-* Chunks ≈ 2 400 characters with 300 overlap, split on paragraphs → sentences → hard cut; page and heading kept.
+* Chunks: size/overlap from the job's configuration snapshot (default 2 400 / 300, admin range 400–8 000, overlap ≤ half),
+  split on paragraphs → sentences → hard cut; page and heading kept. The service echoes `configVersion`, `chunkCharacters`,
+  `chunkOverlap`; on READY the API stores them as the version's `indexed_*` columns.
+* A version holding live chunks (READY_FOR_REVIEW, PUBLISHED or WITHDRAWN) is never demoted by a reindex (manual, reindex-stale
+  or retry): it is not set to PROCESSING/REGISTERED while the job runs, and an OCR_REQUIRED / UNSUPPORTED_CONTENT /
+  INTEGRITY_FAILED / FAILED outcome (or an unexpected error / exhausted attempts) keeps its status, metadata and old chunks (the
+  service only replaces chunks on success); the outcome goes to `last_ingest_status/error`, and a READY outcome refreshes the
+  chunk metadata and `indexed_*`. REGISTERED / FAILED / OCR_REQUIRED / UNSUPPORTED_CONTENT versions keep the classic lifecycle
+  (manual reindex resets them to REGISTERED).
 * Unpublish is immediate (retrieval filter); archive also queues `DELETE_VECTORS`.
 
 ## 3. Answering
@@ -47,7 +55,9 @@ POST /api/chat/messages
     charged at their estimate, then the concurrency slots and daily request/token allowances are checked and a leased
     reservation (request timeout + 60 s) is created. Completion replaces it by the real usage, idempotently.
  3. allowed = published versions (API decides); none → "insufficient" answer without calling the service
- 4. POST /internal/v1/answer { question, last 6 turns, allowedVersions, topK ≤ 10, maxContextTokens 3 000, maxOutputTokens 700 }
+ 4. POST /internal/v1/answer { question, last N turns, allowedVersions, topK, maxContextTokens, maxOutputTokens, configVersion,
+                               generationModel, temperature (null = omit), tokenParameter, minScore, promptVersion }
+    (values of the effective admin configuration, §8; the service's RAG_MAX_* ceilings still clamp them)
     service: embed → vector search filtered by version_id = ANY(allowed) (re-filtered in code) → min score
              → numbered <source> blocks within the token budget → LLM → keep only [n] citations that exist
              → grounded only if not INSUFFICIENT_CONTEXT and ≥ 1 valid citation
@@ -114,3 +124,37 @@ and stops ingestion at its deadline. Timeouts: chat 60 s, ingest 300 s (service 
   until a version is reindexed it is not retrievable with the new model. A different **dimension** is a
   schema change (new column/table, schema review, migration) plus a full reindex.
 * Live check (opt-in, costs a few tokens): `RAG_LIVE_EMBEDDING_SMOKE=1 RAG_EMBEDDING_API_KEY=… pytest tests/test_embeddings.py -k live`.
+
+## 8. Admin runtime configuration
+
+Admins tune the chatbot without a redeploy (`/api/admin/rag-configuration`, see
+[knowledge-base-api-integration.md](knowledge-base-api-integration.md)). Table `rag_configuration` holds versions
+DRAFT → ACTIVE → SUPERSEDED (partial unique indexes: one ACTIVE, one DRAFT; check constraints on every range):
+generation model, temperature (null for models without it), max output tokens, chunk characters/overlap, top-k, min score,
+max context tokens, max history messages, prompt version, notes, revision. No secrets and no URLs.
+
+* **Registry** — `Rag:GenerationModels` (id, displayName, supportsTemperature, tokenParameter `max_tokens` |
+  `max_completion_tokens`, maxOutputTokensLimit; defaults gpt-4.1-mini, gpt-4.1, gpt-4o-mini) and `Rag:PromptVersions`
+  (`["v1"]`; the templates live in the RAG service, `prompting.PROMPT_TEMPLATES`). Invalid entries fail startup.
+* **Bounds** — `Rag:ConfigurationLimits` can only narrow the hard bounds: chunk 400–8 000, overlap 0–chunk/2 (< chunk),
+  top-k 1–10, min score 0–1, context 500–6 000, output 64–min(model limit, 1 500), temperature 0–1, history 0–20.
+* **Effective configuration** — the ACTIVE row, or version 0 = bootstrap values from `Rag:*` (`GenerationModel`, `Temperature`,
+  `TopK`, `MaxContextTokens`, `MaxOutputTokens`, `ChunkCharacters`, `ChunkOverlap`, `MinScore`, `MaxHistoryMessages`,
+  `PromptVersion`). Read per request through a process cache (`Rag:ConfigurationCacheSeconds`, ≤ 15 s), invalidated locally on
+  activation/rollback; other instances follow within the TTL. Chat uses it for retrieval/generation and the quota estimate.
+  **Bootstrap generation:** while no row is ACTIVE the answer request does not send `generationModel`, `temperature` or
+  `tokenParameter` at all, so the RAG service's environment defaults apply (`RAG_LLM_MODEL`, `RAG_LLM_TEMPERATURE`,
+  `max_tokens`); `Rag:GenerationModel`/`Rag:Temperature` are then only the values shown to admins as the starting point of a
+  draft. All other bootstrap values (top-k, context, output budget, min score, history, prompt version, chunking) are sent.
+  Only an ACTIVE admin configuration overrides the model, temperature (explicit JSON `null` = omit it for models without
+  temperature support) and token parameter. When `RAG_LLM_ALLOWED_MODELS` is set it must contain **every** model of
+  `Rag:GenerationModels`, otherwise activating a configuration naming a missing model makes every chat request fail (422).
+* **Activation** — one transaction: the old ACTIVE row becomes SUPERSEDED (own statement), then the draft becomes ACTIVE;
+  revisions (concurrency tokens) reject stale or concurrent activations. Rollback copies an older version into a new
+  ACTIVE version (history is never rewritten).
+* **Ingestion snapshot** — an INGEST job stores `config_version`, `chunk_characters`, `chunk_overlap` when queued and always runs
+  with them, even after another activation. `reindex-stale` queues INGEST jobs (with the active snapshot) for READY_FOR_REVIEW /
+  PUBLISHED versions of non-archived documents whose `indexed_chunk_*` differ (or were never echoed), skipping versions with an
+  open job. Published versions stay live meanwhile.
+* **Not configurable** — the embedding model/dimension (environment, `text-embedding-3-small`/1536); retrieval keeps filtering
+  on `embedding_model`. HMAC signing, quotas, citation validation and grounding are unchanged.

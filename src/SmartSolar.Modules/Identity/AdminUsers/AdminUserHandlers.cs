@@ -405,8 +405,9 @@ public sealed class AdminUserHandlers(
         if (appointments.Count == 0 && requests.Count == 0) return null;
 
         return Outcome<object>.Fail(AdminUserErrorCodes.AccountHasActiveWork,
-            "The account still has upcoming technician appointments or open survey requests. Reassign them first "
-            + "(PUT /api/survey-requests/{id}/reassign-technician for appointments).",
+            "The account still has upcoming technician appointments or owned open survey requests. Reassign confirmed appointments "
+            + "(POST /api/admin/survey-appointments/{id}/assign-technician), disable the technician's scheduling first so pending holds move "
+            + "automatically, and move owned requests (PUT /api/admin/survey-requests/{id}/sales-owner).",
             new { technicianAppointments = appointments, ownedOpenSurveyRequestIds = requests });
     }
 

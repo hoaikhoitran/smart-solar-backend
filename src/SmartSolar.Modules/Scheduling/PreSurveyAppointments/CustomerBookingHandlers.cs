@@ -5,7 +5,8 @@ using SmartSolar.Modules.Scheduling.Domain;
 using SmartSolar.Modules.Scheduling.Entities;
 using SmartSolar.Modules.Scheduling.Options;
 using SmartSolar.Modules.Scheduling.Services;
-using SmartSolar.Modules.Scheduling.Travel;
+using SmartSolar.Modules.Scheduling.Zones;
+using SmartSolar.Modules.SystemSettings;
 
 namespace SmartSolar.Modules.Scheduling.PreSurveyAppointments;
 
@@ -18,14 +19,17 @@ public sealed record RescheduleSurveyAppointmentCommand(Guid CustomerUserId, Gui
 public sealed record CancelSurveyAppointmentCommand(Guid CustomerUserId, Guid SurveyRequestId, string? Reason);
 
 /// <summary>
-/// Dynamic slots for a customer's property site on one local date. Candidate start times are the
-/// union of every eligible technician's own working schedule; a slot is listed only when at least
-/// one technician passes every rule with verified motorcycle travel times.
+/// Slots for a customer's property site on one local date. Always 200 for a known site and a date inside the booking horizon:
+/// <see cref="SurveySlotsView.CoverageStatus"/> says why there are no slots (SITE_LOCATION_REQUIRED, NO_ZONE_COVERAGE,
+/// ZONE_NOT_SERVICEABLE, NO_ZONE_TECHNICIAN, NO_AVAILABLE_TECHNICIAN, or SCHEDULE_CONFLICT = some member works in the horizon but
+/// not on this date) and <see cref="SurveySlotsView.DispatchAvailable"/> whether the customer may ask staff for a dispatch instead.
+/// Candidate start times are the union of the zone technicians' working schedules; a slot is listed only when at least one
+/// technician could hold its capacity. Booking limits come from the current settings snapshot.
 /// </summary>
 public sealed class GetSurveySlotsHandler(
     ISchedulingUnitOfWork unitOfWork,
-    TechnicianAvailabilityEvaluator evaluator,
-    ITravelTimeEstimator estimator,
+    TechnicianEligibility eligibility,
+    ZoneCoverageService zoneCoverage,
     WorkingCalendar calendar,
     SchedulingOptions options,
     TimeProvider time)
@@ -35,79 +39,164 @@ public sealed class GetSurveySlotsHandler(
         var site = await unitOfWork.GetPropertySiteAsync(query.PropertySiteId, cancellationToken);
         if (site is null || site.CustomerUserId != query.CustomerUserId)
             return SchedulingResult<SurveySlotsView>.Fail(SchedulingErrorCodes.PropertySiteNotFound, "Property site was not found.");
-        if (site.Location is not { } location)
-            return SchedulingResult<SurveySlotsView>.Fail(SchedulingErrorCodes.PropertySiteLocationRequired,
-                "The property site has no valid GPS coordinates, so travel times cannot be verified.");
 
+        var policy = await eligibility.PolicyAsync(cancellationToken);
         var now = time.GetUtcNow();
-        var (first, last) = calendar.BookingRange(now);
+        var (first, last) = calendar.BookingRange(now, policy.Booking);
         if (query.Date < first || query.Date > last)
             return SchedulingResult<SurveySlotsView>.Fail(SchedulingErrorCodes.InvalidBookingTime,
                 $"Choose a date between {first:yyyy-MM-dd} and {last:yyyy-MM-dd}.");
 
-        var technicians = await new TechnicianDayLoader(unitOfWork, calendar).LoadAsync(query.Date, null, cancellationToken);
-        var windows = calendar.Bookable(calendar.CandidateWindows(query.Date, technicians), query.Date, now);
+        var coverage = await unitOfWork.GetSiteCoverageAsync(site.PropertySiteId, cancellationToken);
+        if (coverage.Status != CoverageStatuses.Covered)
+            return SchedulingResult<SurveySlotsView>.Ok(View(query, coverage.Zone, [], coverage.Status, CoverageMessages.Describe(coverage.Status)));
 
-        var budget = new RouteBudget(estimator, options.MaxRouteRequestsPerOperation);
+        var technicians = await eligibility.LoadDaysAsync(query.Date, new TechnicianScope(ZoneIds: coverage.ZoneIds), cancellationToken);
+        var windows = calendar.Bookable(calendar.CandidateWindows(query.Date, technicians), query.Date, now, policy.Booking);
+        var cap = Math.Max(1, options.MaxReportedSlotCapacity);
+
         var slots = new List<SurveySlotView>();
-        var unverified = 0;
         foreach (var window in windows)
         {
-            var evaluation = await evaluator.EvaluateAsync(
-                new AppointmentCandidate(window.StartsAtUtc, window.EndsAtUtc, location), technicians,
-                Math.Max(1, options.MaxReportedSlotCapacity), budget, cancellationToken);
-
-            if (evaluation.Feasible.Count > 0)
-            {
-                slots.Add(new SurveySlotView(
-                    TimeZoneInfo.ConvertTime(window.StartsAtUtc, calendar.TimeZone),
-                    TimeZoneInfo.ConvertTime(window.EndsAtUtc, calendar.TimeZone),
-                    window.StartsAtUtc, window.EndsAtUtc,
-                    CanBook: true,
-                    evaluation.Exhaustive ? CapacityStatuses.Exact : CapacityStatuses.AtLeast,
-                    evaluation.Feasible.Count,
-                    "AVAILABLE"));
-            }
-            else if (evaluation.HadUnverifiedRoutes)
-            {
-                unverified++;
-            }
+            var eligible = eligibility.Rank(technicians, new EligibilityRequest(window.StartsAtUtc, window.EndsAtUtc, coverage.ZoneIds)).Count;
+            if (eligible == 0) continue;
+            slots.Add(new SurveySlotView(
+                TimeZoneInfo.ConvertTime(window.StartsAtUtc, calendar.TimeZone),
+                TimeZoneInfo.ConvertTime(window.EndsAtUtc, calendar.TimeZone),
+                window.StartsAtUtc, window.EndsAtUtc,
+                CanBook: true,
+                eligible > cap ? CapacityStatuses.AtLeast : CapacityStatuses.Exact,
+                Math.Min(eligible, cap),
+                "AVAILABLE"));
         }
+        if (slots.Count > 0) return SchedulingResult<SurveySlotsView>.Ok(View(query, coverage.Zone, slots, CoverageStatuses.Covered, null));
 
-        var routing = unverified == 0 ? "VERIFIED" : slots.Count == 0 ? "UNAVAILABLE" : "PARTIAL";
-        var note = technicians.Count == 0
-            ? "No technician with a configured base location is available on this date."
-            : windows.Count == 0 && slots.Count == 0 && unverified == 0
-                ? "No technician works on this date, or every start time has passed."
-                : unverified > 0 ? $"{unverified} time(s) could not be verified because travel times were unavailable; they are not offered." : null;
-
-        return SchedulingResult<SurveySlotsView>.Ok(new SurveySlotsView(
-            query.Date, calendar.TimeZone.Id, options.AppointmentDurationMinutes, slots, routing, unverified, note));
+        // No slot on this date: why? The zone may have nobody, nobody free in the whole horizon, or just nobody free on this date.
+        var horizon = await zoneCoverage.EvaluateAsync(site.PropertySiteId, cancellationToken: cancellationToken);
+        var status = horizon.Status == CoverageStatuses.Covered ? CoverageStatuses.ScheduleConflict : horizon.Status;
+        var note = status == CoverageStatuses.ScheduleConflict
+            ? "No technician of this zone is free on this date, or every start time has passed. Try another date or request a dispatch."
+            : CoverageMessages.Describe(status);
+        return SchedulingResult<SurveySlotsView>.Ok(View(query, coverage.Zone, slots, status, note));
     }
+
+    private SurveySlotsView View(GetSurveySlotsQuery query, ZoneRef? zone, IReadOnlyList<SurveySlotView> slots, string status, string? note)
+        => new(query.Date, calendar.TimeZone.Id, options.AppointmentDurationMinutes, ZoneView.From(zone), slots, note, status, CoverageStatuses.IsDispatchable(status));
 }
 
-/// <summary>Resolves a requested start against the union of the technicians' slot grids on that date.</summary>
+/// <summary>Resolves a requested start against the union of the zone technicians' slot grids on that date.</summary>
 internal static class SlotGrid
 {
-    public static async Task<(AppointmentWindow? Window, string? Reason)> ResolveAsync(
-        ISchedulingUnitOfWork unitOfWork, WorkingCalendar calendar, DateTimeOffset requested, DateTimeOffset now, CancellationToken cancellationToken)
+    public static async Task<(AppointmentWindow? Window, string? Code, string? Reason)> ResolveAsync(
+        ISchedulingUnitOfWork unitOfWork, TechnicianEligibility eligibility, WorkingCalendar calendar, Guid propertySiteId,
+        DateTimeOffset requested, DateTimeOffset now, CancellationToken cancellationToken)
     {
+        var policy = await eligibility.PolicyAsync(cancellationToken);
+        var coverage = await unitOfWork.GetSiteCoverageAsync(propertySiteId, cancellationToken);
+        if (AppointmentReservationService.CoverageError(coverage) is { } error) return (null, error.ErrorCode, error.Message);
+
         var date = calendar.LocalDateOf(requested);
-        var technicians = await new TechnicianDayLoader(unitOfWork, calendar).LoadAsync(date, null, cancellationToken);
+        var technicians = await eligibility.LoadDaysAsync(date, new TechnicianScope(ZoneIds: coverage.ZoneIds), cancellationToken);
         var windows = calendar.CandidateWindows(date, technicians);
         if (windows.Count == 0) windows = calendar.CandidateWindows(date);   // explain grid errors even with nobody working
-        return calendar.TryResolveBookable(requested, now, windows, out var window, out var reason) ? (window, null) : (null, reason);
+        return calendar.TryResolveBookable(requested, now, policy.Booking, windows, out var window, out var reason)
+            ? (window, null, null)
+            : (null, SchedulingErrorCodes.InvalidBookingTime, reason);
     }
 }
 
 /// <summary>
-/// Books a survey appointment immediately. The internally reserved technician is not exposed;
-/// the survey request stays Pending for the Sales queue. A retry with the same start returns the
-/// existing booking (idempotent).
+/// Precise failure of a booking or reschedule without capacity: the coverage code (SITE_LOCATION_REQUIRED, NO_ZONE_COVERAGE,
+/// ZONE_NOT_SERVICEABLE, NO_ZONE_TECHNICIAN, NO_AVAILABLE_TECHNICIAN, SCHEDULE_CONFLICT) with details
+/// <c>{ coverageStatus, dispatchAvailable }</c>. Nothing is ever confirmed without capacity.
+/// </summary>
+public static class CapacityFailures
+{
+    public sealed record CoverageDetails(string CoverageStatus, bool DispatchAvailable);
+
+    public static bool IsCoverageCode(string? code) => code is not null && code != CoverageStatuses.Covered && CoverageStatuses.All.Contains(code);
+
+    public static CoverageDetails Details(string code) => new(code, CoverageStatuses.IsDispatchable(code));
+
+    /// <summary>A failure as is, with coverage details added for coverage codes.</summary>
+    public static SchedulingResult<T> Fail<T>(string code, string message)
+        => IsCoverageCode(code) ? SchedulingResult<T>.Fail(code, message, Details(code)) : SchedulingResult<T>.Fail(code, message);
+
+    /// <summary>
+    /// The reservation found no technician for the window (SURVEY_SLOT_UNAVAILABLE): evaluate the coverage of that window and report
+    /// NO_ZONE_TECHNICIAN, NO_AVAILABLE_TECHNICIAN or SCHEDULE_CONFLICT (a COVERED re-read means the capacity was just taken: SCHEDULE_CONFLICT).
+    /// </summary>
+    public static async Task<SchedulingResult<T>> NoCapacityAsync<T>(ZoneCoverageService coverage, Guid propertySiteId, AppointmentWindow window,
+        IReadOnlySet<Guid>? ignore, string suffix, CancellationToken cancellationToken)
+    {
+        var evaluation = await coverage.EvaluateAsync(propertySiteId, window.StartsAtUtc, window.EndsAtUtc, ignore, cancellationToken);
+        var code = evaluation.Status == CoverageStatuses.Covered ? CoverageStatuses.ScheduleConflict : evaluation.Status;
+        return SchedulingResult<T>.Fail(code, CoverageMessages.Describe(code) + suffix, Details(code));
+    }
+}
+
+/// <summary>Shared construction and customer-facing mapping for appointments.</summary>
+internal static class Appointments
+{
+    /// <summary>
+    /// A new PENDING_ACCEPTANCE appointment. Its acceptance deadline is derived from <paramref name="policy"/> (the settings current at
+    /// this booking) and stored with the window and settings version it used: later settings changes never move it.
+    /// </summary>
+    public static TechnicianAppointment New(SurveyRequestSchedulingContext context, AppointmentWindow window, ReservationContext reservation,
+        Guid bookedByUserId, string? note, SchedulingPolicySnapshot policy, DateTimeOffset now)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            AppointmentType = AppointmentTypes.PreSurvey,
+            SurveyRequestId = context.SurveyRequestId,
+            PropertySiteId = context.PropertySiteId,
+            OperationalZoneId = reservation.Coverage.Zone?.Id,
+            StartsAt = window.StartsAtUtc,
+            EndsAt = window.EndsAtUtc,
+            ReservedTechnicianUserId = reservation.Technician.TechnicianUserId,
+            Status = AppointmentStatuses.PendingAcceptance,
+            CustomerNote = string.IsNullOrWhiteSpace(note) ? null : note.Trim(),
+            BookedByUserId = bookedByUserId,
+            BookedAt = now,
+            AcceptanceDeadlineAt = Deadline(now, window.StartsAtUtc, policy),
+            AcceptanceWindowMinutes = policy.AcceptanceWindowMinutes,
+            SettingsVersion = policy.Version,
+            CreatedAt = now,
+            UpdatedAt = now,
+            Revision = 0,
+        };
+
+    /// <summary>LEAST(booked_at + scheduling.acceptanceWindowMinutes, starts_at − scheduling.acceptanceMinimumLeadMinutes) of the snapshot.</summary>
+    public static DateTimeOffset Deadline(DateTimeOffset bookedAt, DateTimeOffset startsAt, SchedulingPolicySnapshot policy)
+    {
+        var byWindow = bookedAt.AddMinutes(policy.AcceptanceWindowMinutes);
+        var byLead = startsAt.AddMinutes(-policy.AcceptanceMinimumLeadMinutes);
+        return byWindow < byLead ? byWindow : byLead;
+    }
+
+    public static bool SameStart(AppointmentSnapshot appointment, DateTimeOffset requested) => appointment.StartsAt == requested.ToUniversalTime();
+
+    public static void Cancel(TechnicianAppointment appointment, string reason, DateTimeOffset now)
+    {
+        appointment.Status = AppointmentStatuses.Cancelled;
+        appointment.CancelledAt = now;
+        appointment.CancellationReason = reason.Length <= 200 ? reason : reason[..200];
+        appointment.UpdatedAt = now;
+        appointment.Revision++;
+    }
+}
+
+/// <summary>
+/// Books a survey appointment immediately as PENDING_ACCEPTANCE: the capacity of one eligible technician of the
+/// site's zone is held internally (never shown), the acceptance deadline is set, and technicians of the zone see it as
+/// an open job. The survey request stays Pending until a technician is confirmed. A retry with the same start
+/// returns the existing booking (idempotent).
 /// </summary>
 public sealed class BookSurveyAppointmentHandler(
     ISchedulingUnitOfWork unitOfWork,
     AppointmentReservationService reservations,
+    TechnicianEligibility eligibility,
+    ZoneCoverageService zoneCoverage,
     WorkingCalendar calendar,
     TimeProvider time)
 {
@@ -117,43 +206,55 @@ public sealed class BookSurveyAppointmentHandler(
         if (context is null || context.CustomerUserId != command.CustomerUserId)
             return SchedulingResult<BookingConfirmation>.Fail(SchedulingErrorCodes.SurveyRequestNotFound, "Survey request was not found.");
 
+        // An open appointment whose start passed is dead (nobody accepted it in time): cancel it now (NOT_ACCEPTED_BEFORE_START,
+        // as the escalation worker would) instead of blocking the new booking until the next sweep.
+        if (context.ActiveAppointment is { } stale && AppointmentStatuses.IsOpen(stale.Status) && stale.StartsAt <= time.GetUtcNow())
+        {
+            await AppointmentEscalationService.TryCancelNotAcceptedAsync(unitOfWork, time, stale.Id, cancellationToken);
+            context = await unitOfWork.GetSurveyRequestContextAsync(command.SurveyRequestId, cancellationToken);
+            if (context is null || context.CustomerUserId != command.CustomerUserId)
+                return SchedulingResult<BookingConfirmation>.Fail(SchedulingErrorCodes.SurveyRequestNotFound, "Survey request was not found.");
+        }
+
         if (context.ActiveAppointment is { } existing)
-            return SameStart(existing, command.StartsAt)
+            return Appointments.SameStart(existing, command.StartsAt)
                 ? SchedulingResult<BookingConfirmation>.Ok(Confirm(existing, created: false))
                 : SchedulingResult<BookingConfirmation>.Fail(SchedulingErrorCodes.BookingAlreadyExists,
                     "This survey request already has an active appointment. Reschedule or cancel it instead.");
 
-        if (context.Status is not (SurveyRequestStatus.Pending or SurveyRequestStatus.Assigned))
+        if (context.Status != SurveyRequestStatus.Pending)
             return SchedulingResult<BookingConfirmation>.Fail(SchedulingErrorCodes.InvalidBookingState, "This survey request can no longer be booked.");
 
-        if (context.Location is not { } location)
-            return SchedulingResult<BookingConfirmation>.Fail(SchedulingErrorCodes.PropertySiteLocationRequired,
-                "The property site has no valid GPS coordinates, so travel times cannot be verified.");
+        // An open uncovered-zone dispatch request owns this request until it is resolved: accept its proposal or cancel it first.
+        if (await unitOfWork.HasOpenDispatchRequestAsync(command.SurveyRequestId, cancellationToken))
+            return OpenDispatch<BookingConfirmation>();
 
-        var (window, reason) = await SlotGrid.ResolveAsync(unitOfWork, calendar, command.StartsAt, time.GetUtcNow(), cancellationToken);
-        if (window is null)
-            return SchedulingResult<BookingConfirmation>.Fail(SchedulingErrorCodes.InvalidBookingTime, reason!);
-
-        var spec = new ReservationSpec(new AppointmentCandidate(window.StartsAtUtc, window.EndsAtUtc, location),
-            window.LocalDate, null, [], TravelEstimateContexts.Booking);
+        var (window, code, reason) = await SlotGrid.ResolveAsync(unitOfWork, eligibility, calendar, context.PropertySiteId, command.StartsAt, time.GetUtcNow(), cancellationToken);
+        if (window is null) return CapacityFailures.Fail<BookingConfirmation>(code!, reason!);
+        var policy = await eligibility.PolicyAsync(cancellationToken);
 
         ReservationOutcome outcome;
         try
         {
-            outcome = await reservations.ReserveAsync(spec, async (ctx, token) =>
-            {
-                var current = await unitOfWork.GetSurveyRequestContextAsync(command.SurveyRequestId, token);
-                if (current is null || current.ActiveAppointment is not null)
-                    return ApplyResult.Abort(SchedulingErrorCodes.BookingAlreadyExists, "This survey request already has an active appointment.");
-                if (current.Status is not (SurveyRequestStatus.Pending or SurveyRequestStatus.Assigned))
-                    return ApplyResult.Abort(SchedulingErrorCodes.InvalidBookingState, "This survey request can no longer be booked.");
+            outcome = await reservations.ReserveAsync(
+                new ReservationSpec(window.StartsAtUtc, window.EndsAtUtc, context.PropertySiteId, null, new HashSet<Guid>(), []),
+                async (ctx, token) =>
+                {
+                    var current = await unitOfWork.GetSurveyRequestContextAsync(command.SurveyRequestId, token);
+                    if (current is null || current.ActiveAppointment is not null)
+                        return ApplyResult.Abort(SchedulingErrorCodes.BookingAlreadyExists, "This survey request already has an active appointment.");
+                    if (current.Status != SurveyRequestStatus.Pending)
+                        return ApplyResult.Abort(SchedulingErrorCodes.InvalidBookingState, "This survey request can no longer be booked.");
+                    // Under the site lock (a dispatch request is created under the same lock): no open dispatch request appeared meanwhile.
+                    if (await unitOfWork.HasOpenDispatchRequestAsync(command.SurveyRequestId, token))
+                        return ApplyResult.Abort(SchedulingErrorCodes.DispatchRequestOpen, OpenDispatchMessage);
 
-                var appointment = NewAppointment(context, window, ctx.Option.Day.TechnicianUserId, command.CustomerUserId, command.Note, ctx.NowUtc);
-                unitOfWork.AddAppointment(appointment);
-                AppointmentHistory.Record(unitOfWork, appointment, AppointmentEventTypes.Booked, command.CustomerUserId, ctx.NowUtc,
-                    newTechnicianUserId: appointment.ReservedTechnicianUserId, newStartsAt: appointment.StartsAt);
-                return ApplyResult.Applied(appointment.Id);
-            }, cancellationToken);
+                    var appointment = Appointments.New(context, window, ctx, command.CustomerUserId, command.Note, policy, ctx.NowUtc);
+                    unitOfWork.AddAppointment(appointment);
+                    AppointmentHistory.Record(unitOfWork, appointment, AppointmentEventTypes.Booked, command.CustomerUserId, ctx.NowUtc,
+                        newTechnicianUserId: appointment.ReservedTechnicianUserId, newStartsAt: appointment.StartsAt);
+                    return ApplyResult.Applied(appointment.Id);
+                }, cancellationToken);
         }
         catch (SchedulingConflictException ex) when (ex.Kind == SchedulingConflictException.ActiveAppointmentExists)
         {
@@ -161,64 +262,207 @@ public sealed class BookSurveyAppointmentHandler(
             return await ExistingOrConflictAsync(command, cancellationToken);
         }
 
-        // A concurrent identical request (e.g. a network retry) can commit first; the locked re-read
-        // then sees its appointment. Same start = the same booking, answered idempotently.
+        // A concurrent identical request (e.g. a network retry) can commit first. Same start = the same booking.
         if (!outcome.Succeeded && outcome.ErrorCode == SchedulingErrorCodes.BookingAlreadyExists)
             return await ExistingOrConflictAsync(command, cancellationToken);
-
+        if (!outcome.Succeeded && outcome.ErrorCode == SchedulingErrorCodes.SlotUnavailable)
+            return await CapacityFailures.NoCapacityAsync<BookingConfirmation>(zoneCoverage, context.PropertySiteId, window, null, "", cancellationToken);
         if (!outcome.Succeeded)
-            return SchedulingResult<BookingConfirmation>.Fail(outcome.ErrorCode!, outcome.Message!);
+            return CapacityFailures.Fail<BookingConfirmation>(outcome.ErrorCode!, outcome.Message!);
 
         var booked = await unitOfWork.GetAppointmentAsync(outcome.AppointmentId!.Value, cancellationToken);
         return SchedulingResult<BookingConfirmation>.Ok(Confirm(booked!, created: true));
     }
 
+    internal const string OpenDispatchMessage =
+        "This survey request has an open dispatch request: our staff are arranging a technician. Accept their proposal or cancel the dispatch request first.";
+
+    internal static SchedulingResult<T> OpenDispatch<T>() => SchedulingResult<T>.Fail(SchedulingErrorCodes.DispatchRequestOpen, OpenDispatchMessage);
+
     private async Task<SchedulingResult<BookingConfirmation>> ExistingOrConflictAsync(BookSurveyAppointmentCommand command, CancellationToken cancellationToken)
     {
         var winner = (await unitOfWork.GetSurveyRequestContextAsync(command.SurveyRequestId, cancellationToken))?.ActiveAppointment;
-        return winner is not null && SameStart(winner, command.StartsAt)
+        return winner is not null && Appointments.SameStart(winner, command.StartsAt)
             ? SchedulingResult<BookingConfirmation>.Ok(Confirm(winner, created: false))
             : SchedulingResult<BookingConfirmation>.Fail(SchedulingErrorCodes.BookingAlreadyExists, "This survey request already has an active appointment.");
     }
 
-    internal static TechnicianAppointment NewAppointment(SurveyRequestSchedulingContext context, AppointmentWindow window, Guid technicianId, Guid bookedByUserId, string? note, DateTimeOffset now)
-        => new()
-        {
-            Id = Guid.NewGuid(),
-            AppointmentType = AppointmentTypes.PreSurvey,
-            SurveyRequestId = context.SurveyRequestId,
-            PropertySiteId = context.PropertySiteId,
-            StartsAt = window.StartsAtUtc,
-            EndsAt = window.EndsAtUtc,
-            ReservedTechnicianUserId = technicianId,
-            Status = AppointmentStatuses.Booked,
-            CustomerNote = string.IsNullOrWhiteSpace(note) ? null : note.Trim(),
-            BookedByUserId = bookedByUserId,
-            BookedAt = now,
-            CreatedAt = now,
-            UpdatedAt = now,
-            Revision = 0,
-        };
-
-    internal static bool SameStart(AppointmentSnapshot appointment, DateTimeOffset requested) => appointment.StartsAt == requested.ToUniversalTime();
-
     internal BookingConfirmation Confirm(AppointmentSnapshot a, bool created) => new(
         a.Id, a.SurveyRequestId!.Value,
         TimeZoneInfo.ConvertTime(a.StartsAt, calendar.TimeZone), TimeZoneInfo.ConvertTime(a.EndsAt, calendar.TimeZone),
-        a.Status, created,
-        created ? "Your survey appointment is booked. Our team will assign a technician." : "This appointment was already booked.");
+        a.Status, AcceptanceStatuses.Of(a.Status, a.StartsAt, a.AcceptanceDeadlineAt, time.GetUtcNow()),
+        a.AcceptanceDeadlineAt is { } d ? TimeZoneInfo.ConvertTime(d, calendar.TimeZone) : null,
+        created,
+        created ? "Your survey appointment is booked. A technician serving your area will confirm it." : "This appointment was already booked.");
 }
 
 /// <summary>
-/// Moves a BOOKED (not yet assigned) future appointment to a new start time. The old appointment
-/// is cancelled and linked to its replacement in the same transaction, so history is preserved
-/// and a failure leaves the original booking unchanged. The vacated position's route chain is
-/// queued for recalculation and recalculated right after the commit.
+/// Moves an open or confirmed future appointment to a new start (customer or Sales). The old row is cancelled
+/// and linked to its replacement in the same transaction, so a failure leaves the original unchanged.
+/// A confirmed technician keeps the job (same status and source) when still eligible at the new time — their own
+/// pending holds that conflict with the new time are handed to other technicians in the same transaction
+/// (<see cref="AppointmentAssignmentService.ReserveForTechnicianAsync"/>); otherwise the new appointment is
+/// PENDING_ACCEPTANCE with a new holder and needs re-acceptance. Sales may also name a technician: the new appointment
+/// is then ASSIGNED to them (reason required, ASSIGNED/REASSIGNED event). When the appointment only changed in the
+/// background (a hold moved, a technician accepted, the deadline escalated) while it is still changeable at the same
+/// start, the move is re-planned on the fresh row (bounded) instead of failing with a concurrency conflict.
 /// </summary>
-public sealed class RescheduleSurveyAppointmentHandler(
+public sealed class AppointmentMover(
     ISchedulingUnitOfWork unitOfWork,
     AppointmentReservationService reservations,
-    ScheduleRecalculationService recalculation,
+    AppointmentAssignmentService assignments,
+    SchedulingOptions options,
+    TimeProvider time)
+{
+    /// <param name="StillAllowed">Re-checked on the re-read context before a retry (ownership, lead time); null = only the generic checks.</param>
+    public sealed record MoveSpec(
+        SurveyRequestSchedulingContext Context,
+        AppointmentSnapshot Current,
+        AppointmentWindow Window,
+        Guid ActorUserId,
+        string? Note,
+        string CancellationReason,
+        string? EventReason,
+        Guid? AssignTechnicianUserId,
+        string? AssignmentReason,
+        Func<SurveyRequestSchedulingContext, DateTimeOffset, bool>? StillAllowed = null);
+
+    public async Task<SchedulingResult<AppointmentSnapshot>> MoveAsync(MoveSpec spec, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < Math.Max(1, options.MaxReservationAttempts); attempt++)
+        {
+            var moved = await MoveOnceAsync(spec, cancellationToken);
+            if (moved.ErrorCode != ApplyResult.StaleCode) return moved;
+
+            var context = await unitOfWork.GetSurveyRequestContextAsync(spec.Context.SurveyRequestId, cancellationToken);
+            if (context?.ActiveAppointment is not { } fresh || !StillSameChange(spec, context, fresh)) break;
+            spec = spec with { Context = context, Current = fresh };
+        }
+        return SchedulingResult<AppointmentSnapshot>.Fail(SchedulingErrorCodes.ConcurrencyConflict, "The appointment changed meanwhile. Reload and try again.");
+    }
+
+    /// <summary>A background change only: same row, same start, still changeable, and the caller's own rules still allow it.</summary>
+    private bool StillSameChange(MoveSpec spec, SurveyRequestSchedulingContext context, AppointmentSnapshot fresh)
+        => fresh.Id == spec.Current.Id && fresh.StartsAt == spec.Current.StartsAt && AppointmentStatuses.IsChangeable(fresh.Status)
+           && fresh.StartsAt > time.GetUtcNow() && spec.StillAllowed?.Invoke(context, time.GetUtcNow()) != false;
+
+    private async Task<SchedulingResult<AppointmentSnapshot>> MoveOnceAsync(MoveSpec spec, CancellationToken cancellationToken)
+    {
+        // Neither the time nor the confirmed technician may change once the on-site survey started (re-checked in the transaction).
+        if (await OnSiteSurveyStartedAsync(unitOfWork, spec.Current, cancellationToken))
+            return AppointmentAssignmentService.OnSiteSurveyStarted<AppointmentSnapshot>();
+        var keep = spec.AssignTechnicianUserId
+                   ?? (AppointmentStatuses.IsConfirmed(spec.Current.Status) ? spec.Current.AssignedTechnicianUserId : null);
+        ReservationOutcome? outcome = null;
+        try
+        {
+            if (keep is { } technician)
+            {
+                outcome = await assignments.ReserveForTechnicianAsync(Spec(spec, technician), spec.ActorUserId, Apply(spec, technician), cancellationToken);
+                if (outcome.ErrorCode == ApplyResult.StaleCode) return Fail(outcome);
+                if (!outcome.Succeeded && (spec.AssignTechnicianUserId is not null || !SchedulingErrorCodes.IsEligibilityCode(outcome.ErrorCode!)))
+                    return SchedulingResult<AppointmentSnapshot>.Fail(outcome.ErrorCode!, outcome.Message! + " The original appointment is unchanged.");
+            }
+            if (outcome is not { Succeeded: true })
+                outcome = await reservations.ReserveAsync(Spec(spec, null), Apply(spec, null), cancellationToken);
+        }
+        catch (SchedulingConflictException)
+        {
+            return SchedulingResult<AppointmentSnapshot>.Fail(SchedulingErrorCodes.ConcurrencyConflict, "The appointment changed meanwhile. Reload and try again.");
+        }
+
+        if (outcome.ErrorCode == ApplyResult.StaleCode) return Fail(outcome);
+        if (!outcome.Succeeded)
+            return SchedulingResult<AppointmentSnapshot>.Fail(outcome.ErrorCode!, outcome.Message! + " The original appointment is unchanged.");
+        return SchedulingResult<AppointmentSnapshot>.Ok((await unitOfWork.GetAppointmentAsync(outcome.AppointmentId!.Value, cancellationToken))!);
+    }
+
+    private static SchedulingResult<AppointmentSnapshot> Fail(ReservationOutcome outcome) => SchedulingResult<AppointmentSnapshot>.Fail(outcome.ErrorCode!, outcome.Message!);
+
+    /// <summary>True when the request's on-site survey report is IN_PROGRESS (the confirmed technician is on site).</summary>
+    internal static async Task<bool> OnSiteSurveyStartedAsync(ISchedulingUnitOfWork unitOfWork, AppointmentSnapshot appointment, CancellationToken token)
+        => appointment.SurveyRequestId is { } requestId && await unitOfWork.HasOnSiteSurveyInProgressAsync(requestId, token);
+
+    private static ReservationSpec Spec(MoveSpec spec, Guid? technician)
+    {
+        var current = spec.Current;
+        var locks = new[] { current.ReservedTechnicianUserId, current.AssignedTechnicianUserId }.Where(id => id is not null).Select(id => id!.Value).ToList();
+        return new ReservationSpec(spec.Window.StartsAtUtc, spec.Window.EndsAtUtc, current.PropertySiteId, technician, new HashSet<Guid> { current.Id }, locks);
+    }
+
+    private Func<ReservationContext, CancellationToken, Task<ApplyResult>> Apply(MoveSpec spec, Guid? technician) => async (ctx, token) =>
+    {
+        var current = spec.Current;
+        var old = await unitOfWork.FindAppointmentForUpdateAsync(current.Id, token);
+        if (old is null || !AppointmentStatuses.IsChangeable(old.Status))
+            return ApplyResult.Abort(SchedulingErrorCodes.ConcurrencyConflict, "The appointment changed meanwhile. Reload and try again.");
+        // Changed in the background since it was read (hold moved, accepted, escalated…): re-read and re-plan instead of failing.
+        if (old.Revision != current.Revision) return ApplyResult.Stale();
+        // Under the lock of the confirmed technician (always among the locked technicians): starting the survey takes the same lock.
+        if (await OnSiteSurveyStartedAsync(unitOfWork, current, token))
+            return ApplyResult.Abort(SchedulingErrorCodes.OnSiteSurveyInProgress,
+                "The technician already started the on-site survey for this appointment; it cannot be moved now.");
+
+        var previousStatus = old.Status;
+        var previousTechnician = AppointmentStatuses.IsConfirmed(old.Status) ? old.AssignedTechnicianUserId : null;
+        Appointments.Cancel(old, spec.CancellationReason, ctx.NowUtc);
+        await unitOfWork.SaveChangesAsync(token);   // free the old interval before inserting the new one
+
+        // A reschedule creates a NEW appointment: when it needs (re-)acceptance its deadline uses the settings current now.
+        var next = Appointments.New(spec.Context, spec.Window, ctx, old.BookedByUserId, spec.Note ?? old.CustomerNote,
+            await assignments.Eligibility.PolicyAsync(token), ctx.NowUtc);
+        next.BookedAt = old.BookedAt;
+        if (technician is not null)
+        {
+            next.AssignedTechnicianUserId = technician;
+            // The technician keeps the job: no new acceptance is needed, so the stored deadline and its snapshot carry over unchanged.
+            next.AcceptanceDeadlineAt = old.AcceptanceDeadlineAt;
+            next.AcceptanceWindowMinutes = old.AcceptanceWindowMinutes;
+            next.SettingsVersion = old.SettingsVersion;
+            next.CrossZoneAuthorizationId = old.CrossZoneAuthorizationId;
+            if (spec.AssignTechnicianUserId is not null)
+            {
+                next.Status = AppointmentStatuses.Assigned;
+                next.AssignmentSource = AssignmentSources.SalesAssigned;
+                next.AssignmentReason = spec.AssignmentReason;
+                next.AssignedBySaleUserId = spec.ActorUserId;
+                next.AssignedAt = ctx.NowUtc;
+            }
+            else
+            {
+                next.Status = previousStatus;
+                next.AssignmentSource = old.AssignmentSource;
+                next.AssignmentReason = old.AssignmentReason;
+                next.AssignedBySaleUserId = old.AssignedBySaleUserId;
+                next.AssignedAt = old.AssignedAt ?? ctx.NowUtc;
+                next.AcceptedAt = old.AcceptedAt;
+            }
+        }
+        unitOfWork.AddAppointment(next);
+        old.ReplacedByAppointmentId = next.Id;
+
+        if (!await unitOfWork.SetSurveyRequestScheduleAsync(spec.Context.SurveyRequestId, technician is null ? null : next.StartsAt, token))
+            return ApplyResult.Abort(SchedulingErrorCodes.InvalidBookingState, "The survey request can no longer be rescheduled.");
+
+        AppointmentHistory.Record(unitOfWork, next, AppointmentEventTypes.Rescheduled, spec.ActorUserId, ctx.NowUtc,
+            previousTechnician ?? current.ReservedTechnicianUserId, next.AssignedTechnicianUserId ?? next.ReservedTechnicianUserId,
+            old.StartsAt, next.StartsAt, spec.EventReason,
+            notify: [previousTechnician, next.AssignedTechnicianUserId, spec.Context.AssignedSaleId == spec.ActorUserId ? null : spec.Context.AssignedSaleId,
+                old.BookedByUserId == spec.ActorUserId ? null : old.BookedByUserId]);
+        // Sales naming a technician is a staff assignment like assign-technician: ASSIGNED, or REASSIGNED when it replaces another confirmed technician.
+        if (technician is { } named && spec.AssignTechnicianUserId is not null)
+            AppointmentAssignmentService.RecordStaffAssignment(unitOfWork, next, AssignmentSources.SalesAssigned, spec.AssignmentReason, spec.ActorUserId, named,
+                previousTechnician, current.ReservedTechnicianUserId, spec.Context.AssignedSaleId, ctx.NowUtc);
+        return ApplyResult.Applied(next.Id);
+    };
+}
+
+/// <summary>Customer reschedule: allowed while open or confirmed and at least <c>Scheduling:CustomerChangeLeadMinutes</c> before the start.</summary>
+public sealed class RescheduleSurveyAppointmentHandler(
+    ISchedulingUnitOfWork unitOfWork,
+    AppointmentMover mover,
+    TechnicianEligibility eligibility,
+    ZoneCoverageService zoneCoverage,
     WorkingCalendar calendar,
     TimeProvider time)
 {
@@ -231,71 +475,54 @@ public sealed class RescheduleSurveyAppointmentHandler(
             return SchedulingResult<BookingConfirmation>.Fail(SchedulingErrorCodes.BookingNotFound, "There is no active appointment to reschedule.");
 
         var now = time.GetUtcNow();
-        var guard = CustomerChangeGuard.Check(current, now);
+        var policy = await eligibility.PolicyAsync(cancellationToken);
+        var guard = CustomerChangeGuard.Check(current, now, policy);
         if (guard is not null) return SchedulingResult<BookingConfirmation>.Fail(SchedulingErrorCodes.InvalidBookingState, guard);
 
-        var booking = new BookSurveyAppointmentHandler(unitOfWork, reservations, calendar, time);
-        if (BookSurveyAppointmentHandler.SameStart(current, command.StartsAt))
-            return SchedulingResult<BookingConfirmation>.Ok(booking.Confirm(current, created: false));
+        var confirmation = new BookingConfirmationFactory(calendar, time);
+        if (Appointments.SameStart(current, command.StartsAt))
+            return SchedulingResult<BookingConfirmation>.Ok(confirmation.Of(current, created: false, "The appointment already starts at this time."));
+        if (await AppointmentMover.OnSiteSurveyStartedAsync(unitOfWork, current, cancellationToken))
+            return AppointmentAssignmentService.OnSiteSurveyStarted<BookingConfirmation>();
 
-        if (context.Location is not { } location)
-            return SchedulingResult<BookingConfirmation>.Fail(SchedulingErrorCodes.PropertySiteLocationRequired, "The property site has no valid GPS coordinates.");
-        var (window, reason) = await SlotGrid.ResolveAsync(unitOfWork, calendar, command.StartsAt, now, cancellationToken);
-        if (window is null)
-            return SchedulingResult<BookingConfirmation>.Fail(SchedulingErrorCodes.InvalidBookingTime, reason!);
+        var (window, code, reason) = await SlotGrid.ResolveAsync(unitOfWork, eligibility, calendar, context.PropertySiteId, command.StartsAt, now, cancellationToken);
+        if (window is null) return CapacityFailures.Fail<BookingConfirmation>(code!, reason!);
 
-        var spec = new ReservationSpec(new AppointmentCandidate(window.StartsAtUtc, window.EndsAtUtc, location, current.Id),
-            window.LocalDate, null, [current.ReservedTechnicianUserId], TravelEstimateContexts.Reschedule);
-        var oldDate = calendar.LocalDateOf(current.StartsAt);
+        var moved = await mover.MoveAsync(new AppointmentMover.MoveSpec(context, current, window, command.CustomerUserId, command.Note,
+            CancellationReasons.Rescheduled, "CUSTOMER_RESCHEDULE", null, null,
+            (fresh, at) => fresh.ActiveAppointment is { } a && CustomerChangeGuard.Allows(a, at, policy)), cancellationToken);
+        if (!moved.Succeeded && moved.ErrorCode == SchedulingErrorCodes.SlotUnavailable)
+            return await CapacityFailures.NoCapacityAsync<BookingConfirmation>(zoneCoverage, context.PropertySiteId, window, new HashSet<Guid> { current.Id },
+                " The original appointment is unchanged.", cancellationToken);
+        if (!moved.Succeeded) return CapacityFailures.Fail<BookingConfirmation>(moved.ErrorCode!, moved.Message!);
 
-        var outcome = await reservations.ReserveAsync(spec, async (ctx, token) =>
-        {
-            var old = await unitOfWork.FindAppointmentForUpdateAsync(current.Id, token);
-            if (old is null || old.Status != AppointmentStatuses.Booked || old.Revision != current.Revision)
-                return ApplyResult.Abort(SchedulingErrorCodes.ConcurrencyConflict, "The appointment changed (for example it was just assigned). Reload and try again.");
-
-            CancelForReplacement(old, ctx.NowUtc);
-            await unitOfWork.SaveChangesAsync(token);
-
-            var replacement = BookSurveyAppointmentHandler.NewAppointment(context, window, ctx.Option.Day.TechnicianUserId, command.CustomerUserId,
-                command.Note ?? current.CustomerNote, ctx.NowUtc);
-            unitOfWork.AddAppointment(replacement);
-            old.ReplacedByAppointmentId = replacement.Id;
-            AppointmentHistory.Record(unitOfWork, replacement, AppointmentEventTypes.Rescheduled, command.CustomerUserId, ctx.NowUtc,
-                old.ReservedTechnicianUserId, replacement.ReservedTechnicianUserId, old.StartsAt, replacement.StartsAt, "CUSTOMER_RESCHEDULE");
-            await unitOfWork.RequestRecalculationAsync(old.ReservedTechnicianUserId, oldDate, RecalculationReasons.CustomerReschedule, ctx.NowUtc, token);
-            return ApplyResult.Applied(replacement.Id);
-        }, cancellationToken);
-
-        if (!outcome.Succeeded)
-            return SchedulingResult<BookingConfirmation>.Fail(outcome.ErrorCode!, outcome.Message!);
-
-        await recalculation.TryRunAsync(current.ReservedTechnicianUserId, oldDate, cancellationToken);
-
-        var booked = await unitOfWork.GetAppointmentAsync(outcome.AppointmentId!.Value, cancellationToken);
-        return SchedulingResult<BookingConfirmation>.Ok(booking.Confirm(booked!, created: true) with { Message = "Your survey appointment was rescheduled." });
-    }
-
-    internal static void CancelForReplacement(TechnicianAppointment old, DateTimeOffset now)
-    {
-        old.Status = AppointmentStatuses.Cancelled;
-        old.CancelledAt = now;
-        old.CancellationReason = "RESCHEDULED";
-        old.UpdatedAt = now;
-        old.Revision++;
+        var message = AppointmentStatuses.IsConfirmed(moved.Value!.Status)
+            ? "Your survey appointment was rescheduled; your technician keeps the job."
+            : "Your survey appointment was rescheduled. A technician serving your area will confirm the new time.";
+        return SchedulingResult<BookingConfirmation>.Ok(confirmation.Of(moved.Value, created: true, message));
     }
 }
 
+internal sealed class BookingConfirmationFactory(WorkingCalendar calendar, TimeProvider time)
+{
+    public BookingConfirmation Of(AppointmentSnapshot a, bool created, string message) => new(
+        a.Id, a.SurveyRequestId!.Value,
+        TimeZoneInfo.ConvertTime(a.StartsAt, calendar.TimeZone), TimeZoneInfo.ConvertTime(a.EndsAt, calendar.TimeZone),
+        a.Status, AcceptanceStatuses.Of(a.Status, a.StartsAt, a.AcceptanceDeadlineAt, time.GetUtcNow()),
+        a.AcceptanceDeadlineAt is { } d ? TimeZoneInfo.ConvertTime(d, calendar.TimeZone) : null,
+        created, message);
+}
+
 /// <summary>
-/// Cancels a BOOKED future appointment and releases the technician capacity. History is kept. The
-/// cancellation commits regardless of the routing provider; the technician-day is queued for route
-/// recalculation in the same transaction and recalculated right after the commit (a failure there
-/// leaves an explicit FAILED request that the background worker retries).
+/// Cancels an open or confirmed future appointment and releases the capacity (history kept). A confirmed
+/// request returns to Pending so the customer can book again. A revision change made in the background (hold moved,
+/// accepted, escalated) while the appointment is still changeable at the same start is re-read and retried (bounded).
 /// </summary>
 public sealed class CancelSurveyAppointmentHandler(
     ISchedulingUnitOfWork unitOfWork,
-    ScheduleRecalculationService recalculation,
     WorkingCalendar calendar,
+    SchedulingOptions options,
+    ISchedulingPolicyProvider policies,
     TimeProvider time)
 {
     public async Task<SchedulingResult<CustomerAppointmentView>> HandleAsync(CancelSurveyAppointmentCommand command, CancellationToken cancellationToken)
@@ -306,87 +533,109 @@ public sealed class CancelSurveyAppointmentHandler(
         if (context.ActiveAppointment is not { } current)
             return SchedulingResult<CustomerAppointmentView>.Fail(SchedulingErrorCodes.BookingNotFound, "There is no active appointment to cancel.");
 
-        var guard = CustomerChangeGuard.Check(current, time.GetUtcNow());
+        var policy = await policies.GetAsync(cancellationToken);
+        var guard = CustomerChangeGuard.Check(current, time.GetUtcNow(), policy);
         if (guard is not null) return SchedulingResult<CustomerAppointmentView>.Fail(SchedulingErrorCodes.InvalidBookingState, guard);
+        if (await AppointmentMover.OnSiteSurveyStartedAsync(unitOfWork, current, cancellationToken))
+            return AppointmentAssignmentService.OnSiteSurveyStarted<CustomerAppointmentView>();
 
-        var date = calendar.LocalDateOf(current.StartsAt);
-        try
+        for (var attempt = 0; attempt < Math.Max(1, options.MaxReservationAttempts); attempt++)
         {
-            var cancelled = await unitOfWork.ExecuteInTransactionAsync<TechnicianAppointment?>(async token =>
+            (TechnicianAppointment? Cancelled, bool Stale, bool SurveyStarted) outcome;
+            try
             {
-                await unitOfWork.LockTechniciansAsync([current.ReservedTechnicianUserId], token);
-                var appointment = await unitOfWork.FindAppointmentForUpdateAsync(current.Id, token);
-                if (appointment is null || appointment.Status != AppointmentStatuses.Booked || appointment.Revision != current.Revision)
-                    return (null, false);
+                var snapshot = current;
+                outcome = await unitOfWork.ExecuteInTransactionAsync<(TechnicianAppointment?, bool, bool)>(async token =>
+                {
+                    await unitOfWork.LockTechniciansAsync(new[] { snapshot.ReservedTechnicianUserId, snapshot.AssignedTechnicianUserId }
+                        .Where(id => id is not null).Select(id => id!.Value), token);
+                    var appointment = await unitOfWork.FindAppointmentForUpdateAsync(snapshot.Id, token);
+                    if (appointment is null || !AppointmentStatuses.IsChangeable(appointment.Status)) return ((null, false, false), false);
+                    // Changed in the background (hold moved, accepted, escalated): re-read and decide again with the right locks.
+                    if (appointment.Revision != snapshot.Revision) return ((null, true, false), false);
+                    // Under the confirmed technician's lock: the on-site survey cannot have started meanwhile.
+                    if (await AppointmentMover.OnSiteSurveyStartedAsync(unitOfWork, snapshot, token)) return ((null, false, true), false);
 
-                var now = time.GetUtcNow();
-                appointment.Status = AppointmentStatuses.Cancelled;
-                appointment.CancelledAt = now;
-                appointment.CancellationReason = string.IsNullOrWhiteSpace(command.Reason) ? "CUSTOMER_CANCELLED" : Truncate(command.Reason.Trim(), 200);
-                appointment.UpdatedAt = now;
-                appointment.Revision++;
-                AppointmentHistory.Record(unitOfWork, appointment, AppointmentEventTypes.Cancelled, command.CustomerUserId, now,
-                    previousTechnicianUserId: appointment.ReservedTechnicianUserId, previousStartsAt: appointment.StartsAt, reason: appointment.CancellationReason);
-                await unitOfWork.RequestRecalculationAsync(appointment.ReservedTechnicianUserId, date, RecalculationReasons.Cancellation, now, token);
-                await unitOfWork.SupersedeEstimatesAsync([appointment.Id], now, token);
-                await unitOfWork.SaveChangesAsync(token);
-                return (appointment, true);
-            }, cancellationToken);
-
-            if (cancelled is null)
+                    var now = time.GetUtcNow();
+                    var confirmedTechnician = AppointmentStatuses.IsConfirmed(appointment.Status) ? appointment.AssignedTechnicianUserId : null;
+                    Appointments.Cancel(appointment, string.IsNullOrWhiteSpace(command.Reason) ? CancellationReasons.CustomerCancelled : command.Reason.Trim(), now);
+                    await unitOfWork.SetSurveyRequestScheduleAsync(context.SurveyRequestId, null, token);
+                    AppointmentHistory.Record(unitOfWork, appointment, AppointmentEventTypes.Cancelled, command.CustomerUserId, now,
+                        previousTechnicianUserId: appointment.AssignedTechnicianUserId ?? appointment.ReservedTechnicianUserId, previousStartsAt: appointment.StartsAt,
+                        reason: appointment.CancellationReason, notify: [confirmedTechnician, context.AssignedSaleId]);
+                    await unitOfWork.SaveChangesAsync(token);
+                    return ((appointment, false, false), true);
+                }, cancellationToken);
+            }
+            catch (SchedulingConflictException ex) when (ex.Kind == SchedulingConflictException.StaleAppointment)
+            {
+                outcome = (null, true, false);
+            }
+            catch (SchedulingConflictException)
+            {
                 return SchedulingResult<CustomerAppointmentView>.Fail(SchedulingErrorCodes.ConcurrencyConflict, "The appointment changed. Reload and try again.");
+            }
 
-            await recalculation.TryRunAsync(cancelled.ReservedTechnicianUserId, date, cancellationToken);
+            if (outcome.Cancelled is { } cancelled)
+                return SchedulingResult<CustomerAppointmentView>.Ok(CustomerViews.Appointment(AppointmentAssignmentService.Snapshot(cancelled), null,
+                    calendar, policy, time.GetUtcNow()));
+            if (outcome.SurveyStarted) return AppointmentAssignmentService.OnSiteSurveyStarted<CustomerAppointmentView>();
+            if (!outcome.Stale) break;
 
-            return SchedulingResult<CustomerAppointmentView>.Ok(CustomerViews.Appointment(cancelled.Id, cancelled.StartsAt, cancelled.EndsAt, cancelled.Status,
-                null, cancelled.CustomerNote, cancelled.BookedAt, calendar, time.GetUtcNow()));
+            // Only a background change (same row, same start, still changeable by the customer) is retried.
+            var fresh = (await unitOfWork.GetSurveyRequestContextAsync(command.SurveyRequestId, cancellationToken))?.ActiveAppointment;
+            if (fresh is null || fresh.Id != current.Id || fresh.StartsAt != current.StartsAt || !CustomerChangeGuard.Allows(fresh, time.GetUtcNow(), policy)) break;
+            current = fresh;
         }
-        catch (SchedulingConflictException)
-        {
-            return SchedulingResult<CustomerAppointmentView>.Fail(SchedulingErrorCodes.ConcurrencyConflict, "The appointment changed. Reload and try again.");
-        }
+
+        return SchedulingResult<CustomerAppointmentView>.Fail(SchedulingErrorCodes.ConcurrencyConflict, "The appointment changed. Reload and try again.");
     }
-
-    private static string Truncate(string value, int max) => value.Length <= max ? value : value[..max];
 }
 
-/// <summary>V1 rule: customers change only future appointments that Sales has not assigned yet.</summary>
+/// <summary>Customers change open or confirmed appointments only until <c>scheduling.customerChangeLeadMinutes</c> (current settings) before the start.</summary>
 internal static class CustomerChangeGuard
 {
-    public static string? Check(AppointmentSnapshot appointment, DateTimeOffset now)
+    public static string? Check(AppointmentSnapshot appointment, DateTimeOffset now, SchedulingPolicySnapshot policy)
     {
-        if (appointment.Status != AppointmentStatuses.Booked)
-            return "A technician has already been assigned. Please contact our sales team to change this appointment.";
-        if (appointment.StartsAt <= now)
-            return "Past or ongoing appointments cannot be changed.";
+        if (!AppointmentStatuses.IsChangeable(appointment.Status))
+            return "This appointment can no longer be changed.";
+        if (appointment.StartsAt.AddMinutes(-policy.CustomerChangeLeadMinutes) <= now)
+            return $"Appointments can be changed until {policy.CustomerChangeLeadMinutes} minutes before the start. Please contact our sales team.";
         return null;
     }
+
+    public static bool Allows(AppointmentSnapshot appointment, DateTimeOffset now, SchedulingPolicySnapshot policy) => Check(appointment, now, policy) is null;
 }
 
 internal static class CustomerViews
 {
-    public static CustomerAppointmentView Appointment(Guid id, DateTimeOffset startsAt, DateTimeOffset endsAt, string status, string? technicianName,
-        string? note, DateTimeOffset bookedAt, WorkingCalendar calendar, DateTimeOffset now)
-        => new(id,
-            TimeZoneInfo.ConvertTime(startsAt, calendar.TimeZone),
-            TimeZoneInfo.ConvertTime(endsAt, calendar.TimeZone),
-            status,
-            status is AppointmentStatuses.Assigned or AppointmentStatuses.Acknowledged,
-            status is AppointmentStatuses.Assigned or AppointmentStatuses.Acknowledged ? technicianName : null,
-            note,
-            bookedAt,
-            status == AppointmentStatuses.Booked && startsAt > now);
+    public static CustomerAppointmentView Appointment(AppointmentSnapshot a, string? technicianName, WorkingCalendar calendar, SchedulingPolicySnapshot policy, DateTimeOffset now)
+    {
+        var acceptance = AcceptanceStatuses.Of(a.Status, a.StartsAt, a.AcceptanceDeadlineAt, now);
+        var confirmed = acceptance is AcceptanceStatuses.Confirmed or AcceptanceStatuses.Completed;
+        return new CustomerAppointmentView(a.Id,
+            TimeZoneInfo.ConvertTime(a.StartsAt, calendar.TimeZone),
+            TimeZoneInfo.ConvertTime(a.EndsAt, calendar.TimeZone),
+            a.Status,
+            acceptance,
+            confirmed,
+            confirmed ? technicianName : null,
+            a.CustomerNote,
+            a.BookedAt,
+            CustomerChangeGuard.Allows(a, now, policy));
+    }
 
     public static string Status(SurveyRequestStatus status) => status.ToString().ToUpperInvariant();
 }
 
 /// <summary>The customer's own survey requests with appointment summaries.</summary>
-public sealed class CustomerSurveyRequestQueries(ISchedulingUnitOfWork unitOfWork, WorkingCalendar calendar, TimeProvider time)
+public sealed class CustomerSurveyRequestQueries(ISchedulingUnitOfWork unitOfWork, WorkingCalendar calendar, ISchedulingPolicyProvider policies, TimeProvider time)
 {
     public async Task<IReadOnlyList<CustomerSurveyRequestView>> ListAsync(Guid customerUserId, CancellationToken cancellationToken)
     {
         var now = time.GetUtcNow();
-        return (await unitOfWork.ListCustomerSurveyRequestsAsync(customerUserId, cancellationToken)).Select(r => Map(r, now)).ToList();
+        var policy = await policies.GetAsync(cancellationToken);
+        return (await unitOfWork.ListCustomerSurveyRequestsAsync(customerUserId, cancellationToken)).Select(r => Map(r, policy, now)).ToList();
     }
 
     public async Task<SchedulingResult<CustomerSurveyRequestDetailView>> GetAsync(Guid customerUserId, Guid surveyRequestId, CancellationToken cancellationToken)
@@ -399,13 +648,12 @@ public sealed class CustomerSurveyRequestQueries(ISchedulingUnitOfWork unitOfWor
             .Select(a => new CustomerAppointmentHistoryItem(a.Id,
                 TimeZoneInfo.ConvertTime(a.StartsAt, calendar.TimeZone), TimeZoneInfo.ConvertTime(a.EndsAt, calendar.TimeZone), a.Status, a.BookedAt))
             .ToList();
-        return SchedulingResult<CustomerSurveyRequestDetailView>.Ok(new CustomerSurveyRequestDetailView(Map(row, time.GetUtcNow()), history));
+        var policy = await policies.GetAsync(cancellationToken);
+        return SchedulingResult<CustomerSurveyRequestDetailView>.Ok(new CustomerSurveyRequestDetailView(Map(row, policy, time.GetUtcNow()), history));
     }
 
-    private CustomerSurveyRequestView Map(CustomerSurveyRequestRow r, DateTimeOffset now) => new(
+    private CustomerSurveyRequestView Map(CustomerSurveyRequestRow r, SchedulingPolicySnapshot policy, DateTimeOffset now) => new(
         r.SurveyRequestId, r.PreSurveyId, r.PropertySiteId, r.PropertyName, CustomerViews.Status(r.Status), r.SubmittedAt,
         r.ScheduledAt is { } s ? TimeZoneInfo.ConvertTime(s, calendar.TimeZone) : null,
-        r.ActiveAppointment is { } a
-            ? CustomerViews.Appointment(a.Id, a.StartsAt, a.EndsAt, a.Status, r.AssignedTechnicianName, a.CustomerNote, a.BookedAt, calendar, now)
-            : null);
+        r.ActiveAppointment is { } a ? CustomerViews.Appointment(a, r.AssignedTechnicianName, calendar, policy, now) : null);
 }

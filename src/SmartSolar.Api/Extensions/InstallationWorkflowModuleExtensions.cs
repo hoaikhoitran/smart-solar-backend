@@ -46,6 +46,7 @@ public static class InstallationWorkflowModuleExtensions
         services.AddScoped<SmartSolar.Modules.Installations.IInstallationUnitOfWork, InstallationUnitOfWork>();
         services.AddScoped<SmartSolar.Modules.Installations.InstallationSchedulePlanner>();
         services.AddScoped<SmartSolar.Modules.Installations.InstallationHandlers>();
+        services.AddScoped<SmartSolar.Modules.Installations.InstallationEvidenceHandlers>();
 
         if (configuration.GetValue("Payments:ReconciliationWorkerEnabled", true))
             services.AddHostedService<Background.PaymentReconciliationWorker>();

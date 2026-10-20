@@ -25,24 +25,56 @@ public sealed class RagOptions
     public int MaxIngestAttempts { get; set; } = 5;
     public bool IngestionWorkerEnabled { get; set; } = true;
     public int IngestionPollSeconds { get; set; } = 15;
+
+    // ---- Bootstrap values: the effective configuration (version 0) while no admin configuration is ACTIVE.
+    // TopK, MaxContextTokens, MaxOutputTokens and MaxHistoryMessages above are bootstrap values too.
+
+    public string GenerationModel { get; set; } = "gpt-4.1-mini";
+    /// <summary>Ignored (sent as null) when the bootstrap model does not support temperature.</summary>
+    public decimal? Temperature { get; set; } = 0.1m;
+    public int ChunkCharacters { get; set; } = 2400;
+    public int ChunkOverlap { get; set; } = 300;
+    public decimal MinScore { get; set; } = 0.2m;
+    public string PromptVersion { get; set; } = "v1";
+
+    // ---- Admin runtime configuration (rag_configuration): allowlists and bounds. No secrets, no URLs.
+
+    /// <summary>Allowlist of generation models admins may choose. Empty = the built-in defaults.</summary>
+    public List<RagGenerationModelOptions> GenerationModels { get; set; } = [];
+    /// <summary>Prompt template versions known to the RAG service (it holds the templates). Empty = ["v1"].</summary>
+    public List<string> PromptVersions { get; set; } = [];
+    /// <summary>Bounds for admin values; they can only narrow <see cref="RagConfigurationLimits.Hard"/>.</summary>
+    public RagConfigurationLimits ConfigurationLimits { get; set; } = new();
+    /// <summary>How long the effective configuration is cached per instance (clamped to 0–15 s; activation invalidates it locally).</summary>
+    public int ConfigurationCacheSeconds { get; set; } = 10;
 }
 
+/// <param name="ConfigVersion">Configuration snapshot of the job (0 = bootstrap).</param>
 public sealed record RagIngestRequest(Guid VersionId, Guid DocumentId, string Bucket, string ObjectKey, string? ObjectVersionId, string ContentType,
-    string ExpectedSha256, string Title, int VersionNumber);
+    string ExpectedSha256, string Title, int VersionNumber, int ConfigVersion = 0, int? ChunkCharacters = null, int? ChunkOverlap = null);
 
-public sealed record RagIngestResult(bool Reached, string Status, int? PageCount, int? ChunkCount, int? Characters, string? EmbeddingModel, int? EmbeddingDimension, string? Error);
+/// <param name="ConfigVersion">Echoed by the RAG service with the chunk settings it actually used (null from an older service).</param>
+public sealed record RagIngestResult(bool Reached, string Status, int? PageCount, int? ChunkCount, int? Characters, string? EmbeddingModel, int? EmbeddingDimension, string? Error,
+    int? ConfigVersion = null, int? ChunkCharacters = null, int? ChunkOverlap = null);
 
 public sealed record RagHistoryTurn(string Role, string Content);
 
 public sealed record RagAllowedVersion(Guid VersionId, Guid DocumentId, string Title, int VersionNumber);
 
+/// <summary>
+/// One question. Generation values come from the effective configuration; null model / token parameter / min score / prompt
+/// version mean "service default". With a model named (an ACTIVE admin configuration), a null <paramref name="Temperature"/> is
+/// sent as JSON null: the service then omits it from the provider call. Without a model (bootstrap) model, temperature and token
+/// parameter are not sent at all, so the service's environment defaults (RAG_LLM_MODEL, RAG_LLM_TEMPERATURE) apply.
+/// </summary>
 public sealed record RagAnswerRequest(string Question, IReadOnlyList<RagHistoryTurn> History, IReadOnlyList<RagAllowedVersion> AllowedVersions,
-    int TopK, int MaxContextTokens, int MaxOutputTokens);
+    int TopK, int MaxContextTokens, int MaxOutputTokens, int ConfigVersion = 0, string? GenerationModel = null, decimal? Temperature = null,
+    string? TokenParameter = null, decimal? MinScore = null, string? PromptVersion = null);
 
 public sealed record RagCitation(Guid DocumentId, Guid VersionId, string ChunkId, int? Page, string? Section, double Score, string? Snippet);
 
 public sealed record RagAnswerResult(bool Reached, string? Error, string? Answer, bool Grounded, IReadOnlyList<RagCitation> Citations,
-    int PromptTokens, int CompletionTokens, string? Model, int RetrievalMs, int GenerationMs);
+    int PromptTokens, int CompletionTokens, string? Model, int RetrievalMs, int GenerationMs, int? ConfigVersion = null);
 
 /// <summary>Internal client of the FastAPI RAG service (HMAC-signed requests over the private network).</summary>
 public interface IRagServiceClient
@@ -105,7 +137,22 @@ public interface IKnowledgeUnitOfWork : ITransactionalUnitOfWork
     /// </summary>
     Task<bool> CompleteUsageAsync(Guid reservationId, long inputTokens, long outputTokens, DateTimeOffset now, CancellationToken cancellationToken);
 
+    // ---- Admin RAG configuration
+
+    /// <summary>The single ACTIVE or DRAFT configuration (partial unique indexes guarantee at most one of each).</summary>
+    Task<RagConfiguration?> FindConfigurationAsync(string status, bool track, CancellationToken cancellationToken);
+    Task<RagConfiguration?> FindConfigurationByVersionAsync(int version, bool track, CancellationToken cancellationToken);
+    Task<int> MaxConfigurationVersionAsync(CancellationToken cancellationToken);
+    Task<(IReadOnlyList<RagConfiguration> Items, int Total)> ListConfigurationsAsync(int skip, int take, CancellationToken cancellationToken);
+
+    /// <summary>READY_FOR_REVIEW and PUBLISHED versions of documents that are not archived (the versions that hold live chunks).</summary>
+    Task<IReadOnlyList<KnowledgeDocumentVersion>> GetIndexedVersionsAsync(bool track, CancellationToken cancellationToken);
+
+    /// <summary>Versions with a PENDING, RUNNING or RETRY_WAITING job of any kind.</summary>
+    Task<IReadOnlyList<Guid>> GetVersionsWithOpenJobsAsync(CancellationToken cancellationToken);
+
     void Add<TEntity>(TEntity entity) where TEntity : class;
+    void Remove<TEntity>(TEntity entity) where TEntity : class;
 }
 
 /// <summary>Outcome of <see cref="IKnowledgeUnitOfWork.TryReserveUsageAsync"/>: a reservation, or the limit that was hit.</summary>

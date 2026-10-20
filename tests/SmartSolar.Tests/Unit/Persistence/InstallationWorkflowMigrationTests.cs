@@ -10,9 +10,10 @@ using SmartSolar.Tests.TestSupport;
 namespace SmartSolar.Tests.Unit.Persistence;
 
 /// <summary>
-/// Guards the InstallationWorkflowAndKnowledgeBase migration without touching any database: it must create
-/// exactly the reviewed schema, never alter existing tables, carry the manual exclusion constraint, roll
-/// back cleanly, and the model snapshot must match the current EF model (no pending model changes).
+/// Guards the InstallationWorkflowAndKnowledgeBase migration without touching any database. It is APPLIED to Supabase Dev
+/// and immutable: it must keep creating exactly the reviewed 32 tables, never alter existing tables, carry the manual
+/// exclusion constraint and roll back cleanly. The last test guards every migration: the model snapshot must match the
+/// current EF model (no pending model changes).
 /// </summary>
 public sealed class InstallationWorkflowMigrationTests
 {
@@ -32,7 +33,7 @@ public sealed class InstallationWorkflowMigrationTests
         var up = Migration().UpOperations;
         var created = up.OfType<CreateTableOperation>().ToList();
 
-        Assert.Equal(PendingSchemaScript.PendingTables().OrderBy(t => t), created.Select(t => t.Name).OrderBy(t => t));
+        Assert.Equal(PendingSchemaScript.InstallationWorkflowMigrationTables.OrderBy(t => t), created.Select(t => t.Name).OrderBy(t => t));
         Assert.Equal(32, created.Count);
         Assert.Equal(105, up.OfType<CreateIndexOperation>().Count());
         // Foreign keys inside CREATE TABLE plus the ones EF adds afterwards to break table cycles
@@ -66,10 +67,10 @@ public sealed class InstallationWorkflowMigrationTests
     {
         var down = Migration().DownOperations;
 
-        Assert.Equal(PendingSchemaScript.PendingTables().OrderBy(t => t), down.OfType<DropTableOperation>().Select(d => d.Name).OrderBy(t => t));
+        Assert.Equal(PendingSchemaScript.InstallationWorkflowMigrationTables.OrderBy(t => t), down.OfType<DropTableOperation>().Select(d => d.Name).OrderBy(t => t));
         var sql = Assert.Single(down.OfType<SqlOperation>()).Sql;
         Assert.Equal("ALTER TABLE installation_shift_assignment DROP CONSTRAINT IF EXISTS ex_installation_shift_assignment_no_overlap;", sql);
-        Assert.All(down.OfType<DropForeignKeyOperation>(), f => Assert.Contains(f.Table, PendingSchemaScript.PendingTables()));
+        Assert.All(down.OfType<DropForeignKeyOperation>(), f => Assert.Contains(f.Table, PendingSchemaScript.InstallationWorkflowMigrationTables));
         Assert.Empty(down.Where(o => o is not (DropTableOperation or DropForeignKeyOperation or SqlOperation)));
         Assert.DoesNotContain("btree_gist", sql);   // the extension stays: Flow 1's exclusion constraint uses it
     }

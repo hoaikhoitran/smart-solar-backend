@@ -2,6 +2,7 @@ using System.Text.Json;
 using FluentValidation;
 using SmartSolar.Modules.Catalog.Constants;
 using SmartSolar.Modules.Catalog.Installation;
+using SmartSolar.Modules.Catalog.ProductImages;
 
 namespace SmartSolar.Modules.Catalog.ManageProducts;
 
@@ -121,11 +122,93 @@ public abstract class ProductDetailsValidator<T> : AbstractValidator<T>
 public sealed class CreateProductCommandValidator : ProductDetailsValidator<CreateProductCommand>
 {
     public CreateProductCommandValidator()
+        : this(new CatalogOptions())
+    {
+    }
+
+    public CreateProductCommandValidator(CatalogOptions options)
     {
         RuleFor(x => x.Status)
             .Must(status => ProductStatusCodes.TryParse(status, out _))
             .When(x => x.Status is not null)
             .WithMessage($"'Status' must be {ProductStatusCodes.Active} or {ProductStatusCodes.Inactive}.");
+
+        RuleFor(x => x.Images)
+            .Custom((images, context) =>
+            {
+                if (images is null)
+                {
+                    return;
+                }
+
+                if (images.Count > options.MaxImagesPerProduct)
+                {
+                    context.AddFailure(
+                        nameof(CreateProductCommand.Images),
+                        $"'Images' must contain at most {options.MaxImagesPerProduct} images.");
+                }
+
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+
+                for (var index = 0; index < images.Count; index++)
+                {
+                    var image = images[index];
+
+                    if (image is null)
+                    {
+                        context.AddFailure($"Images[{index}]", "'Images' must not contain null entries.");
+                        continue;
+                    }
+
+                    if (ProductImageRules.UrlError(image.Url, options) is { } urlError)
+                    {
+                        context.AddFailure($"Images[{index}].Url", urlError);
+                    }
+                    else if (!seen.Add(ProductImageRules.NormalizeUrl(image.Url)))
+                    {
+                        context.AddFailure($"Images[{index}].Url", "'Url' appears more than once.");
+                    }
+
+                    if (ProductImageRules.AltTextError(image.AltText) is { } altError)
+                    {
+                        context.AddFailure($"Images[{index}].AltText", altError);
+                    }
+                }
+            });
+
+        // Deprecated single-image field: validated like any image URL, and it may
+        // only accompany Images when it names the same (primary, first) image.
+        RuleFor(x => x.ImageUrl)
+            .Custom((imageUrl, context) =>
+            {
+                var command = context.InstanceToValidate;
+
+                if (string.IsNullOrWhiteSpace(imageUrl))
+                {
+                    return;
+                }
+
+                if (command.Images is { Count: > 0 } images)
+                {
+                    if (images[0] is not { } first
+                        || !string.Equals(
+                            ProductImageRules.NormalizeUrl(imageUrl),
+                            first.Url is null ? null : ProductImageRules.NormalizeUrl(first.Url),
+                            StringComparison.Ordinal))
+                    {
+                        context.AddFailure(
+                            nameof(CreateProductCommand.ImageUrl),
+                            "'Image Url' is deprecated; when 'Images' is supplied it must be omitted or equal the first image's URL.");
+                    }
+
+                    return;
+                }
+
+                if (ProductImageRules.UrlError(imageUrl, options) is { } error)
+                {
+                    context.AddFailure(nameof(CreateProductCommand.ImageUrl), error);
+                }
+            });
     }
 }
 

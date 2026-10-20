@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -25,6 +26,12 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 # can never be retrieved by (or mixed with) real embeddings.
 DEV_EMBEDDING_MODEL = "hashing-dev"
 NON_PRODUCTION_ENVIRONMENTS = ("development", "test")
+
+# Per-request generation and chunking values (sent by the API from the admin RAG configuration) are validated against these.
+MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
+TOKEN_PARAMETERS = ("max_tokens", "max_completion_tokens")
+MIN_CHUNK_CHARACTERS = 400
+MAX_CHUNK_CHARACTERS = 8000
 
 
 def _int(name: str, default: int) -> int:
@@ -74,6 +81,10 @@ class Settings:
     llm_base_url: Optional[str] = None
     llm_api_key: Optional[str] = None
     llm_temperature: float = 0.1
+    # Optional allowlist of generation models a request may select (empty = any id matching MODEL_ID_PATTERN).
+    llm_allowed_models: List[str] = field(default_factory=list)
+    # Prompt template used when a request names none (see prompting.PROMPT_TEMPLATES).
+    prompt_version: str = "v1"
 
     provider_timeout_seconds: int = 45
     # Must stay below the API's Rag:IngestTimeoutSeconds (300): stop and report FAILED before the caller gives up.
@@ -121,6 +132,8 @@ class Settings:
             llm_base_url=_str("RAG_LLM_BASE_URL"),
             llm_api_key=_str("RAG_LLM_API_KEY"),
             llm_temperature=_float("RAG_LLM_TEMPERATURE", 0.1),
+            llm_allowed_models=_list("RAG_LLM_ALLOWED_MODELS"),
+            prompt_version=_str("RAG_PROMPT_VERSION", "v1") or "v1",
             provider_timeout_seconds=_int("RAG_PROVIDER_TIMEOUT_SECONDS", 45),
             ingest_deadline_seconds=_int("RAG_INGEST_DEADLINE_SECONDS", 270),
             max_document_bytes=_int("RAG_MAX_DOCUMENT_BYTES", 50 * 1024 * 1024),
@@ -161,6 +174,12 @@ class Settings:
             problems.append("RAG_INGEST_DEADLINE_SECONDS must be between 10 and 1700")
         if self.chunk_overlap >= self.chunk_characters:
             problems.append("RAG_CHUNK_OVERLAP must be smaller than RAG_CHUNK_CHARACTERS")
+        if any(not MODEL_ID_PATTERN.match(m) for m in self.llm_allowed_models):
+            problems.append("RAG_LLM_ALLOWED_MODELS entries must match ^[A-Za-z0-9._:-]{1,100}$")
+        from .prompting import PROMPT_TEMPLATES  # local import: prompting imports llm, which imports this module
+
+        if self.prompt_version not in PROMPT_TEMPLATES:
+            problems.append(f"RAG_PROMPT_VERSION must be one of: {', '.join(PROMPT_TEMPLATES)}")
         if self.environment == "production":
             if self.vector_store != "pgvector":
                 problems.append("production requires RAG_VECTOR_STORE=pgvector")

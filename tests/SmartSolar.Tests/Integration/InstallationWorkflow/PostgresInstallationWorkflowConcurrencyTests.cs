@@ -3,7 +3,6 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 using SmartSolar.Infrastructure.Persistence;
 using SmartSolar.Modules.CustomerContracts;
-using SmartSolar.Modules.Files;
 using SmartSolar.Modules.Installations;
 using SmartSolar.Modules.Payments;
 using SmartSolar.Modules.Quotations;
@@ -18,7 +17,7 @@ namespace SmartSolar.Tests.Integration.InstallationWorkflow;
 /// <summary>
 /// Real PostgreSQL behaviour of the Installation Flow under concurrency, on a disposable local database
 /// created from the PENDING_MANUAL_MIGRATION review script (never a shared database). Each racing
-/// caller has its own DbContext/connection. PayOS, storage and travel are synthetic.
+/// caller has its own DbContext/connection. PayOS and storage are synthetic.
 /// </summary>
 public sealed class PostgresInstallationWorkflowConcurrencyTests
 {
@@ -113,96 +112,240 @@ public sealed class PostgresInstallationWorkflowConcurrencyTests
         Assert.DoesNotContain("REJECTED", results);
     }
 
-    [PostgresFact]
-    public async Task Two_managers_booking_the_same_technician_on_overlapping_shifts_cannot_both_succeed()
+    private static AssignTechnicianInput Assign(Guid technician, DateTimeOffset start, DateTimeOffset end, int revision, string? reason = null)
+        => new(technician, start, end, reason, revision);
+
+    /// <summary>Two PAID contracts (Binh Tan sites) with fresh projects and one shared Binh Tan technician.</summary>
+    private static async Task<(InstallationTests.Paid First, InstallationStaffView P1, InstallationTests.Paid Second, InstallationStaffView P2, Guid Shared)> TwoProjectsAsync(
+        InstallationWorkflowTestContext ctx)
     {
-        var (database, ctx) = await WorldAsync();
-        await using var _ = database;
-        await using var __ = ctx;
         var first = await InstallationTests.PaidContractAsync(ctx);
         ctx.Clock.Now = DefaultNow.ToUniversalTime();   // the first on-site survey moved the clock past the 10:00 slot
         var second = await InstallationTests.PaidContractAsync(ctx);
-        var shared = await ctx.Scheduling.SeedTechnicianAsync("Shared tech", District1);
+        var shared = await ctx.Scheduling.SeedTechnicianAsync("Shared tech", BinhTan);
         var p1 = (await ctx.Installations().CreateProjectAsync(first.ManagerId, first.ContractId, None)).Value!;
         var p2 = (await ctx.Installations().CreateProjectAsync(second.ManagerId, second.ContractId, None)).Value!;
-        var wed = Day.AddDays(1);
-        IReadOnlyList<ShiftInput> shifts = [new ShiftInput(wed, new TimeOnly(8, 0), new TimeOnly(12, 0))];
-
-        var results = await RaceAsync(database, 2, (db, i) => i == 0
-            ? ctx.Installations(db).ConfirmScheduleAsync(first.ManagerId, p1.ProjectId, p1.Revision, [shared.Id], shared.Id, shifts, None)
-            : ctx.Installations(db).ConfirmScheduleAsync(second.ManagerId, p2.ProjectId, p2.Revision, [shared.Id], shared.Id, shifts, None));
-
-        Assert.Single(results, r => r.Succeeded);
-        Assert.Equal(InstallationErrorCodes.ScheduleConflict, Assert.Single(results, r => !r.Succeeded).ErrorCode);
-        await using var check = database.NewContext();
-        Assert.Equal(1, await check.InstallationShiftAssignments.CountAsync(a => a.TechnicianUserId == shared.Id && a.Status == "ACTIVE"));
+        return (first, p1, second, p2, shared.Id);
     }
 
+    /// <summary>
+    /// Both managers pass the optimistic check; under the technician_profile lock the second re-check sees the first
+    /// PENDING assignment (busy interval with the buffer), and the exclusion constraint is the backstop.
+    /// </summary>
     [PostgresFact]
-    public async Task The_exclusion_constraint_rejects_overlapping_assignments_written_directly()
+    public async Task Two_managers_assigning_one_technician_to_overlapping_intervals_cannot_both_succeed()
     {
         var (database, ctx) = await WorldAsync();
         await using var _ = database;
         await using var __ = ctx;
-        var (_, project, leader, _) = await InstallationTests.ScheduledAsync(ctx);
-        await using var db = database.NewContext();
-        var existing = await db.InstallationShiftAssignments.AsNoTracking().FirstAsync(a => a.TechnicianUserId == leader && a.Status == "ACTIVE");
-        db.InstallationShiftAssignments.Add(new InstallationShiftAssignment
-        {
-            Id = Guid.NewGuid(), ShiftId = existing.ShiftId, ProjectId = project.ProjectId, TechnicianUserId = leader,
-            StartsAt = existing.StartsAt.AddMinutes(30), EndsAt = existing.EndsAt.AddMinutes(30), Status = "ACTIVE", CreatedAt = DateTimeOffset.UtcNow,
-        });
-        var error = await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
-        Assert.Contains(((PostgresException)error.InnerException!).SqlState, new[] { PostgresErrorCodes.ExclusionViolation, PostgresErrorCodes.UniqueViolation });
+        var (first, p1, second, p2, shared) = await TwoProjectsAsync(ctx);
+        var wed = Day.AddDays(1);
+
+        var results = await RaceAsync(database, 2, (db, i) => i == 0
+            ? ctx.Installations(db).AssignAsync(first.ManagerId, p1.ProjectId, Assign(shared, At(8, 0, wed), At(17, 0, wed), p1.Revision), None)
+            : ctx.Installations(db).AssignAsync(second.ManagerId, p2.ProjectId, Assign(shared, At(13, 0, wed), At(17, 0, wed), p2.Revision), None));
+
+        Assert.Single(results, r => r.Succeeded);
+        Assert.Equal(SmartSolar.Modules.Scheduling.Domain.EligibilityReasons.ScheduleConflict, Assert.Single(results, r => !r.Succeeded).ErrorCode);
+        await using var check = database.NewContext();
+        Assert.Equal(1, await check.InstallationAssignments.CountAsync(a => a.TechnicianUserId == shared && a.Status == AssignmentStatuses.Pending));
+        Assert.Equal(1, await check.InstallationProjects.CountAsync(p => p.Status == InstallationStatuses.PendingTechnicianAcceptance));
     }
 
+    /// <summary>Two managers (re)assigning the same project from the same revision: exactly one wins, one current assignment remains.</summary>
     [PostgresFact]
-    public async Task Disabling_a_technician_races_an_installation_booking_without_leaving_an_inactive_booked_technician()
+    public async Task Concurrent_assignments_of_one_project_leave_exactly_one_current_assignment()
     {
         var (database, ctx) = await WorldAsync();
         await using var _ = database;
         await using var __ = ctx;
         var paid = await InstallationTests.PaidContractAsync(ctx);
-        var tech = await ctx.Scheduling.SeedTechnicianAsync("Racing tech", District1);
+        var a = await ctx.Scheduling.SeedTechnicianAsync("Tech A", BinhTan);
+        var b = await ctx.Scheduling.SeedTechnicianAsync("Tech B", BinhTan);
         var project = (await ctx.Installations().CreateProjectAsync(paid.ManagerId, paid.ContractId, None)).Value!;
-        IReadOnlyList<ShiftInput> shifts = [new ShiftInput(Day.AddDays(1), new TimeOnly(8, 0), new TimeOnly(12, 0))];
+        var wed = Day.AddDays(1);
 
-        var results = await RaceAsync(database, 2, async (db, i) =>
-        {
-            if (i == 0)
-                return (await ctx.Installations(db).ConfirmScheduleAsync(paid.ManagerId, project.ProjectId, project.Revision, [tech.Id], tech.Id, shifts, None)).Succeeded;
-            var u = ctx.SchedulingWithInstallations(db);
-            var admin = new AdminTechnicianHandlers(u, ctx.Scheduling.Recalculation(u), ctx.Scheduling.Calendar, ctx.Clock);
-            return (await admin.UpsertProfileAsync(new UpsertTechnicianProfileCommand(tech.Id, District1.Latitude, District1.Longitude, null, false, null), None)).Succeeded;
-        });
+        var results = await RaceAsync(database, 4, (db, i) => ctx.Installations(db).AssignAsync(paid.ManagerId, project.ProjectId,
+            Assign(i % 2 == 0 ? a.Id : b.Id, At(8, 0, wed), At(12, 0, wed), project.Revision), None));
 
+        Assert.Single(results, r => r.Succeeded);
+        Assert.All(results.Where(r => !r.Succeeded), r => Assert.Equal(InstallationErrorCodes.StaleRevision, r.ErrorCode));
         await using var check = database.NewContext();
-        var active = (await check.TechnicianProfiles.SingleAsync(p => p.UserId == tech.Id)).IsSchedulingActive;
-        var booked = await check.InstallationShiftAssignments.AnyAsync(a => a.TechnicianUserId == tech.Id && a.Status == "ACTIVE");
-        Assert.Equal(1, results.Count(r => r));
-        Assert.True(active == booked, $"active={active}, booked={booked}");
+        Assert.Equal(1, await check.InstallationAssignments.CountAsync(x => x.ProjectId == project.ProjectId));
+        Assert.Equal(project.Revision + 1, (await check.InstallationProjects.SingleAsync(p => p.Id == project.ProjectId)).Revision);
     }
 
     [PostgresFact]
-    public async Task Double_milestone_completion_completes_once()
+    public async Task The_exclusion_constraint_rejects_overlapping_current_assignments_written_directly()
     {
         var (database, ctx) = await WorldAsync();
         await using var _ = database;
         await using var __ = ctx;
-        var (_, project, leader, _) = await InstallationTests.ScheduledAsync(ctx);
-        ctx.Clock.Now = At(8, 30, Day.AddDays(1)).ToUniversalTime();
-        Assert.True((await ctx.Installations().StartProjectAsync(leader, project.ProjectId, None)).Succeeded);
-        var milestone = project.Milestones[0];
-        await ctx.Installations().StartMilestoneAsync(leader, project.ProjectId, milestone.MilestoneId, None);
-        var photo = await ctx.VerifiedFileAsync(leader, FilePurposes.InstallationEvidence);
-        Assert.True((await ctx.Installations().AddEvidenceAsync(leader, project.ProjectId, milestone.MilestoneId, photo, null, None)).Succeeded);
+        var (first, p1, _, p2, shared) = await TwoProjectsAsync(ctx);
+        var wed = Day.AddDays(1);
+        Assert.True((await ctx.Installations().AssignAsync(first.ManagerId, p1.ProjectId, Assign(shared, At(8, 0, wed), At(12, 0, wed), p1.Revision), None)).Succeeded);
+        await using var db = database.NewContext();
+        db.InstallationAssignments.Add(new InstallationAssignment
+        {
+            Id = Guid.NewGuid(), ProjectId = p2.ProjectId, TechnicianUserId = shared, StartsAt = At(11, 0, wed).ToUniversalTime(), EndsAt = At(15, 0, wed).ToUniversalTime(),
+            Status = AssignmentStatuses.Accepted, AssignedByUserId = first.ManagerId, AssignedAt = DateTimeOffset.UtcNow, RespondedAt = DateTimeOffset.UtcNow,
+        });
+        var error = await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+        Assert.Equal(PostgresErrorCodes.ExclusionViolation, ((PostgresException)error.InnerException!).SqlState);
+        Assert.Equal("ex_installation_assignment_no_overlap", ((PostgresException)error.InnerException!).ConstraintName);
+    }
 
-        var results = await RaceAsync(database, 5, (db, _) => ctx.Installations(db).CompleteMilestoneAsync(leader, project.ProjectId, milestone.MilestoneId, None));
+    [PostgresFact]
+    public async Task Disabling_a_technician_races_an_installation_assignment_without_leaving_an_inactive_assigned_technician()
+    {
+        var (database, ctx) = await WorldAsync();
+        await using var _ = database;
+        await using var __ = ctx;
+        var paid = await InstallationTests.PaidContractAsync(ctx);
+        var tech = await ctx.Scheduling.SeedTechnicianAsync("Racing tech", BinhTan);
+        var project = (await ctx.Installations().CreateProjectAsync(paid.ManagerId, paid.ContractId, None)).Value!;
+        var wed = Day.AddDays(1);
 
-        Assert.All(results, r => Assert.True(r.Succeeded || r.ErrorCode == InstallationErrorCodes.StaleRevision, r.ErrorCode));
+        var results = await RaceAsync(database, 2, async (db, i) =>
+        {
+            if (i == 0)
+                return (await ctx.Installations(db).AssignAsync(paid.ManagerId, project.ProjectId, Assign(tech.Id, At(8, 0, wed), At(12, 0, wed), project.Revision), None)).Succeeded;
+            var u = ctx.SchedulingWithInstallations(db);
+            var admin = new AdminTechnicianHandlers(u, ctx.Scheduling.Assignments(u), ctx.Scheduling.Calendar, ctx.Scheduling.Options, ctx.Clock);
+            return (await admin.UpsertProfileAsync(new UpsertTechnicianProfileCommand(tech.Id, false, null), None)).Succeeded;
+        });
+
         await using var check = database.NewContext();
-        Assert.Equal(MilestoneStatuses.Completed, (await check.InstallationMilestones.SingleAsync(m => m.Id == milestone.MilestoneId)).Status);
-        Assert.Equal(1, await check.InstallationEvents.CountAsync(e => e.ProjectId == project.ProjectId && e.EventType == "MILESTONE_COMPLETED"));
+        var active = (await check.TechnicianProfiles.SingleAsync(p => p.UserId == tech.Id)).IsSchedulingActive;
+        var assigned = await check.InstallationAssignments.AnyAsync(a => a.TechnicianUserId == tech.Id && a.Status == AssignmentStatuses.Pending);
+        Assert.Equal(1, results.Count(r => r));
+        Assert.True(active == assigned, $"active={active}, assigned={assigned}");
+    }
+
+    /// <summary>A survey booking (holder choice under the lock) racing an installation assignment of the only technician: one commitment.</summary>
+    [PostgresFact]
+    public async Task A_survey_booking_racing_an_installation_assignment_never_double_books_the_technician()
+    {
+        var (database, ctx) = await WorldAsync();
+        await using var _ = database;
+        await using var __ = ctx;
+        var paid = await InstallationTests.PaidContractAsync(ctx);
+        var tech = await ctx.Scheduling.SeedTechnicianAsync("Contended", BinhTan);
+        await using (var db = database.NewContext())
+            await db.TechnicianProfiles.Where(p => p.UserId != tech.Id).ExecuteUpdateAsync(x => x.SetProperty(p => p.IsSchedulingActive, false));
+        var request = await ctx.Scheduling.SeedSurveyRequestAsync(BinhTan, "Racing customer");
+        var project = (await ctx.Installations().CreateProjectAsync(paid.ManagerId, paid.ContractId, None)).Value!;
+        var wed = Day.AddDays(1);
+
+        SmartSolar.Modules.Scheduling.PreSurveyAppointments.BookSurveyAppointmentHandler Book(AppDbContext db)
+        {
+            var u = ctx.SchedulingWithInstallations(db);
+            return new(u, ctx.Scheduling.Reservations(u), ctx.Scheduling.Eligibility(u), ctx.Scheduling.Coverage(u), ctx.Scheduling.Calendar, ctx.Clock);
+        }
+
+        var results = await RaceAsync(database, 2, async (db, i) => i == 0
+            ? (await ctx.Installations(db).AssignAsync(paid.ManagerId, project.ProjectId, Assign(tech.Id, At(8, 0, wed), At(12, 0, wed), project.Revision), None)).Succeeded
+            : (await Book(db).HandleAsync(new BookSurveyAppointmentCommand(request.Customer.Id, request.Request.Id, At(10, 0, wed), null), None)).Succeeded);
+
+        await using var check = database.NewContext();
+        var surveys = await check.TechnicianAppointments.CountAsync(a => a.ReservedTechnicianUserId == tech.Id && a.StartsAt > At(0, 0, wed).ToUniversalTime()
+            && a.Status != SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.Cancelled);
+        var installs = await check.InstallationAssignments.CountAsync(a => a.TechnicianUserId == tech.Id && a.Status == AssignmentStatuses.Pending);
+        Assert.Equal(1, results.Count(r => r));
+        Assert.True(surveys + installs == 1, $"surveys={surveys}, installation assignments={installs}");
+    }
+
+    /// <summary>
+    /// Survey self-acceptance by technician X (locks X and the holder) racing a Manager assigning X to an overlapping installation
+    /// (locks X): both take X's technician_profile lock, so the second one re-checks against the first one's commitment.
+    /// </summary>
+    [PostgresFact]
+    public async Task Survey_self_acceptance_racing_an_installation_assignment_of_the_same_technician_has_one_winner()
+    {
+        var (database, ctx) = await WorldAsync();
+        await using var _ = database;
+        await using var __ = ctx;
+        var paid = await InstallationTests.PaidContractAsync(ctx);
+        var holder = await ctx.Scheduling.SeedTechnicianAsync("Holder", BinhTan);
+        var racer = await ctx.Scheduling.SeedTechnicianAsync("Racer", BinhTan);
+        var wed = Day.AddDays(1);
+        // Book while only the holder is schedulable, then let the racer compete.
+        await using (var db = database.NewContext())
+            await db.TechnicianProfiles.Where(p => p.UserId != holder.Id).ExecuteUpdateAsync(x => x.SetProperty(p => p.IsSchedulingActive, false));
+        var request = await ctx.Scheduling.SeedSurveyRequestAsync(BinhTan, "Open survey");
+        var pending = await ctx.Scheduling.BookAsync(request, At(10, 0, wed));
+        await using (var db = database.NewContext())
+            await db.TechnicianProfiles.Where(p => p.UserId == racer.Id).ExecuteUpdateAsync(x => x.SetProperty(p => p.IsSchedulingActive, true));
+        var project = (await ctx.Installations().CreateProjectAsync(paid.ManagerId, paid.ContractId, None)).Value!;
+
+        var results = await RaceAsync(database, 2, async (db, i) => i == 0
+            ? (await ctx.Installations(db).AssignAsync(paid.ManagerId, project.ProjectId, Assign(racer.Id, At(8, 0, wed), At(12, 0, wed), project.Revision), None)).Succeeded
+            : (await ctx.JobsWithInstallations(db).AcceptAsync(new AcceptAppointmentCommand(racer.Id, pending.Id, null), None)).Succeeded);
+
+        await using var check = database.NewContext();
+        var accepted = await check.TechnicianAppointments.AnyAsync(a => a.Id == pending.Id && a.AssignedTechnicianUserId == racer.Id);
+        var installs = await check.InstallationAssignments.AnyAsync(a => a.TechnicianUserId == racer.Id && a.Status == AssignmentStatuses.Pending);
+        Assert.Equal(1, results.Count(r => r));
+        Assert.True(accepted ^ installs, $"accepted={accepted}, installation={installs}");
+    }
+
+    /// <summary>The technician's completion report racing the Manager's reassignment from the same revision: exactly one outcome.</summary>
+    [PostgresFact]
+    public async Task Completion_report_racing_a_reassignment_has_exactly_one_outcome()
+    {
+        var (database, ctx) = await WorldAsync();
+        await using var _ = database;
+        await using var __ = ctx;
+        var (paid, project, tech, other) = await InstallationTests.ScheduledAsync(ctx);
+        await InstallationTests.StartAsync(ctx, project.ProjectId, tech);
+        await InstallationTests.AddCompletionEvidenceAsync(ctx, project.ProjectId, tech);
+        Assert.True((await InstallationTests.RegisterPanelAndInverterAsync(ctx, project.ProjectId, tech)).Succeeded);
+        var revision = (await ctx.Installations().GetForManagerAsync(project.ProjectId, None)).Value!.Revision;
+        var thu = Day.AddDays(2);
+
+        var results = await RaceAsync(database, 2, async (db, i) => i == 0
+            ? (await ctx.Installations(db).ReportCompletionAsync(tech, project.ProjectId, "Done", null, None)).ErrorCode
+            : (await ctx.Installations(db).AssignAsync(paid.ManagerId, project.ProjectId, Assign(other, At(8, 0, thu), At(12, 0, thu), revision, "Swap"), None)).ErrorCode);
+
+        Assert.Equal(1, results.Count(r => r is null));
+        await using var check = database.NewContext();
+        var stored = await check.InstallationProjects.SingleAsync(p => p.Id == project.ProjectId);
+        var reported = await check.InstallationAcceptances.CountAsync(a => a.ProjectId == project.ProjectId);
+        var current = await check.InstallationAssignments.SingleAsync(a => a.ProjectId == project.ProjectId
+            && (a.Status == AssignmentStatuses.Pending || a.Status == AssignmentStatuses.Accepted));
+        if (results[0] is null)
+        {
+            Assert.Equal(InstallationStatuses.PendingCustomerAcceptance, stored.Status);
+            Assert.Equal(1, reported);
+            Assert.Equal(tech, current.TechnicianUserId);
+        }
+        else
+        {
+            Assert.Equal(InstallationStatuses.InProgress, stored.Status);
+            Assert.Equal(0, reported);
+            Assert.Equal(other, current.TechnicianUserId);
+        }
+        Assert.Equal(revision + 1, stored.Revision);
+    }
+
+    [PostgresFact]
+    public async Task Double_completion_report_creates_one_acceptance_round()
+    {
+        var (database, ctx) = await WorldAsync();
+        await using var _ = database;
+        await using var __ = ctx;
+        var (_, project, tech, _) = await InstallationTests.ScheduledAsync(ctx);
+        await InstallationTests.StartAsync(ctx, project.ProjectId, tech);
+        await InstallationTests.AddCompletionEvidenceAsync(ctx, project.ProjectId, tech);
+        Assert.True((await InstallationTests.RegisterPanelAndInverterAsync(ctx, project.ProjectId, tech)).Succeeded);
+
+        var results = await RaceAsync(database, 5, (db, _) => ctx.Installations(db).ReportCompletionAsync(tech, project.ProjectId, "Done", null, None));
+
+        Assert.Single(results, r => r.Succeeded);
+        Assert.All(results.Where(r => !r.Succeeded), r => Assert.Contains(r.ErrorCode, new[] { InstallationErrorCodes.StaleRevision, InstallationErrorCodes.InvalidState }));
+        await using var check = database.NewContext();
+        Assert.Equal(1, await check.InstallationAcceptances.CountAsync(a => a.ProjectId == project.ProjectId));
+        Assert.Equal(1, await check.InstallationEvents.CountAsync(e => e.ProjectId == project.ProjectId && e.EventType == InstallationEventTypes.CompletionReported));
     }
 
     [PostgresFact]
@@ -237,40 +380,6 @@ public sealed class PostgresInstallationWorkflowConcurrencyTests
             $"UPDATE payment_attempt SET status = 'PAID', paid_at = now(), amount_paid = amount WHERE id = {refund.Id}"));
         Assert.Equal(PostgresErrorCodes.UniqueViolation, error.SqlState);
         Assert.Equal("ux_payment_attempt_one_paid", error.ConstraintName);
-    }
-
-    [PostgresFact]
-    public async Task A_survey_booking_racing_an_installation_confirmation_never_double_books_the_technician()
-    {
-        var (database, ctx) = await WorldAsync();
-        await using var _ = database;
-        await using var __ = ctx;
-        var paid = await InstallationTests.PaidContractAsync(ctx);
-        var tech = await ctx.Scheduling.SeedTechnicianAsync("Contended", District1);
-        await using (var db = database.NewContext())
-            await db.TechnicianProfiles.Where(p => p.UserId != tech.Id).ExecuteUpdateAsync(x => x.SetProperty(p => p.IsSchedulingActive, false));
-        var request = await ctx.Scheduling.SeedSurveyRequestAsync(BinhTan, "Racing customer");
-        var project = (await ctx.Installations().CreateProjectAsync(paid.ManagerId, paid.ContractId, None)).Value!;
-        var wed = Day.AddDays(1);
-        IReadOnlyList<ShiftInput> shifts = [new ShiftInput(wed, new TimeOnly(8, 0), new TimeOnly(12, 0))];
-
-        SmartSolar.Modules.Scheduling.PreSurveyAppointments.BookSurveyAppointmentHandler Book(AppDbContext db)
-        {
-            var u = ctx.SchedulingWithInstallations(db);
-            var evaluator = new SmartSolar.Modules.Scheduling.Services.TechnicianAvailabilityEvaluator(ctx.Scheduling.Options, ctx.Clock);
-            return new(u, new SmartSolar.Modules.Scheduling.Services.AppointmentReservationService(u, evaluator, ctx.Scheduling.Travel, ctx.Scheduling.Options, ctx.Clock,
-                ctx.Scheduling.Calendar), ctx.Scheduling.Calendar, ctx.Clock);
-        }
-
-        var results = await RaceAsync(database, 2, async (db, i) => i == 0
-            ? (await ctx.Installations(db).ConfirmScheduleAsync(paid.ManagerId, project.ProjectId, project.Revision, [tech.Id], tech.Id, shifts, None)).Succeeded
-            : (await Book(db).HandleAsync(new BookSurveyAppointmentCommand(request.Customer.Id, request.Request.Id, At(10, 0, wed), null), None)).Succeeded);
-
-        await using var check = database.NewContext();
-        var surveys = await check.TechnicianAppointments.CountAsync(a => a.ReservedTechnicianUserId == tech.Id && a.Status != SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.Cancelled);
-        var installs = await check.InstallationShiftAssignments.CountAsync(a => a.TechnicianUserId == tech.Id && a.Status == "ACTIVE");
-        Assert.Equal(1, results.Count(r => r));
-        Assert.True(surveys + installs == 1, $"surveys={surveys}, installation assignments={installs}");
     }
 
     /// <summary>

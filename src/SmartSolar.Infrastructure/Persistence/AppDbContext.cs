@@ -3,7 +3,7 @@ using SmartSolar.Modules.Catalog.Entities;
 using SmartSolar.Modules.Identity.Entities;
 using SmartSolar.Modules.PreSurvey.Entities;
 using SmartSolar.Modules.Scheduling.Entities;
-using SimulationEntity = SmartSolar.Modules.SolarSimulation.Entities.SolarSimulation;
+using SmartSolar.Modules.SolarSimulation.Entities;
 
 namespace SmartSolar.Infrastructure.Persistence;
 
@@ -35,10 +35,13 @@ public sealed class AppDbContext : DbContext
     public DbSet<PreSurvey> PreSurveys => Set<PreSurvey>();
 
     public DbSet<Product> Products => Set<Product>();
+
+    public DbSet<ProductImage> ProductImages => Set<ProductImage>();
+
     public DbSet<SurveyRequest> SurveyRequests
     => Set<SurveyRequest>();
 
-    public DbSet<SimulationEntity> SolarSimulations => Set<SimulationEntity>();
+    public DbSet<SelectedSimulation> SelectedSimulations => Set<SelectedSimulation>();
 
     public DbSet<TechnicianProfile> TechnicianProfiles => Set<TechnicianProfile>();
 
@@ -46,11 +49,25 @@ public sealed class AppDbContext : DbContext
 
     public DbSet<TechnicianAppointment> TechnicianAppointments => Set<TechnicianAppointment>();
 
-    public DbSet<TechnicianTravelEstimate> TechnicianTravelEstimates => Set<TechnicianTravelEstimate>();
-
     public DbSet<TechnicianWorkingPeriod> TechnicianWorkingPeriods => Set<TechnicianWorkingPeriod>();
 
-    public DbSet<TechnicianScheduleRecalculation> TechnicianScheduleRecalculations => Set<TechnicianScheduleRecalculation>();
+    public DbSet<SmartSolar.Modules.Scheduling.Zones.OperationalZone> OperationalZones => Set<SmartSolar.Modules.Scheduling.Zones.OperationalZone>();
+
+    public DbSet<SmartSolar.Modules.Scheduling.Zones.OperationalZoneCommune> OperationalZoneCommunes => Set<SmartSolar.Modules.Scheduling.Zones.OperationalZoneCommune>();
+
+    public DbSet<SmartSolar.Modules.Scheduling.Zones.TechnicianZoneMembership> TechnicianZoneMemberships => Set<SmartSolar.Modules.Scheduling.Zones.TechnicianZoneMembership>();
+
+    // ---- Official administrative catalog (reference data; written only by the admin-catalog CLI import) ----
+
+    public DbSet<SmartSolar.Modules.AdministrativeUnits.AdministrativeProvince> AdministrativeProvinces => Set<SmartSolar.Modules.AdministrativeUnits.AdministrativeProvince>();
+
+    public DbSet<SmartSolar.Modules.AdministrativeUnits.AdministrativeCommune> AdministrativeCommunes => Set<SmartSolar.Modules.AdministrativeUnits.AdministrativeCommune>();
+
+    public DbSet<SmartSolar.Modules.AdministrativeUnits.AdministrativeLegacyCommuneMap> AdministrativeLegacyCommuneMaps => Set<SmartSolar.Modules.AdministrativeUnits.AdministrativeLegacyCommuneMap>();
+
+    public DbSet<SmartSolar.Modules.AdministrativeUnits.AdministrativeCatalogImport> AdministrativeCatalogImports => Set<SmartSolar.Modules.AdministrativeUnits.AdministrativeCatalogImport>();
+
+    public DbSet<SurveyRequestEvent> SurveyRequestEvents => Set<SurveyRequestEvent>();
 
     public DbSet<TechnicianAppointmentEvent> TechnicianAppointmentEvents => Set<TechnicianAppointmentEvent>();
 
@@ -90,15 +107,9 @@ public sealed class AppDbContext : DbContext
 
     public DbSet<SmartSolar.Modules.Installations.InstallationProject> InstallationProjects => Set<SmartSolar.Modules.Installations.InstallationProject>();
 
-    public DbSet<SmartSolar.Modules.Installations.InstallationTeamMember> InstallationTeamMembers => Set<SmartSolar.Modules.Installations.InstallationTeamMember>();
+    public DbSet<SmartSolar.Modules.Installations.InstallationAssignment> InstallationAssignments => Set<SmartSolar.Modules.Installations.InstallationAssignment>();
 
-    public DbSet<SmartSolar.Modules.Installations.InstallationShift> InstallationShifts => Set<SmartSolar.Modules.Installations.InstallationShift>();
-
-    public DbSet<SmartSolar.Modules.Installations.InstallationShiftAssignment> InstallationShiftAssignments => Set<SmartSolar.Modules.Installations.InstallationShiftAssignment>();
-
-    public DbSet<SmartSolar.Modules.Installations.InstallationMilestone> InstallationMilestones => Set<SmartSolar.Modules.Installations.InstallationMilestone>();
-
-    public DbSet<SmartSolar.Modules.Installations.MilestoneEvidence> MilestoneEvidence => Set<SmartSolar.Modules.Installations.MilestoneEvidence>();
+    public DbSet<SmartSolar.Modules.Installations.InstallationEvidence> InstallationEvidence => Set<SmartSolar.Modules.Installations.InstallationEvidence>();
 
     public DbSet<SmartSolar.Modules.Installations.InstallationAcceptance> InstallationAcceptances => Set<SmartSolar.Modules.Installations.InstallationAcceptance>();
 

@@ -9,6 +9,8 @@ using SmartSolar.Modules.PreSurvey.Surface;
 using SmartSolar.Modules.SolarSimulation.CreateSimulation;
 using SmartSolar.Modules.SolarSimulation.GetSimulation;
 using SmartSolar.Modules.SolarSimulation.Options;
+using SmartSolar.Modules.SolarSimulation.SelectSimulation;
+using SmartSolar.Infrastructure.Caching;
 using SmartSolar.Infrastructure.Persistence;
 using SmartSolar.Modules.Identity.Entities;
 using SmartSolar.Modules.Identity.Enums;
@@ -95,7 +97,7 @@ public sealed class PreSurveyTestContext : IAsyncDisposable
     public PreSurveyUnitOfWork UnitOfWork { get;}
 
     public CreateCustomerProfileHandler CreateCustomerProfileHandler() => new(UnitOfWork);
-    public CreatePropertySiteHandler CreatePropertySiteHandler() => new(UnitOfWork);
+    public CreatePropertySiteHandler CreatePropertySiteHandler() => new(UnitOfWork, new SmartSolar.Infrastructure.Persistence.AdministrativeUnits.AdministrativeCatalogStore(Db), TimeProvider.System);
     public CreatePreSurveyHandler CreatePreSurveyHandler() => new(UnitOfWork);
     public UpdatePreSurveyHandler UpdatePreSurveyHandler() => new(UnitOfWork);
     public SubmitPreSurveyHandler SubmitPreSurveyHandler() => new(UnitOfWork);
@@ -111,6 +113,20 @@ public sealed class PreSurveyTestContext : IAsyncDisposable
     public FakeClimateContextProvider Climate { get; } = new();
     public SolarSimulationOptions SimulationOptions { get; } = new();
     public SimulationSingleFlight SingleFlight { get; } = new();
+
+    /// <summary>Controllable clock for simulation results (cache expiry, selection time).</summary>
+    public FixedTimeProvider Time { get; } = new(DateTimeOffset.UtcNow);
+
+    private FakeDistributedCache? _distributedCache;
+
+    /// <summary>In-memory distributed cache behind the simulation result cache (expiry follows <see cref="Time"/>; outage switch).</summary>
+    public FakeDistributedCache DistributedCache => _distributedCache ??= new FakeDistributedCache(Time);
+
+    /// <summary>Snapshot store (disabled unless a test enables it).</summary>
+    public FakeSimulationSnapshotStore Snapshots { get; } = new();
+
+    public DistributedSimulationResultCache SimulationCache
+        => new(DistributedCache, SimulationOptions, Time, NullLogger<DistributedSimulationResultCache>.Instance);
 
     public SolarSimulationUnitOfWork SimulationUnitOfWork => new(Db);
 
@@ -139,10 +155,19 @@ public sealed class PreSurveyTestContext : IAsyncDisposable
         Climate,
         SimulationOptions,
         SingleFlight,
+        SimulationCache,
+        Time,
         NullLogger<CreateSimulationHandler>.Instance);
 
-    public GetSimulationHandler GetSimulationHandler() => new(SimulationUnitOfWork);
-    public ListSimulationsHandler ListSimulationsHandler() => new(SimulationUnitOfWork);
+    public GetSimulationHandler GetSimulationHandler()
+        => new(SimulationUnitOfWork, SimulationCache, Snapshots, NullLogger<GetSimulationHandler>.Instance);
+    public ListSimulationsHandler ListSimulationsHandler() => new(SimulationUnitOfWork, SimulationCache);
+    public SelectSimulationHandler SelectSimulationHandler()
+        => new(SimulationUnitOfWork, SimulationCache, Snapshots, SimulationOptions, Time, NullLogger<SelectSimulationHandler>.Instance);
+
+    /// <summary>Explicitly selects a cached simulation as its owner (creating one no longer selects it).</summary>
+    public Task<SelectSimulationResult> SelectSimulationAsync(Guid userId, Guid preSurveyId, Guid simulationId, int geometryVersion = 1)
+        => SelectSimulationHandler().HandleAsync(new SelectSimulationCommand(userId, preSurveyId, simulationId, geometryVersion), CancellationToken.None);
 
     public static Product NewPanelProduct(
         string sku = "PNL-550",

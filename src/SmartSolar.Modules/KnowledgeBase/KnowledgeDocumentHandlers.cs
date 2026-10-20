@@ -6,10 +6,32 @@ using SmartSolar.Modules.Files;
 namespace SmartSolar.Modules.KnowledgeBase;
 
 public sealed record KnowledgeVersionView(Guid VersionId, int VersionNumber, Guid FileId, string Status, int? PageCount, int? ChunkCount, int? ExtractedCharacters,
-    string? EmbeddingModel, string? FailureReason, DateTimeOffset CreatedAt, DateTimeOffset? IngestedAt, DateTimeOffset? PublishedAt);
+    string? EmbeddingModel, string? FailureReason, DateTimeOffset CreatedAt, DateTimeOffset? IngestedAt, DateTimeOffset? PublishedAt,
+    int? IndexedConfigVersion = null, int? IndexedChunkCharacters = null, int? IndexedChunkOverlap = null, string? LastIngestStatus = null, string? LastIngestError = null);
 
 public sealed record IngestionJobView(Guid JobId, Guid VersionId, string Kind, string Status, int Attempts, int MaxAttempts, DateTimeOffset NextAttemptAt, string? LastError,
-    DateTimeOffset CreatedAt, DateTimeOffset? CompletedAt);
+    DateTimeOffset CreatedAt, DateTimeOffset? CompletedAt, int? ConfigVersion = null, int? ChunkCharacters = null, int? ChunkOverlap = null);
+
+/// <summary>Creates durable ingestion jobs; an INGEST job snapshots the chunk settings of the configuration it is queued under.</summary>
+public static class KnowledgeJobs
+{
+    public static async Task<KnowledgeIngestionJob> QueueAsync(IKnowledgeUnitOfWork unitOfWork, Guid versionId, string kind, int maxAttempts, EffectiveRagConfiguration? config,
+        DateTimeOffset now, CancellationToken token)
+    {
+        var generation = await unitOfWork.CountJobsAsync(versionId, kind, token) + 1;
+        var ingest = kind == JobKinds.Ingest && config is not null;
+        var job = new KnowledgeIngestionJob
+        {
+            Id = Guid.NewGuid(), VersionId = versionId, Kind = kind, Status = JobStatuses.Pending, IdempotencyKey = $"{versionId}:{kind}:{generation}",
+            MaxAttempts = Math.Clamp(maxAttempts, 1, 20), NextAttemptAt = now, CreatedAt = now, UpdatedAt = now,
+            ConfigVersion = ingest ? config!.Version : null,
+            ChunkCharacters = ingest ? config!.Values.ChunkCharacters : null,
+            ChunkOverlap = ingest ? config!.Values.ChunkOverlap : null,
+        };
+        unitOfWork.Add(job);
+        return job;
+    }
+}
 
 public sealed record KnowledgeDocumentView(Guid DocumentId, string Title, string Category, IReadOnlyList<string> Tags, string Status, Guid? LatestVersionId,
     Guid? PublishedVersionId, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, int Revision, IReadOnlyList<KnowledgeVersionView>? Versions,
@@ -21,8 +43,15 @@ public sealed record KnowledgeDocumentView(Guid DocumentId, string Title, string
 /// S3; the backend verifies it and queues durable ingestion. Publishing a new version supersedes the
 /// old one in the same transaction, so old chunks are never retrievable once the new one is live.
 /// </summary>
-public sealed class KnowledgeDocumentHandlers(IKnowledgeUnitOfWork unitOfWork, FileService files, RagOptions options, TimeProvider time, ILogger<KnowledgeDocumentHandlers> logger)
+public sealed class KnowledgeDocumentHandlers(IKnowledgeUnitOfWork unitOfWork, FileService files, RagOptions options, IRagConfigurationProvider configuration, TimeProvider time,
+    ILogger<KnowledgeDocumentHandlers> logger)
 {
+    /// <summary>Without dependency injection: the effective configuration is read from the same unit of work, uncached.</summary>
+    public KnowledgeDocumentHandlers(IKnowledgeUnitOfWork unitOfWork, FileService files, RagOptions options, TimeProvider time, ILogger<KnowledgeDocumentHandlers> logger)
+        : this(unitOfWork, files, options, EffectiveRagConfigurationProvider.Uncached(unitOfWork, options, time), time, logger)
+    {
+    }
+
     public static readonly IReadOnlyList<string> Categories = ["PRODUCT", "WARRANTY", "POLICY", "INSTALLATION_GUIDE", "FAQ", "MAINTENANCE", "OTHER"];
 
     public async Task<OperationResult<KnowledgeDocumentView>> RegisterAsync(Guid adminUserId, Guid fileId, string title, string category, IReadOnlyList<string>? tags, CancellationToken cancellationToken)
@@ -129,7 +158,8 @@ public sealed class KnowledgeDocumentHandlers(IKnowledgeUnitOfWork unitOfWork, F
             if ((await unitOfWork.GetJobsAsync(documentId, token)).Any(j => j.VersionId == versionId && j.Status is JobStatuses.Pending or JobStatuses.Running or JobStatuses.RetryWaiting))
                 return Fail(KnowledgeErrorCodes.InvalidState, "An ingestion for this version is already queued.");
             await QueueAsync(versionId, JobKinds.Ingest, now, token);
-            if (version.Status is not VersionStatuses.Published)
+            // READY_FOR_REVIEW / PUBLISHED / WITHDRAWN keep their status and chunks until a reindex succeeds.
+            if (!KnowledgeIngestionService.HoldsLiveChunks(version))
             {
                 version.Status = VersionStatuses.Registered;
                 version.FailureReason = null;
@@ -199,12 +229,9 @@ public sealed class KnowledgeDocumentHandlers(IKnowledgeUnitOfWork unitOfWork, F
 
     private async Task QueueAsync(Guid versionId, string kind, DateTimeOffset now, CancellationToken token)
     {
-        var generation = await unitOfWork.CountJobsAsync(versionId, kind, token) + 1;
-        unitOfWork.Add(new KnowledgeIngestionJob
-        {
-            Id = Guid.NewGuid(), VersionId = versionId, Kind = kind, Status = JobStatuses.Pending, IdempotencyKey = $"{versionId}:{kind}:{generation}",
-            MaxAttempts = Math.Clamp(options.MaxIngestAttempts, 1, 20), NextAttemptAt = now, CreatedAt = now, UpdatedAt = now,
-        });
+        // INGEST jobs snapshot the effective chunk settings now; the job keeps them even if another configuration is activated later.
+        var config = kind == JobKinds.Ingest ? await configuration.GetAsync(token) : null;
+        await KnowledgeJobs.QueueAsync(unitOfWork, versionId, kind, options.MaxIngestAttempts, config, now, token);
     }
 
     private async Task<OperationResult<KnowledgeDocumentView>> MutateAsync(Guid documentId, int? revision,
@@ -246,9 +273,11 @@ public sealed class KnowledgeDocumentHandlers(IKnowledgeUnitOfWork unitOfWork, F
         {
             versions = (await unitOfWork.GetVersionsAsync(documentId, false, cancellationToken)).OrderBy(v => v.VersionNumber)
                 .Select(v => new KnowledgeVersionView(v.Id, v.VersionNumber, v.FileId, v.Status, v.PageCount, v.ChunkCount, v.ExtractedCharacters, v.EmbeddingModel,
-                    v.FailureReason, v.CreatedAt, v.IngestedAt, v.PublishedAt)).ToList();
+                    v.FailureReason, v.CreatedAt, v.IngestedAt, v.PublishedAt, v.IndexedConfigVersion, v.IndexedChunkCharacters, v.IndexedChunkOverlap,
+                    v.LastIngestStatus, v.LastIngestError)).ToList();
             jobs = (await unitOfWork.GetJobsAsync(documentId, cancellationToken)).OrderBy(j => j.CreatedAt)
-                .Select(j => new IngestionJobView(j.Id, j.VersionId, j.Kind, j.Status, j.Attempts, j.MaxAttempts, j.NextAttemptAt, j.LastError, j.CreatedAt, j.CompletedAt)).ToList();
+                .Select(j => new IngestionJobView(j.Id, j.VersionId, j.Kind, j.Status, j.Attempts, j.MaxAttempts, j.NextAttemptAt, j.LastError, j.CreatedAt, j.CompletedAt,
+                    j.ConfigVersion, j.ChunkCharacters, j.ChunkOverlap)).ToList();
         }
         return new KnowledgeDocumentView(d.Id, d.Title, d.Category, (d.Tags ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries), d.Status, d.LatestVersionId,
             d.PublishedVersionId, d.CreatedAt, d.UpdatedAt, d.Revision, versions, jobs);

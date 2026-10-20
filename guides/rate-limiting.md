@@ -27,6 +27,10 @@ to N × the limit), which is acceptable for cheap reads and writes.
 | `payment-create` | 5 / 10 min | user + contract | **cluster-wide** |
 | `payos-webhook` | 600 / min | source IP | per instance (abuse guard only) |
 | all other Installation Flow, file-read, chat-history and admin-read policies | see `appsettings.json` | user | per instance |
+| `system-settings-read` (scheduling settings + history, Admin/Manager) | 60 / min | user | per instance |
+| `system-settings-write` (Admin settings update) | 10 / min | user | per instance |
+| administrative-units lookups (anonymous: provinces, communes, legacy lookup) | existing `catalog-read` | IP when anonymous | per instance |
+| operational zones, technician zones, dispatch requests (customer + staff) | existing `scheduling-read` / `scheduling-write` | user | per instance |
 | existing auth, catalog, simulation, scheduling, admin-users policies | unchanged | unchanged | per instance |
 
 Every value is configurable under `RateLimiting:<Section>:PermitLimit` / `WindowMinutes`.

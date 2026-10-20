@@ -74,6 +74,70 @@ public sealed class AdminKnowledgeDocumentsController(KnowledgeDocumentHandlers 
 }
 
 /// <summary>
+/// Admin runtime configuration of the chatbot (generation model and parameters, chunking, retrieval, prompt version).
+/// Edit one DRAFT, validate, then activate it atomically; rollback re-activates an older version as a new version.
+/// Never returns secrets or service URLs; the embedding model is fixed by the RAG service environment.
+/// </summary>
+[ApiController]
+[Route("api/admin/rag-configuration")]
+[Authorize(Roles = RoleCodes.Admin)]
+[RequireFeature(FeatureOptions.KnowledgeBase)]
+public sealed class AdminRagConfigurationController(RagConfigurationService service) : OperationResultControllerBase
+{
+    [HttpGet]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminReadPolicy)]
+    public async Task<IActionResult> Get(CancellationToken cancellationToken)
+        => Respond(Modules.Common.Results.OperationResult<RagConfigurationStateView>.Ok(await service.GetAsync(cancellationToken)));
+
+    [HttpGet("models")]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminReadPolicy)]
+    public IActionResult Models() => Respond(Modules.Common.Results.OperationResult<RagModelCatalogView>.Ok(service.Catalog()));
+
+    [HttpGet("versions")]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminReadPolicy)]
+    public async Task<IActionResult> Versions([FromQuery] int page = 1, [FromQuery] int pageSize = 20, CancellationToken cancellationToken = default)
+        => Respond(Modules.Common.Results.OperationResult<RagConfigurationHistoryView>.Ok(await service.HistoryAsync(page, pageSize, cancellationToken)));
+
+    [HttpPut("draft")]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminConfigPolicy)]
+    public async Task<IActionResult> SaveDraft([FromBody] SaveRagConfigurationDraftRequest request, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } admin) return UnauthorizedFailure();
+        var specified = request.Temperature.ValueKind != System.Text.Json.JsonValueKind.Undefined;
+        decimal? temperature = null;
+        if (request.Temperature.ValueKind == System.Text.Json.JsonValueKind.Number && request.Temperature.TryGetDecimal(out var t)) temperature = t;
+        else if (specified && request.Temperature.ValueKind != System.Text.Json.JsonValueKind.Null) return Invalid("temperature", "Must be a number or null.");
+        var input = new RagConfigurationInput(request.GenerationModel, specified, temperature, request.MaxOutputTokens, request.ChunkCharacters, request.ChunkOverlap,
+            request.TopK, request.MinScore, request.MaxContextTokens, request.MaxHistoryMessages, request.PromptVersion, request.Notes);
+        return Respond(await service.SaveDraftAsync(admin, input, request.ExpectedRevision, cancellationToken));
+    }
+
+    [HttpPost("draft/validate")]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminConfigPolicy)]
+    public async Task<IActionResult> ValidateDraft(CancellationToken cancellationToken) => Respond(await service.ValidateDraftAsync(cancellationToken));
+
+    [HttpPost("draft/activate")]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminConfigPolicy)]
+    public async Task<IActionResult> Activate([FromBody] ActivateRagConfigurationRequest request, CancellationToken cancellationToken)
+        => CurrentUserId() is { } admin ? Respond(await service.ActivateDraftAsync(admin, request.ExpectedRevision, cancellationToken)) : UnauthorizedFailure();
+
+    [HttpPost("rollback")]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminConfigPolicy)]
+    public async Task<IActionResult> Rollback([FromBody] RollbackRagConfigurationRequest request, CancellationToken cancellationToken)
+        => CurrentUserId() is { } admin ? Respond(await service.RollbackAsync(admin, request.Version, cancellationToken)) : UnauthorizedFailure();
+
+    [HttpDelete("draft")]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminConfigPolicy)]
+    public async Task<IActionResult> DeleteDraft([FromQuery] int? expectedRevision, CancellationToken cancellationToken)
+        => Respond(await service.DeleteDraftAsync(expectedRevision, cancellationToken));
+
+    [HttpPost("reindex-stale")]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminReindexPolicy)]
+    public async Task<IActionResult> ReindexStale(CancellationToken cancellationToken)
+        => CurrentUserId() is { } admin ? Respond(await service.ReindexStaleAsync(admin, cancellationToken), StatusCodes.Status202Accepted) : UnauthorizedFailure();
+}
+
+/// <summary>
 /// Grounded chatbot for signed-in users. Answers cite published knowledge only; when the documents
 /// do not support an answer the assistant says so instead of guessing. Per-user and global daily
 /// quotas and a per-user concurrency cap are enforced atomically in the database.

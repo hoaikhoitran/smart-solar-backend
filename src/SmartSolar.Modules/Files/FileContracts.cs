@@ -34,6 +34,58 @@ public sealed record StorageObjectProbe(
 public interface IStorageObjectVerifier
 {
     Task<StorageObjectProbe> ProbeAsync(StorageObjectLocation location, bool computeSha256, long maxBytes, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Existence check only (a single HEAD of the given version; no object bytes are read). Used before issuing a
+    /// presigned read URL so a deleted object answers "missing" instead of a URL that fails in the browser.
+    /// </summary>
+    Task<StorageObjectProbe> HeadAsync(StorageObjectLocation location, CancellationToken cancellationToken);
+}
+
+public enum StorageUrlDisposition
+{
+    /// <summary>Displayed by the browser (an &lt;img&gt; or a new tab).</summary>
+    Inline = 1,
+    /// <summary>Downloaded under the given file name.</summary>
+    Attachment = 2,
+}
+
+/// <summary>What the signed GET must make the storage provider answer with (response header overrides) and how long it lives.</summary>
+public sealed record StorageUrlRequest(StorageUrlDisposition Disposition, string DownloadFileName, string ContentType, TimeSpan TimeToLive);
+
+public enum StorageUrlStatus
+{
+    Signed = 1,
+    /// <summary>No signer is configured (S3 disabled).</summary>
+    NotConfigured = 2,
+    /// <summary>The object (or its pinned version) no longer exists in storage.</summary>
+    ObjectMissing = 3,
+    /// <summary>The provider or the credential could not be reached / used.</summary>
+    Unavailable = 4,
+}
+
+/// <summary>
+/// A short-lived read URL. The URL is a bearer credential for one object: never log it, never persist it,
+/// return it only to the caller that was authorized for the object.
+/// </summary>
+public sealed record StorageUrlResult(StorageUrlStatus Status, string? Url, DateTimeOffset? ExpiresAt)
+{
+    public static StorageUrlResult NotConfigured() => new(StorageUrlStatus.NotConfigured, null, null);
+    public static StorageUrlResult ObjectMissing() => new(StorageUrlStatus.ObjectMissing, null, null);
+    public static StorageUrlResult Unavailable() => new(StorageUrlStatus.Unavailable, null, null);
+}
+
+/// <summary>
+/// Issues presigned GET URLs for objects whose location comes from a stored <see cref="StoredFile"/> (never from a client).
+/// Implementations only sign allowed buckets, pin the version when one is given and never log the URL or credentials.
+/// Callers go through <see cref="FileReadUrlService"/>, which authorizes the file first.
+/// </summary>
+public interface IStorageUrlSigner
+{
+    /// <summary>False when no provider is configured: every request answers <see cref="StorageUrlStatus.NotConfigured"/>.</summary>
+    bool IsConfigured { get; }
+
+    Task<StorageUrlResult> CreateReadUrlAsync(StorageObjectLocation location, StorageUrlRequest request, CancellationToken cancellationToken);
 }
 
 public interface IFileStore

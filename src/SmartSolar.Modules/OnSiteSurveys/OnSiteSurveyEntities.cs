@@ -97,7 +97,7 @@ public static class OnSiteSurveyVocabulary
 public static class OnSiteSurveyErrorCodes
 {
     public const string AppointmentNotFound = "ONSITE_APPOINTMENT_NOT_FOUND";
-    public const string NotAcknowledged = "ONSITE_APPOINTMENT_NOT_ACKNOWLEDGED";
+    public const string NotConfirmed = "ONSITE_APPOINTMENT_NOT_CONFIRMED";
     public const string TooEarly = "ONSITE_SURVEY_TOO_EARLY";
     public const string ReportNotFound = "ONSITE_SURVEY_NOT_FOUND";
     public const string AlreadyCompleted = "ONSITE_SURVEY_ALREADY_COMPLETED";

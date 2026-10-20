@@ -112,7 +112,9 @@ namespace SmartSolar.Api.Controllers
             request.Longitude,
             request.InstallationSurfaceType,
             request.SurfaceMaterial,
-            request.Note);
+            request.Note,
+            request.ProvinceCode,
+            request.CommuneCode);
 
         var validation =
             await _createPropertySiteValidator.ValidateAsync(
@@ -148,6 +150,20 @@ namespace SmartSolar.Api.Controllers
                 Failure(
                     PreSurveyErrorCodes.CustomerProfileNotFound,
                     "Customer profile was not found."));
+        }
+
+        if (result.Outcome ==
+            CreatePropertySiteOutcome.InvalidLocation)
+        {
+            var problem = result.LocationProblem!;
+            return UnprocessableEntity(
+                Failure(
+                    problem.Code,
+                    problem.Message,
+                    new Dictionary<string, string[]>
+                    {
+                        [problem.Field] = [problem.Message]
+                    }));
         }
 
         return StatusCode(

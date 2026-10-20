@@ -20,6 +20,9 @@ public sealed class OnSiteSurveyUnitOfWork(AppDbContext db) : TransactionalUnitO
                 row.a.StartsAt, row.a.EndsAt, row.AssignedSaleId, row.Status.ToString(), row.a.PropertySiteId, row.Latitude, row.Longitude);
     }
 
+    public Task LockTechnicianAsync(Guid technicianUserId, CancellationToken cancellationToken)
+        => LockTechnicianProfilesAsync([technicianUserId], cancellationToken);
+
     public Task<OnSiteSurveyReport?> FindReportBySurveyRequestAsync(Guid surveyRequestId, bool track, CancellationToken cancellationToken)
         => (track ? Db.OnSiteSurveyReports : Db.OnSiteSurveyReports.AsNoTracking()).FirstOrDefaultAsync(r => r.SurveyRequestId == surveyRequestId, cancellationToken);
 
@@ -51,6 +54,16 @@ public sealed class OnSiteSurveyUnitOfWork(AppDbContext db) : TransactionalUnitO
         Db.OnSiteSurveyAttachments.Remove(attachment);
         return true;
     }
+
+    public async Task<bool> TryCompleteAppointmentAsync(Guid appointmentId, Guid technicianUserId, DateTimeOffset completedAt, CancellationToken cancellationToken)
+        => await Db.TechnicianAppointments
+            .Where(a => a.Id == appointmentId && a.AssignedTechnicianUserId == technicianUserId
+                        && (a.Status == AppointmentStatuses.Accepted || a.Status == AppointmentStatuses.Assigned))
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(a => a.Status, AppointmentStatuses.Completed)
+                .SetProperty(a => a.CompletedAt, completedAt)
+                .SetProperty(a => a.UpdatedAt, completedAt)
+                .SetProperty(a => a.Revision, a => a.Revision + 1), cancellationToken) == 1;
 
     public async Task<bool> TryCompleteSurveyRequestAsync(Guid surveyRequestId, CancellationToken cancellationToken)
         => await Db.SurveyRequests

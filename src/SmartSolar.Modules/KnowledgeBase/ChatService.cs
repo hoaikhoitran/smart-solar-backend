@@ -21,10 +21,19 @@ public sealed record ChatSessionDetailView(ChatSessionView Session, IReadOnlyLis
 /// citations are re-checked after generation so a document unpublished meanwhile never appears.
 /// Cost is bounded by a transactional per-user/global token ledger with leased reservations and a per-user
 /// concurrent-generation cap.
+/// Retrieval and generation values (top-k, context and output budgets, min score, model, temperature, history length, prompt
+/// version) come from the effective admin configuration, read per request; the quota estimate follows the same values.
 /// The model only produces text; it can never change contracts, payments or any data.
 /// </summary>
-public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClient rag, RagOptions options, TimeProvider time, ILogger<ChatService> logger)
+public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClient rag, RagOptions options, IRagConfigurationProvider configuration, TimeProvider time,
+    ILogger<ChatService> logger)
 {
+    /// <summary>Without dependency injection: the effective configuration is read from the same unit of work, uncached.</summary>
+    public ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClient rag, RagOptions options, TimeProvider time, ILogger<ChatService> logger)
+        : this(unitOfWork, rag, options, EffectiveRagConfigurationProvider.Uncached(unitOfWork, options, time), time, logger)
+    {
+    }
+
     public const string InsufficientAnswer =
         "Xin lỗi, tôi chưa có đủ tài liệu đã được duyệt để trả lời chính xác câu hỏi này. Vui lòng liên hệ bộ phận tư vấn của SmartSolar.";
     public const string Notice = "Câu trả lời được tạo tự động từ tài liệu đã công bố và có thể chưa đầy đủ; không thay thế tư vấn kỹ thuật hoặc điều khoản hợp đồng.";
@@ -47,9 +56,11 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
                 return OperationResult<ChatAnswerView>.Ok(await AnswerViewAsync(id, existing, reply, cancellationToken));
         }
 
+        var config = await configuration.GetAsync(cancellationToken);
+        var c = config.Values;
         var now = time.GetUtcNow();
         var date = DateOnly.FromDateTime(now.UtcDateTime);
-        var reserved = (long)options.MaxContextTokens + options.MaxOutputTokens + question.Length / 3 + 500;
+        var reserved = (long)c.MaxContextTokens + c.MaxOutputTokens + question.Length / 3 + 500;
         // The lease outlives the longest possible call, so only a crashed or abandoned request lets it expire.
         var lease = TimeSpan.FromSeconds(Math.Clamp(options.RequestTimeoutSeconds, 5, 120) + 60);
         var reservation = await unitOfWork.TryReserveUsageAsync(userId, date, reserved, options, now, now + lease, cancellationToken);
@@ -61,7 +72,7 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
         {
             var history = session is null
                 ? []
-                : (await unitOfWork.GetMessagesAsync(session.Id, options.MaxHistoryMessages, cancellationToken))
+                : (await unitOfWork.GetMessagesAsync(session.Id, c.MaxHistoryMessages, cancellationToken))
                     .Where(m => m.Status != ChatMessageStatuses.Failed).Select(m => new RagHistoryTurn(m.Role, m.Content)).ToList();
             var allowed = await unitOfWork.GetRetrievableVersionsAsync(cancellationToken);
 
@@ -76,8 +87,13 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
                 timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(options.RequestTimeoutSeconds, 5, 120)));
                 try
                 {
-                    result = await rag.AnswerAsync(new RagAnswerRequest(question, history, allowed, Math.Clamp(options.TopK, 1, options.MaxTopK),
-                        options.MaxContextTokens, options.MaxOutputTokens), timeout.Token);
+                    // Bootstrap (no ACTIVE admin configuration): model, temperature and token parameter are left to the RAG service's own
+                    // environment defaults (RAG_LLM_MODEL / RAG_LLM_TEMPERATURE); only an ACTIVE configuration overrides them.
+                    var bootstrap = config.Bootstrap;
+                    result = await rag.AnswerAsync(new RagAnswerRequest(question, history, allowed, Math.Clamp(c.TopK, 1, Math.Max(1, options.MaxTopK)),
+                        c.MaxContextTokens, c.MaxOutputTokens, config.Version, bootstrap ? null : c.GenerationModel, bootstrap ? null : c.Temperature,
+                        bootstrap ? null : config.TokenParameter, c.MinScore, c.PromptVersion),
+                        timeout.Token);
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {

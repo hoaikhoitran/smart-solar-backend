@@ -9,7 +9,7 @@ using SmartSolar.Modules.Common.Features;
 
 namespace SmartSolar.Api.Controllers;
 
-/// <summary>Technician: on-site survey of an officially assigned, acknowledged appointment.</summary>
+/// <summary>Technician: on-site survey of an appointment they accepted or were assigned (ACCEPTED/ASSIGNED; COMPLETED for amendments).</summary>
 [ApiController]
 [Route("api/technicians/me/appointments/{appointmentId:guid}/onsite-survey")]
 [Authorize(Roles = RoleCodes.Technician)]

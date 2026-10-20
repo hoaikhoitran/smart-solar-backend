@@ -1,0 +1,42 @@
+{
+  "datasetKey": "vn-2025-07-01-hcm-79",
+  "provinceCode": "79",
+  "provinceName": "Thành phố Hồ Chí Minh",
+  "provinceUnitType": "MUNICIPALITY",
+  "effectiveFrom": "2025-07-01",
+  "legalBasis": [
+    "Quyết định 19/2025/QĐ-TTg — Bảng danh mục và mã số các đơn vị hành chính Việt Nam (hiệu lực 01/7/2025)",
+    "Nghị quyết 202/2025/QH15 — sắp xếp đơn vị hành chính cấp tỉnh",
+    "Nghị quyết 1685/NQ-UBTVQH15 — sắp xếp đơn vị hành chính cấp xã của Thành phố Hồ Chí Minh năm 2025"
+  ],
+  "source": {
+    "publisher": "Cục Thống kê – Bộ Tài chính, Danh mục hành chính quốc gia (danhmuchanhchinh.nso.gov.vn)",
+    "url": "https://danhmuchanhchinh.nso.gov.vn/TAPTIN/BangChuyendoi%C4%90VHCmoi_cu_final.xlsx",
+    "sheet": "Tổng hợp_không merge ",
+    "sha256": "213966723785859dedd7c88965d6f12f8c3c508c91796e003804cf60a1054fc2",
+    "retrievedAt": "2026-10-19T11:44:45Z"
+  },
+  "currencyCheck": "2026-09: Thành phố Hồ Chí Minh keeps 168 commune-level units (VietnamPlus). Re-verify against the live registry before every import.",
+  "mergeTypeRule": "source_note contains 'một phần' → PARTIAL; else 'toàn bộ' → WHOLE; else 'giữ nguyên' → UNCHANGED; anything else stops packaging. An empty legacy_commune_code means a district-level predecessor (huyện Côn Đảo → đặc khu Côn Đảo).",
+  "counts": {
+    "communes": 168,
+    "wards": 113,
+    "ruralCommunes": 54,
+    "specialZones": 1,
+    "legacyMappings": 493,
+    "legacyByMergeType": {
+      "PARTIAL": 98,
+      "UNCHANGED": 5,
+      "WHOLE": 390
+    },
+    "legacyByProvince": {
+      "74": 107,
+      "77": 78,
+      "79": 308
+    }
+  },
+  "files": {
+    "communes.csv": "5ecc20deed2a05b22174f6ec4cf5d083a61172f8f0c48666a4266bd40d4c6a57",
+    "legacy-commune-map.csv": "c0b1070ffc890f5eeca285b2d6c0da644bc5e0c8ebc3c186d0d0ecf37f388d87"
+  }
+}

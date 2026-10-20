@@ -2,15 +2,12 @@ namespace SmartSolar.Modules.Scheduling.Entities;
 
 /// <summary>
 /// Scheduling data for a user with the TECHNICIAN role. Identity data stays in user_account;
-/// this only adds what scheduling needs. The base location must be a real configured
-/// coordinate; without it the technician is excluded from automatic scheduling.
+/// this only adds what scheduling needs. Coverage comes from operational-zone memberships
+/// (<see cref="Zones.TechnicianZoneMembership"/>), not from a base location.
 /// </summary>
 public sealed class TechnicianProfile
 {
     public Guid UserId { get; set; }
-    public decimal? BaseLatitude { get; set; }
-    public decimal? BaseLongitude { get; set; }
-    public string? BaseLabel { get; set; }
     public bool IsSchedulingActive { get; set; }
 
     /// <summary>Optional per-technician cap; the configured default applies when null.</summary>
@@ -22,14 +19,11 @@ public sealed class TechnicianProfile
     /// </summary>
     public bool HasCustomWorkingSchedule { get; set; }
 
-    /// <summary>Local time-of-day before which the technician may not leave the base; null = configured default.</summary>
-    public TimeOnly? EarliestBaseDeparture { get; set; }
-
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
 }
 
-/// <summary>Leave or other time the technician cannot take appointments or travel.</summary>
+/// <summary>Leave or other time the technician cannot take appointments.</summary>
 public sealed class TechnicianUnavailablePeriod
 {
     public Guid Id { get; set; }
@@ -43,9 +37,12 @@ public sealed class TechnicianUnavailablePeriod
 
 /// <summary>
 /// A technician appointment (shared by every appointment type; PRE_SURVEY in Flow 1).
-/// <see cref="ReservedTechnicianUserId"/> is the technician whose capacity the appointment
-/// currently occupies: chosen internally at booking and moved atomically when Sales assigns a
-/// different technician. Rescheduling cancels this row and creates a new one, so history is kept.
+/// <para><see cref="ReservedTechnicianUserId"/> is the CAPACITY HOLDER: while the appointment is open it
+/// reserves one real technician's time so every pending appointment can still be served (the exclusion
+/// constraint guards it). It is internal: never shown to customers and never an acceptance. Once a
+/// technician is confirmed (ACCEPTED/ASSIGNED/COMPLETED) holder = <see cref="AssignedTechnicianUserId"/>.
+/// An ESCALATED appointment may have no holder.</para>
+/// Rescheduling cancels this row and creates a new one, so history is kept.
 /// </summary>
 public sealed class TechnicianAppointment
 {
@@ -53,17 +50,52 @@ public sealed class TechnicianAppointment
     public string AppointmentType { get; set; } = null!;
     public Guid? SurveyRequestId { get; set; }
     public Guid PropertySiteId { get; set; }
+
+    /// <summary>The active operational zone of the site's commune when the appointment was booked (null for legacy bookings).</summary>
+    public Guid? OperationalZoneId { get; set; }
+
     public DateTimeOffset StartsAt { get; set; }
     public DateTimeOffset EndsAt { get; set; }
-    public Guid ReservedTechnicianUserId { get; set; }
+    public Guid? ReservedTechnicianUserId { get; set; }
     public Guid? AssignedTechnicianUserId { get; set; }
+
+    /// <summary>The staff user (Sales or Manager/Admin) who assigned the technician; null for self-acceptance.</summary>
     public Guid? AssignedBySaleUserId { get; set; }
+
     public string Status { get; set; } = null!;
     public string? CustomerNote { get; set; }
     public Guid BookedByUserId { get; set; }
     public DateTimeOffset BookedAt { get; set; }
+
+    /// <summary>After this instant an unaccepted appointment counts as escalated. A snapshot: settings changes never move it.</summary>
+    public DateTimeOffset? AcceptanceDeadlineAt { get; set; }
+
+    /// <summary>Snapshot of <c>scheduling.acceptanceWindowMinutes</c> used for <see cref="AcceptanceDeadlineAt"/> (null for legacy rows and direct assignments).</summary>
+    public int? AcceptanceWindowMinutes { get; set; }
+
+    /// <summary>The system settings version the acceptance deadline was derived from (null for legacy rows and direct assignments).</summary>
+    public int? SettingsVersion { get; set; }
+
+    /// <summary>When the acceptance reminder was recorded (at most once per acceptance window; reset when a release opens a new window).</summary>
+    public DateTimeOffset? AcceptanceReminderSentAt { get; set; }
+
+    /// <summary>The manual cross-zone authorization this appointment was booked under (uncovered-zone dispatch), if any.</summary>
+    public Guid? CrossZoneAuthorizationId { get; set; }
+
+    public DateTimeOffset? EscalatedAt { get; set; }
+    public DateTimeOffset? AcceptedAt { get; set; }
     public DateTimeOffset? AssignedAt { get; set; }
+
+    /// <summary>SELF_ACCEPTED, SALES_ASSIGNED, MANAGER_OVERRIDE or MANAGER_DISPATCH; set while a technician is confirmed.</summary>
+    public string? AssignmentSource { get; set; }
+
+    /// <summary>Required for staff assignments.</summary>
+    public string? AssignmentReason { get; set; }
+
+    /// <summary>Legacy: acknowledgment of the removed V1 acknowledge step (kept for history).</summary>
     public DateTimeOffset? AcknowledgedAt { get; set; }
+
+    public DateTimeOffset? CompletedAt { get; set; }
     public DateTimeOffset? CancelledAt { get; set; }
     public string? CancellationReason { get; set; }
 
@@ -75,43 +107,6 @@ public sealed class TechnicianAppointment
 
     /// <summary>Optimistic concurrency token; every update increments it.</summary>
     public int Revision { get; set; }
-}
-
-/// <summary>
-/// Minimal route-estimate snapshot (not the raw provider response, no geometry). Each row is the
-/// inbound leg to <see cref="AppointmentId"/> as estimated at <see cref="EstimatedAt"/> for the
-/// planned departure — a historical estimate, not live traffic.
-/// </summary>
-public sealed class TechnicianTravelEstimate
-{
-    public Guid Id { get; set; }
-    public Guid AppointmentId { get; set; }
-    public Guid TechnicianUserId { get; set; }
-    public string Context { get; set; } = null!;
-    public string OriginKind { get; set; } = null!;
-    public Guid? OriginAppointmentId { get; set; }
-    public decimal OriginLatitude { get; set; }
-    public decimal OriginLongitude { get; set; }
-    public decimal DestinationLatitude { get; set; }
-    public decimal DestinationLongitude { get; set; }
-    public DateTimeOffset DepartureAt { get; set; }
-    public DateTimeOffset EstimatedAt { get; set; }
-    public decimal? DistanceMeters { get; set; }
-    public int? DurationSeconds { get; set; }
-    public int SafetyBufferMinutes { get; set; }
-    public DateTimeOffset? EstimatedArrivalAt { get; set; }
-    public string Status { get; set; } = null!;
-    public string Provider { get; set; } = null!;
-    public string ProviderVersion { get; set; } = null!;
-    public string Vehicle { get; set; } = null!;
-    public string? CongestionSummary { get; set; }
-
-    /// <summary>
-    /// Set when the schedule changed so this estimate no longer describes the current route
-    /// (cancellation, reschedule, reassignment, base change, or a newer estimate for the same
-    /// appointment). Superseded rows are history only and are never shown as current.
-    /// </summary>
-    public DateTimeOffset? SupersededAt { get; set; }
 }
 
 /// <summary>
@@ -132,40 +127,8 @@ public sealed class TechnicianWorkingPeriod
 }
 
 /// <summary>
-/// Durable request to re-estimate one technician-day after its route chain changed. The row is
-/// written in the same transaction as the business change, so it survives restarts; the inline
-/// attempt and the background worker both process it, and it is deleted only after the new
-/// estimates are committed.
-/// </summary>
-public sealed class TechnicianScheduleRecalculation
-{
-    public Guid TechnicianUserId { get; set; }
-    public DateOnly LocalDate { get; set; }
-    public string Status { get; set; } = null!;
-    public string Reason { get; set; } = null!;
-    public DateTimeOffset RequestedAt { get; set; }
-    public int Attempts { get; set; }
-    public DateTimeOffset NextAttemptAt { get; set; }
-
-    /// <summary>Lease: while in the future another worker is processing this row.</summary>
-    public DateTimeOffset? LockedUntil { get; set; }
-
-    public string? LastError { get; set; }
-    public DateTimeOffset UpdatedAt { get; set; }
-}
-
-public static class RecalculationStatuses
-{
-    /// <summary>Waiting for (another) attempt.</summary>
-    public const string Pending = "PENDING";
-
-    /// <summary>The last attempt could not verify every route; retried with backoff.</summary>
-    public const string Failed = "FAILED";
-}
-
-/// <summary>
-/// Append-only appointment history: booking, assignment, reassignment, reschedule, cancellation,
-/// acknowledgment and acknowledgment invalidation. Kept even when the appointment row is replaced.
+/// Append-only appointment history: booking, acceptance, staff assignment, reassignment, hold moves,
+/// release, escalation, reschedule, cancellation and completion. Kept even when the appointment row is replaced.
 /// </summary>
 public sealed class TechnicianAppointmentEvent
 {
@@ -185,12 +148,21 @@ public sealed class TechnicianAppointmentEvent
 public static class AppointmentEventTypes
 {
     public const string Booked = "BOOKED";
+    public const string Accepted = "ACCEPTED";
     public const string Assigned = "ASSIGNED";
     public const string Reassigned = "REASSIGNED";
+
+    /// <summary>The internal capacity hold moved to another technician (previous/new = holders).</summary>
+    public const string HoldMoved = "HOLD_MOVED";
+
+    public const string Released = "RELEASED";
+    public const string Escalated = "ESCALATED";
     public const string Rescheduled = "RESCHEDULED";
     public const string Cancelled = "CANCELLED";
-    public const string Acknowledged = "ACKNOWLEDGED";
-    public const string AcknowledgementInvalidated = "ACKNOWLEDGEMENT_INVALIDATED";
+    public const string Completed = "COMPLETED";
+
+    /// <summary>Reminder to the capacity holder before the acceptance deadline (<c>scheduling.acceptanceReminderLeadMinutes</c>; once per window).</summary>
+    public const string AcceptanceReminder = "ACCEPTANCE_REMINDER";
 }
 
 /// <summary>
@@ -212,12 +184,4 @@ public sealed class SchedulingNotification
 public static class SchedulingNotificationStatuses
 {
     public const string NotDelivered = "NOT_DELIVERED";
-}
-
-public static class TravelEstimateContexts
-{
-    public const string Booking = "BOOKING";
-    public const string Assignment = "ASSIGNMENT";
-    public const string Reschedule = "RESCHEDULE";
-    public const string Recalculation = "RECALCULATION";
 }

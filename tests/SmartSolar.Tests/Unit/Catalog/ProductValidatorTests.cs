@@ -190,7 +190,7 @@ public class ProductValidatorTests
     {
         var command = new UpdateProductCommand(
             Guid.NewGuid(), "", "SOLAR_PANEL", null, "Name", "Brand", null, "PCS",
-            -1m, "VND", null, 1m, 1m, null, null, null);
+            -1m, "VND", null, 1m, 1m, null, null);
 
         var errors = new UpdateProductCommandValidator().Validate(command).Errors.Select(e => e.PropertyName).ToHashSet();
 

@@ -11,6 +11,8 @@ public sealed class FakeRagServiceClient : IRagServiceClient
     public int DeleteCalls;
     public int AnswerCalls;
     public RagAnswerRequest? LastAnswerRequest;
+    public RagIngestRequest? LastIngestRequest;
+    public readonly System.Collections.Concurrent.ConcurrentQueue<RagIngestRequest> IngestRequests = new();
 
     /// <summary>Runs inside AnswerAsync, e.g. to unpublish a document while "generation" is in flight.</summary>
     public Func<Task>? DuringAnswer { get; set; }
@@ -24,10 +26,14 @@ public sealed class FakeRagServiceClient : IRagServiceClient
     public Task<RagIngestResult> IngestAsync(RagIngestRequest request, CancellationToken cancellationToken)
     {
         Interlocked.Increment(ref IngestCalls);
+        LastIngestRequest = request;
+        IngestRequests.Enqueue(request);
         if (Ingest is not null) return Ingest(request, cancellationToken);
+        // Like the real service: echoes the configuration version and chunk settings it used.
         return Task.FromResult(Unavailable
             ? new RagIngestResult(false, "FAILED", null, null, null, null, null, "unavailable")
-            : new RagIngestResult(true, IngestStatus, 3, 12, 4000, "hashing-dev", 384, IngestStatus == "READY" ? null : IngestStatus));
+            : new RagIngestResult(true, IngestStatus, 3, 12, 4000, "hashing-dev", 384, IngestStatus == "READY" ? null : IngestStatus,
+                request.ConfigVersion, request.ChunkCharacters, request.ChunkOverlap));
     }
 
     public Task<bool> DeleteVectorsAsync(Guid versionId, CancellationToken cancellationToken)

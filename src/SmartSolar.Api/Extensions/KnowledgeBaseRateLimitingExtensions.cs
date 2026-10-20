@@ -9,6 +9,7 @@ public static partial class RateLimitingExtensions
     public const string RagAdminRegisterPolicy = "rag-admin-register";
     public const string RagAdminReindexPolicy = "rag-admin-reindex";
     public const string RagAdminPublishPolicy = "rag-admin-publish";
+    public const string RagAdminConfigPolicy = "rag-admin-config";
 
     public static readonly IReadOnlyList<RateLimitPolicyDefinition> KnowledgeBasePolicies =
     [
@@ -18,6 +19,7 @@ public static partial class RateLimitingExtensions
         new(RagAdminRegisterPolicy, "RateLimiting:RagAdminRegister", 10, 1, Distributed: true),
         new(RagAdminReindexPolicy, "RateLimiting:RagAdminReindex", 3, 10, Distributed: true),
         new(RagAdminPublishPolicy, "RateLimiting:RagAdminPublish", 10, 1),
+        new(RagAdminConfigPolicy, "RateLimiting:RagAdminConfig", 10, 1, Distributed: true),
     ];
 
     public static IServiceCollection AddKnowledgeBaseRateLimiting(this IServiceCollection services, IConfiguration configuration)

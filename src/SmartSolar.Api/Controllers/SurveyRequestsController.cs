@@ -42,6 +42,7 @@ public sealed class SurveyRequestsController : ControllerBase
         _getDetailHandler = getDetailHandler;
     }
 
+    /// <summary>The unclaimed queue: non-cancelled requests without a commercial owner (whatever their scheduling state).</summary>
     [HttpGet("pending")]
     public async Task<IActionResult> GetPending(
         CancellationToken cancellationToken)
@@ -143,15 +144,13 @@ public sealed class SurveyRequestsController : ControllerBase
     }
 
     /// <summary>
-    /// Officially assigns a technician to the claimed request's booked appointment (the internally
-    /// reserved one or another eligible technician). The request becomes Scheduled.
-    /// </summary>
-    /// <summary>
-    /// Official assignment (POST) or reassignment (PUT …/reassign-technician): same rules, one handler.
-    /// Reassigning after the technician acknowledged invalidates that acknowledgment.
+    /// Sales fallback: the commercial owner assigns a technician to the request's open or confirmed future
+    /// appointment (reason required). 403 SURVEY_REQUEST_NOT_OWNED for anyone else; claim first.
+    /// PUT …/reassign-technician is kept as an alias.
     /// </summary>
     [HttpPost("{surveyRequestId:guid}/assign-technician")]
     [HttpPut("{surveyRequestId:guid}/reassign-technician")]
+    [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting(RateLimitingExtensions.SchedulingWritePolicy)]
     public async Task<IActionResult> AssignTechnician(
         Guid surveyRequestId,
         [FromBody] AssignTechnicianRequest request,
@@ -166,7 +165,7 @@ public sealed class SurveyRequestsController : ControllerBase
             return UnauthorizedFailure();
         }
 
-        var command = new AssignTechnicianCommand(saleUserId.Value, surveyRequestId, request.TechnicianUserId, request.Reason);
+        var command = new AssignTechnicianCommand(saleUserId.Value, surveyRequestId, request.TechnicianUserId, request.Reason, request.ExpectedRevision);
         var validation = await assignValidator.ValidateAsync(command, cancellationToken);
         if (!validation.IsValid)
         {
@@ -179,12 +178,32 @@ public sealed class SurveyRequestsController : ControllerBase
         var result = await assignHandler.HandleAsync(command, cancellationToken);
         return result.Succeeded
             ? Ok(Success(result.Value!))
-            : StatusCode(SchedulingControllerBase.StatusFor(result.ErrorCode!), Failure(result.ErrorCode!, result.Message!));
+            : StatusCode(SchedulingControllerBase.StatusFor(result.ErrorCode!), Failure(result.ErrorCode!, result.Message!, result.Details));
     }
 
     /// <summary>
-    /// Sales reschedule of an owned request after (or before) official assignment. The new time is
-    /// re-validated for the assigned technician; pass technicianUserId to reschedule and reassign together.
+    /// The staff queue: ESCALATED appointments and pending ones past their acceptance deadline (owned and unowned),
+    /// with the service area and whether any technician could still take them.
+    /// </summary>
+    [HttpGet("escalated")]
+    [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting(RateLimitingExtensions.SchedulingReadPolicy)]
+    public async Task<IActionResult> GetEscalated(
+        [FromServices] EscalatedAppointmentsHandler escalatedHandler,
+        CancellationToken cancellationToken)
+    {
+        var saleUserId = GetAuthenticatedUserId();
+
+        if (saleUserId is null)
+        {
+            return UnauthorizedFailure();
+        }
+
+        return Ok(Success(await escalatedHandler.HandleAsync(saleUserId.Value, cancellationToken)));
+    }
+
+    /// <summary>
+    /// Sales reschedule of an owned request. The confirmed technician keeps the job when still eligible at the
+    /// new time; pass technicianUserId (with a reason) to reschedule and assign together.
     /// </summary>
     [HttpPut("{surveyRequestId:guid}/reschedule")]
     [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting(RateLimitingExtensions.SchedulingWritePolicy)]
@@ -215,7 +234,7 @@ public sealed class SurveyRequestsController : ControllerBase
             new SalesRescheduleCommand(saleUserId, surveyRequestId, startsAt, request.Reason, request.TechnicianUserId), cancellationToken);
         return result.Succeeded
             ? Ok(Success(result.Value!))
-            : StatusCode(SchedulingControllerBase.StatusFor(result.ErrorCode!), Failure(result.ErrorCode!, result.Message!));
+            : StatusCode(SchedulingControllerBase.StatusFor(result.ErrorCode!), Failure(result.ErrorCode!, result.Message!, result.Details));
     }
 
     private IActionResult UnauthorizedFailure()

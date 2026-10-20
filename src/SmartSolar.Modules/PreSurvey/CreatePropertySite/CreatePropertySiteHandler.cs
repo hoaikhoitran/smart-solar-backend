@@ -1,3 +1,4 @@
+using SmartSolar.Modules.AdministrativeUnits;
 using SmartSolar.Modules.PreSurvey.Contracts.Persistence;
 using SmartSolar.Modules.PreSurvey.Entities;
 
@@ -6,11 +7,17 @@ namespace SmartSolar.Modules.PreSurvey.CreatePropertySite;
 public sealed class CreatePropertySiteHandler
 {
     private readonly IPreSurveyUnitOfWork _unitOfWork;
+    private readonly IAdministrativeCatalogReader _catalog;
+    private readonly TimeProvider _time;
 
     public CreatePropertySiteHandler(
-        IPreSurveyUnitOfWork unitOfWork)
+        IPreSurveyUnitOfWork unitOfWork,
+        IAdministrativeCatalogReader catalog,
+        TimeProvider time)
     {
         _unitOfWork = unitOfWork;
+        _catalog = catalog;
+        _time = time;
     }
 
     public async Task<CreatePropertySiteResult> HandleAsync(
@@ -27,6 +34,22 @@ public sealed class CreatePropertySiteHandler
             return CreatePropertySiteResult.CustomerNotFound();
         }
 
+        var provinceCode = AdministrativeCodeFormats.Normalize(command.ProvinceCode);
+        var communeCode = AdministrativeCodeFormats.Normalize(command.CommuneCode);
+
+        // New values must be ACTIVE official codes that belong together (superseded codes are refused).
+        var problem = await AdministrativeLocationRules.CheckCatalogAsync(
+            _catalog,
+            provinceCode,
+            communeCode,
+            AdministrativeCatalogClock.Today(_time),
+            cancellationToken);
+
+        if (problem is not null)
+        {
+            return CreatePropertySiteResult.InvalidLocation(problem);
+        }
+
         var propertySite = new PropertySite
         {
             Id = Guid.NewGuid(),
@@ -38,6 +61,9 @@ public sealed class CreatePropertySiteHandler
             District = Normalize(command.District),
             Ward = Normalize(command.Ward),
             StreetLine = Normalize(command.StreetLine),
+
+            ProvinceCode = provinceCode,
+            CommuneCode = communeCode,
 
             Latitude = command.Latitude,
             Longitude = command.Longitude,

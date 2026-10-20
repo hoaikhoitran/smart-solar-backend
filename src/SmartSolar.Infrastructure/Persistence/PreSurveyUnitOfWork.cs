@@ -146,8 +146,9 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
     {
         return await _db.SurveyRequests
             .AsNoTracking()
+            // "Unclaimed" queue: every non-cancelled request without a commercial owner, whatever its scheduling state.
             .Where(x =>
-                x.Status == SurveyRequestStatus.Pending &&
+                x.Status != SurveyRequestStatus.Cancelled &&
                 x.AssignedSaleId == null)
             .OrderBy(x => x.SubmittedAt)
             .Select(x => new PendingSurveyRequestItem(
@@ -169,11 +170,14 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
     DateTimeOffset assignedAt,
     CancellationToken cancellationToken)
     {
+        // Commercial ownership only: the first claim wins and the scheduling status is left untouched.
         var affectedRows =
             await _db.SurveyRequests
                 .Where(x =>
                     x.Id == surveyRequestId &&
-                    x.Status == SurveyRequestStatus.Pending &&
+                    (x.Status == SurveyRequestStatus.Pending ||
+                     x.Status == SurveyRequestStatus.Scheduled ||
+                     x.Status == SurveyRequestStatus.Completed) &&
                     x.AssignedSaleId == null)
                 .ExecuteUpdateAsync(
                     setters => setters
@@ -182,10 +186,7 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
                             saleUserId)
                         .SetProperty(
                             x => x.AssignedAt,
-                            assignedAt)
-                        .SetProperty(
-                            x => x.Status,
-                            SurveyRequestStatus.Assigned),
+                            assignedAt),
                     cancellationToken);
 
         return affectedRows == 1;
@@ -276,11 +277,11 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
         }
 
         // Second, simple query (no correlated subquery) so it runs on PostgreSQL and SQLite alike.
-        var summary = await _db.SolarSimulations
+        var summary = await _db.SelectedSimulations
             .AsNoTracking()
-            .Where(s => s.Id == selectedId && s.PreSurveyId == row.Detail.PreSurveyId)
+            .Where(s => s.SimulationId == selectedId && s.PreSurveyId == row.Detail.PreSurveyId)
             .Select(s => new SelectedSimulationSummary(
-                s.Id,
+                s.SimulationId,
                 s.Status,
                 s.EnergyStatus,
                 s.PreSurveyGeometryVersion != row.GeometryVersion,
@@ -307,7 +308,7 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
             return null;
         }
 
-        var technicianIds = new[] { appointment.ReservedTechnicianUserId, appointment.AssignedTechnicianUserId ?? Guid.Empty };
+        var technicianIds = new[] { appointment.ReservedTechnicianUserId ?? Guid.Empty, appointment.AssignedTechnicianUserId ?? Guid.Empty };
         var names = await _db.UserAccounts
             .AsNoTracking()
             .Where(u => technicianIds.Contains(u.Id))
@@ -319,12 +320,19 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
             appointment.EndsAt,
             appointment.Status,
             appointment.ReservedTechnicianUserId,
-            names.GetValueOrDefault(appointment.ReservedTechnicianUserId, ""),
+            appointment.ReservedTechnicianUserId is { } holder ? names.GetValueOrDefault(holder) : null,
             appointment.AssignedTechnicianUserId,
             appointment.AssignedTechnicianUserId is { } assigned ? names.GetValueOrDefault(assigned) : null,
+            appointment.AssignmentSource,
+            appointment.AssignmentReason,
             appointment.CustomerNote,
             appointment.BookedAt,
+            appointment.AcceptanceDeadlineAt,
+            appointment.EscalatedAt,
+            appointment.AcceptedAt,
             appointment.AssignedAt,
-            appointment.AcknowledgedAt);
+            appointment.CompletedAt,
+            appointment.OperationalZoneId,
+            appointment.Revision);
     }
 }

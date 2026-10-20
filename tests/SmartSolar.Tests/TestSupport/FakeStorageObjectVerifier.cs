@@ -51,6 +51,23 @@ public sealed class FakeStorageObjectVerifier : IStorageObjectVerifier
 
     public static string Sha256(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
+    /// <summary>Calls of <see cref="HeadAsync"/> (existence checks before signing a read URL).</summary>
+    public int HeadCalls;
+
+    public Task<StorageObjectProbe> HeadAsync(StorageObjectLocation location, CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref HeadCalls);
+        if (Unavailable) return Task.FromResult(StorageObjectProbe.Unavailable("synthetic outage"));
+        if (!_objects.TryGetValue($"{location.Bucket}/{location.ObjectKey}", out var versions)) return Task.FromResult(StorageObjectProbe.Missing());
+        (string VersionId, byte[] Bytes)? match;
+        lock (versions)
+            match = location.VersionId is { } wanted ? versions.Where(v => v.VersionId == wanted).Cast<(string, byte[])?>().FirstOrDefault()
+                : versions.Count > 0 ? versions[^1] : null;
+        return Task.FromResult(match is { } found
+            ? new StorageObjectProbe(StorageProbeStatus.Found, found.Bytes.Length, "application/octet-stream", found.VersionId == "null" ? null : found.VersionId, "\"etag\"", null, null, null)
+            : StorageObjectProbe.Missing());
+    }
+
     public Task<StorageObjectProbe> ProbeAsync(StorageObjectLocation location, bool computeSha256, long maxBytes, CancellationToken cancellationToken)
     {
         Interlocked.Increment(ref Calls);

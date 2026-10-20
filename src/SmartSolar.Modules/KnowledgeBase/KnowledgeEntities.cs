@@ -40,6 +40,16 @@ public sealed class KnowledgeDocumentVersion
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? IngestedAt { get; set; }
     public DateTimeOffset? PublishedAt { get; set; }
+    /// <summary>RAG configuration version whose chunk settings produced the live chunks (set when an ingest returns READY).</summary>
+    public int? IndexedConfigVersion { get; set; }
+    public int? IndexedChunkCharacters { get; set; }
+    public int? IndexedChunkOverlap { get; set; }
+    /// <summary>
+    /// Outcome of the most recent ingest attempt (READY, FAILED, OCR_REQUIRED, UNSUPPORTED_CONTENT, INTEGRITY_FAILED).
+    /// A published version whose reindex fails keeps its status and its old chunks; only this outcome records the failure.
+    /// </summary>
+    public string? LastIngestStatus { get; set; }
+    public string? LastIngestError { get; set; }
     public int Revision { get; set; }
 }
 
@@ -60,6 +70,13 @@ public sealed class KnowledgeIngestionJob
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
     public DateTimeOffset? CompletedAt { get; set; }
+    /// <summary>
+    /// Snapshot of the effective RAG configuration taken when an INGEST job is queued (null for DELETE_VECTORS):
+    /// the job always runs with these chunk settings, even if another configuration is activated meanwhile.
+    /// </summary>
+    public int? ConfigVersion { get; set; }
+    public int? ChunkCharacters { get; set; }
+    public int? ChunkOverlap { get; set; }
 }
 
 public sealed class ChatSession
@@ -207,4 +224,14 @@ public static class KnowledgeErrorCodes
     public const string TooManyConcurrent = "RAG_TOO_MANY_CONCURRENT_REQUESTS";
     public const string ServiceUnavailable = "RAG_SERVICE_UNAVAILABLE";
     public const string JobNotFound = "RAG_JOB_NOT_FOUND";
+}
+
+/// <summary>Error codes of the admin RAG configuration (HTTP mapping: *_VALIDATION_* → 400, *_NOT_FOUND → 404, others → 409).</summary>
+public static class RagConfigurationErrorCodes
+{
+    public const string ValidationFailed = "RAG_CONFIG_VALIDATION_FAILED";
+    public const string StaleRevision = "RAG_CONFIG_STALE_REVISION";
+    public const string DraftNotFound = "RAG_CONFIG_DRAFT_NOT_FOUND";
+    public const string VersionNotFound = "RAG_CONFIG_VERSION_NOT_FOUND";
+    public const string InvalidState = "RAG_CONFIG_INVALID_STATE";
 }

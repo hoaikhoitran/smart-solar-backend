@@ -2,6 +2,7 @@ using System.Text.Json;
 using SmartSolar.Modules.Common.Persistence;
 using SmartSolar.Modules.Common.Results;
 using SmartSolar.Modules.Files;
+using SmartSolar.Modules.Scheduling.Constants;
 
 namespace SmartSolar.Modules.OnSiteSurveys;
 
@@ -32,7 +33,10 @@ public sealed record OnSiteSurveyView(
 public sealed class OnSiteSurveyOptions
 {
     public const string SectionName = "OnSiteSurvey";
-    /// <summary>How long before the appointment start the technician may start the survey.</summary>
+    /// <summary>
+    /// Bootstrap default of the system setting <c>onsiteSurvey.earlyStartMinutes</c> (how long before the appointment start the technician
+    /// may start the survey; also the release cut-off). Handlers read the effective value from ISchedulingPolicyProvider.
+    /// </summary>
     public int EarlyStartMinutes { get; set; } = 120;
     public int MaxObstacles { get; set; } = 50;
     public int MaxAttachments { get; set; } = 60;
@@ -40,17 +44,18 @@ public sealed class OnSiteSurveyOptions
 
 /// <summary>
 /// Technician on-site survey lifecycle: DRAFT → IN_PROGRESS → COMPLETED, then amendments only.
-/// Only the technician officially assigned to the active, ACKNOWLEDGED Flow 1 appointment may act.
-/// Completion locks the report, moves the survey request to Completed in the same transaction and
+/// Only the confirmed technician of the active Flow 1 appointment (ACCEPTED or ASSIGNED) may act.
+/// Completion locks the report, moves the appointment to COMPLETED and the survey request to Completed in the same transaction and
 /// makes it available to Sales for quotation (no approval step).
 /// </summary>
-public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, FileService files, OnSiteSurveyOptions options, TimeProvider time)
+public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, FileService files, OnSiteSurveyOptions options,
+    SmartSolar.Modules.SystemSettings.ISchedulingPolicyProvider policies, TimeProvider time)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     public async Task<OperationResult<OnSiteSurveyView?>> GetForTechnicianAsync(Guid technicianUserId, Guid appointmentId, CancellationToken cancellationToken)
     {
-        var (context, error) = await AuthorizeAsync(technicianUserId, appointmentId, requireAcknowledged: false, cancellationToken);
+        var (context, error) = await AuthorizeAsync(technicianUserId, appointmentId, requireConfirmed: false, cancellationToken);
         if (error is not null) return error.As<OnSiteSurveyView?>();
         var report = await unitOfWork.FindReportBySurveyRequestAsync(context!.SurveyRequestId, false, cancellationToken);
         return OperationResult<OnSiteSurveyView?>.Ok(report is null ? null : await ViewAsync(report, cancellationToken));
@@ -71,7 +76,7 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
     {
         var validation = Validate(command.Data, forCompletion: false);
         if (validation is not null) return OperationResult<OnSiteSurveyView>.Fail(CommonErrorCodes.ValidationFailed, "One or more fields are invalid.", validation);
-        var (context, error) = await AuthorizeAsync(command.TechnicianUserId, command.AppointmentId, requireAcknowledged: true, cancellationToken);
+        var (context, error) = await AuthorizeAsync(command.TechnicianUserId, command.AppointmentId, requireConfirmed: true, cancellationToken);
         if (error is not null) return error.As<OnSiteSurveyView>();
 
         return await MutateAsync(context!, command.ExpectedRevision, allowCreate: true, async (report, now, token) =>
@@ -87,10 +92,12 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
     /// <summary>Records the actual start (DRAFT → IN_PROGRESS). Idempotent once started.</summary>
     public async Task<OperationResult<OnSiteSurveyView>> StartAsync(Guid technicianUserId, Guid appointmentId, CancellationToken cancellationToken)
     {
-        var (context, error) = await AuthorizeAsync(technicianUserId, appointmentId, requireAcknowledged: true, cancellationToken);
+        var (context, error) = await AuthorizeAsync(technicianUserId, appointmentId, requireConfirmed: true, cancellationToken);
         if (error is not null) return error.As<OnSiteSurveyView>();
-        if (time.GetUtcNow() < context!.StartsAt.AddMinutes(-Math.Max(0, options.EarlyStartMinutes)))
-            return OperationResult<OnSiteSurveyView>.Fail(OnSiteSurveyErrorCodes.TooEarly, $"The survey can start at most {options.EarlyStartMinutes} minutes before the appointment.");
+        // onsiteSurvey.earlyStartMinutes of the current settings (the same value is the technician's release cut-off).
+        var earlyStart = Math.Max(0, (await policies.GetAsync(cancellationToken)).OnSiteSurveyEarlyStartMinutes);
+        if (time.GetUtcNow() < context!.StartsAt.AddMinutes(-earlyStart))
+            return OperationResult<OnSiteSurveyView>.Fail(OnSiteSurveyErrorCodes.TooEarly, $"The survey can start at most {earlyStart} minutes before the appointment.");
 
         return await MutateAsync(context, null, allowCreate: true, (report, now, _) =>
         {
@@ -108,7 +115,7 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
         var category = command.Category?.Trim().ToUpperInvariant() ?? "";
         if (!OnSiteSurveyVocabulary.AttachmentCategories.Contains(category))
             return OperationResult<OnSiteSurveyView>.Fail(CommonErrorCodes.ValidationFailed, $"Category must be one of {string.Join(", ", OnSiteSurveyVocabulary.AttachmentCategories)}.");
-        var (context, error) = await AuthorizeAsync(command.TechnicianUserId, command.AppointmentId, requireAcknowledged: true, cancellationToken);
+        var (context, error) = await AuthorizeAsync(command.TechnicianUserId, command.AppointmentId, requireConfirmed: true, cancellationToken);
         if (error is not null) return error.As<OnSiteSurveyView>();
         var verified = await files.RequireVerifiedAsync([command.FileId], FilePurposes.OnSiteSurveyEvidence, command.TechnicianUserId, cancellationToken);
         if (!verified.Succeeded) return verified.As<OnSiteSurveyView>();
@@ -132,7 +139,7 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
 
     public async Task<OperationResult<OnSiteSurveyView>> RemoveAttachmentAsync(Guid technicianUserId, Guid appointmentId, Guid attachmentId, CancellationToken cancellationToken)
     {
-        var (context, error) = await AuthorizeAsync(technicianUserId, appointmentId, requireAcknowledged: true, cancellationToken);
+        var (context, error) = await AuthorizeAsync(technicianUserId, appointmentId, requireConfirmed: true, cancellationToken);
         if (error is not null) return error.As<OnSiteSurveyView>();
         return await MutateAsync(context!, null, allowCreate: false, async (report, _, token) =>
         {
@@ -150,7 +157,7 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
     /// </summary>
     public async Task<OperationResult<OnSiteSurveyView>> CompleteAsync(CompleteOnSiteSurveyCommand command, CancellationToken cancellationToken)
     {
-        var (context, error) = await AuthorizeAsync(command.TechnicianUserId, command.AppointmentId, requireAcknowledged: true, cancellationToken);
+        var (context, error) = await AuthorizeAsync(command.TechnicianUserId, command.AppointmentId, requireConfirmed: true, cancellationToken);
         if (error is not null) return error.As<OnSiteSurveyView>();
 
         var existing = await unitOfWork.FindReportBySurveyRequestAsync(context!.SurveyRequestId, false, cancellationToken);
@@ -170,6 +177,10 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
             report.Status = OnSiteSurveyStatuses.Completed;
             report.CompletedAt = now;
             report.Version = 1;
+            // Conditional on the caller still being the confirmed technician: a reassignment that committed after the
+            // authorization above makes this fail instead of completing someone else's appointment.
+            if (!await unitOfWork.TryCompleteAppointmentAsync(report.AppointmentId, command.TechnicianUserId, now, token))
+                return OperationResult<bool>.Fail(CommonErrorCodes.InvalidState, "The appointment is no longer accepted or assigned to you.");
             if (!await unitOfWork.TryCompleteSurveyRequestAsync(report.SurveyRequestId, token))
                 return OperationResult<bool>.Fail(CommonErrorCodes.InvalidState, "The survey request is not in the Scheduled state.");
             return OperationResult<bool>.Ok(true);
@@ -183,7 +194,7 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
             return OperationResult<OnSiteSurveyView>.Fail(CommonErrorCodes.ValidationFailed, "A reason (at most 1000 characters) is required.");
         var validation = Validate(command.Changes, forCompletion: false);
         if (validation is not null) return OperationResult<OnSiteSurveyView>.Fail(CommonErrorCodes.ValidationFailed, "One or more fields are invalid.", validation);
-        var (context, error) = await AuthorizeAsync(command.TechnicianUserId, command.AppointmentId, requireAcknowledged: true, cancellationToken);
+        var (context, error) = await AuthorizeAsync(command.TechnicianUserId, command.AppointmentId, requireConfirmed: true, cancellationToken);
         if (error is not null) return error.As<OnSiteSurveyView>();
         var newFiles = command.AdditionalFileIds ?? [];
         if (newFiles.Count > 0)
@@ -236,13 +247,14 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
     // ------------------------------------------------------------------ helpers
 
     private async Task<(SurveyAppointmentContext? Context, OperationResult<bool>? Error)> AuthorizeAsync(
-        Guid technicianUserId, Guid appointmentId, bool requireAcknowledged, CancellationToken cancellationToken)
+        Guid technicianUserId, Guid appointmentId, bool requireConfirmed, CancellationToken cancellationToken)
     {
         var context = await unitOfWork.GetActiveAppointmentAsync(appointmentId, cancellationToken);
         if (context is null || context.TechnicianUserId != technicianUserId)
             return (null, OperationResult<bool>.Fail(OnSiteSurveyErrorCodes.AppointmentNotFound, "Appointment was not found."));
-        if (requireAcknowledged && context.AppointmentStatus != "ACKNOWLEDGED")
-            return (null, OperationResult<bool>.Fail(OnSiteSurveyErrorCodes.NotAcknowledged, "Acknowledge the assignment before working on the survey."));
+        // ACCEPTED / ASSIGNED: the caller is the confirmed technician. COMPLETED keeps amendments possible after completion.
+        if (requireConfirmed && context.AppointmentStatus is not (AppointmentStatuses.Accepted or AppointmentStatuses.Assigned or AppointmentStatuses.Completed))
+            return (null, OperationResult<bool>.Fail(OnSiteSurveyErrorCodes.NotConfirmed, "Accept the appointment (or be assigned to it) before working on the survey."));
         return (context, null);
     }
 
@@ -256,6 +268,12 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
             var outcome = await unitOfWork.ExecuteInTransactionAsync<OperationResult<Guid>>(async token =>
             {
                 var now = time.GetUtcNow();
+                // Re-check under the technician lock: a staff reassignment committed after the authorization read wins.
+                await unitOfWork.LockTechnicianAsync(context.TechnicianUserId, token);
+                var current = await unitOfWork.GetActiveAppointmentAsync(context.AppointmentId, token);
+                if (current is null || current.TechnicianUserId != context.TechnicianUserId
+                    || current.AppointmentStatus is not (AppointmentStatuses.Accepted or AppointmentStatuses.Assigned or AppointmentStatuses.Completed))
+                    return (OperationResult<Guid>.Fail(OnSiteSurveyErrorCodes.AppointmentNotFound, "Appointment was not found."), false);
                 var report = await unitOfWork.FindReportBySurveyRequestAsync(context.SurveyRequestId, true, token);
                 if (report is null)
                 {

@@ -7,7 +7,7 @@ namespace SmartSolar.Tests.Unit.InstallationWorkflow;
 
 public sealed class ContractTests
 {
-    public sealed record Ready(AcknowledgedSurvey Survey, Guid QuotationId, decimal Total);
+    public sealed record Ready(ConfirmedSurvey Survey, Guid QuotationId, decimal Total);
 
     public static async Task<Ready> AcceptedQuotationAsync(InstallationWorkflowTestContext ctx, string customer = "Customer")
     {

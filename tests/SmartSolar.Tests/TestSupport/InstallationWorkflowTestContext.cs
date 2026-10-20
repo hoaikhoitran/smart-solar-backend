@@ -10,19 +10,24 @@ using static SmartSolar.Tests.TestSupport.SchedulingTestContext;
 
 namespace SmartSolar.Tests.TestSupport;
 
-/// <summary>A survey request that went through all of Flow 1 (booked, claimed, assigned, acknowledged).</summary>
-public sealed record AcknowledgedSurvey(SeededSurveyRequest Request, UserAccount Technician, UserAccount Sales, Guid AppointmentId);
+/// <summary>A survey request that went through all of Flow 1 (booked, accepted by a technician of the area, claimed by Sales).</summary>
+public sealed record ConfirmedSurvey(SeededSurveyRequest Request, UserAccount Technician, UserAccount Sales, Guid AppointmentId);
 
 /// <summary>
 /// Installation Flow handlers over the SQLite test database (EnsureCreated, so the Installation Flow tables exist without a
-/// migration), with the same fixed clock and synthetic travel as the scheduling tests. Files are
+/// migration), with the same fixed clock and synthetic geography as the scheduling tests. Files are
 /// "uploaded" into a synthetic object store and verified through the real <see cref="FileService"/>.
 /// </summary>
 public sealed class InstallationWorkflowTestContext : IAsyncDisposable
 {
     public const string Bucket = "smartsolar-test";
 
-    private InstallationWorkflowTestContext(SchedulingTestContext scheduling) => Scheduling = scheduling;
+    private InstallationWorkflowTestContext(SchedulingTestContext scheduling)
+    {
+        Scheduling = scheduling;
+        // As in production with Installation Flow enabled: every scheduling handler sees installation assignments as busy.
+        Scheduling.IncludeInstallationAssignments = true;
+    }
 
     public static InstallationWorkflowTestContext Create() => new(SchedulingTestContext.Create());
 
@@ -36,7 +41,7 @@ public sealed class InstallationWorkflowTestContext : IAsyncDisposable
     public StorageOptions StorageOptions { get; } = new() { DefaultBucket = Bucket };
 
     public FileService Files(AppDbContext? db = null) => new(new FileStore(db ?? Db), Storage, StorageOptions, Clock, NullLogger<FileService>.Instance);
-    public OnSiteSurveyHandlers OnSite() => new(new OnSiteSurveyUnitOfWork(Db), Files(), new OnSiteSurveyOptions(), Clock);
+    public OnSiteSurveyHandlers OnSite() => new(new OnSiteSurveyUnitOfWork(Db), Files(), Scheduling.OnSiteOptions, Scheduling.Policies, Clock);
     public SmartSolar.Modules.Quotations.QuotationHandlers Quotations(AppDbContext? db = null) => new(new QuotationUnitOfWork(db ?? Db), Files(db), new SmartSolar.Modules.Quotations.QuotationOptions(), Clock);
 
     public SmartSolar.Modules.CustomerContracts.ContractHandlers Contracts(AppDbContext? db = null) => new(new ContractUnitOfWork(db ?? Db), Files(db), Clock);
@@ -45,31 +50,38 @@ public sealed class InstallationWorkflowTestContext : IAsyncDisposable
     public SmartSolar.Modules.Payments.PaymentService Payments(AppDbContext? db = null) => new(new PaymentUnitOfWork(db ?? Db), PayOs.Gateway(), PaymentOptions, Clock,
         NullLogger<SmartSolar.Modules.Payments.PaymentService>.Instance);
 
-    public SmartSolar.Modules.Installations.InstallationOptions InstallationOptions { get; } = new();
+    /// <summary>Bootstrap defaults of installation.* (shared with the scheduling context's settings provider).</summary>
+    public SmartSolar.Modules.Installations.InstallationOptions InstallationOptions => Scheduling.InstallationOptions;
 
-    /// <summary>Scheduling unit of work with installation shifts in every day state (Installation Flow enabled).</summary>
-    public SchedulingUnitOfWork SchedulingWithInstallations(AppDbContext? db = null) => new(db ?? Db, includeInstallationShifts: true);
+    /// <summary>Scheduling unit of work with current installation assignments in every day state (Installation Flow enabled).</summary>
+    public SchedulingUnitOfWork SchedulingWithInstallations(AppDbContext? db = null) => new(db ?? Db, includeInstallationAssignments: true, Clock);
 
     public SmartSolar.Modules.Installations.InstallationHandlers Installations(AppDbContext? db = null)
     {
         var scheduling = SchedulingWithInstallations(db);
-        var planner = new SmartSolar.Modules.Installations.InstallationSchedulePlanner(scheduling, Scheduling.Travel, Scheduling.Calendar, Scheduling.Options, Clock);
+        var planner = new SmartSolar.Modules.Installations.InstallationSchedulePlanner(Scheduling.Eligibility(scheduling), Scheduling.Calendar, InstallationOptions,
+            Scheduling.Assignments(scheduling));
         return new(new InstallationUnitOfWork(db ?? Db), scheduling, planner, Files(db), Scheduling.Calendar, InstallationOptions, Clock);
     }
 
-    /// <summary>Survey bookings that see installation shifts (as production does once Installation Flow is enabled).</summary>
+    /// <summary>Survey self-acceptance over <paramref name="db"/> that sees installation assignments.</summary>
+    public SmartSolar.Modules.Scheduling.PreSurveyAppointments.TechnicianJobHandlers JobsWithInstallations(AppDbContext? db = null)
+    {
+        var u = SchedulingWithInstallations(db);
+        return new(u, Scheduling.Assignments(u), Scheduling.Eligibility(u), Scheduling.Calendar, Clock);
+    }
+
+    /// <summary>Survey bookings that see installation assignments (as production does once Installation Flow is enabled).</summary>
     public SmartSolar.Modules.Scheduling.PreSurveyAppointments.BookSurveyAppointmentHandler BookWithInstallations()
     {
         var u = SchedulingWithInstallations();
-        var evaluator = new SmartSolar.Modules.Scheduling.Services.TechnicianAvailabilityEvaluator(Scheduling.Options, Clock);
-        return new(u, new SmartSolar.Modules.Scheduling.Services.AppointmentReservationService(u, evaluator, Scheduling.Travel, Scheduling.Options, Clock, Scheduling.Calendar),
-            Scheduling.Calendar, Clock);
+        return new(u, Scheduling.Reservations(u), Scheduling.Eligibility(u), Scheduling.Coverage(u), Scheduling.Calendar, Clock);
     }
 
     /// <summary>Flow 1 plus a completed on-site survey: ready for a quotation.</summary>
-    public async Task<AcknowledgedSurvey> QuotableSurveyAsync(string customer = "Customer")
+    public async Task<ConfirmedSurvey> QuotableSurveyAsync(string customer = "Customer")
     {
-        var survey = await AcknowledgedSurveyAsync(customer);
+        var survey = await ConfirmedSurveyAsync(customer);
         await SmartSolar.Tests.Unit.InstallationWorkflow.OnSiteSurveyTests.CompleteAsync(this, survey);
         return survey;
     }
@@ -84,22 +96,41 @@ public sealed class InstallationWorkflowTestContext : IAsyncDisposable
         return product;
     }
 
-    /// <summary>Flow 1 end to end: technician at District 1, customer at Binh Tan, 10:00 on <see cref="Day"/>.</summary>
-    public async Task<AcknowledgedSurvey> AcknowledgedSurveyAsync(string customer = "Customer")
+    /// <summary>
+    /// Flow 1 end to end: a technician of Binh Tan self-accepts a 10:00 booking on <see cref="Day"/>, then Sales
+    /// claims the request (ownership after scheduling).
+    /// </summary>
+    public async Task<ConfirmedSurvey> ConfirmedSurveyAsync(string customer = "Customer")
     {
-        Scheduling.Travel.Minutes = _ => 20;
-        var technician = await Scheduling.SeedTechnicianAsync($"Tech for {customer}", District1);
+        var technician = await Scheduling.SeedTechnicianAsync($"Tech for {customer}", BinhTan);
         var request = await Scheduling.SeedSurveyRequestAsync(BinhTan, customer);
         var booked = await Scheduling.Book().HandleAsync(new BookSurveyAppointmentCommand(request.Customer.Id, request.Request.Id, At(10), null), CancellationToken.None);
         Assert.True(booked.Succeeded, booked.Message);
+        var accepted = await Scheduling.AcceptAsync(technician.Id, booked.Value!.AppointmentId);
+        Assert.True(accepted.Succeeded, accepted.Message);
         var sales = await Scheduling.ClaimAsync(request);
-        var appointment = await Scheduling.ActiveAppointmentAsync(request.Request.Id);
-        var assigned = await Scheduling.Assign().HandleAsync(new AssignTechnicianCommand(sales.Id, request.Request.Id, appointment.ReservedTechnicianUserId), CancellationToken.None);
-        Assert.True(assigned.Succeeded, assigned.Message);
-        var ack = await Scheduling.Jobs().AcknowledgeAsync(appointment.ReservedTechnicianUserId, appointment.Id, CancellationToken.None);
-        Assert.True(ack.Succeeded, ack.Message);
-        var tech = await Db.UserAccounts.AsNoTracking().SingleAsync(u => u.Id == appointment.ReservedTechnicianUserId);
-        return new AcknowledgedSurvey(request, tech, sales, appointment.Id);
+        return new ConfirmedSurvey(request, technician, sales, booked.Value.AppointmentId);
+    }
+
+    /// <summary>Registers a file while storage is unreachable, so it stays PENDING_VERIFICATION.</summary>
+    public async Task<Guid> UnverifiedFileAsync(Guid uploader, string purpose)
+    {
+        var policy = FilePolicies.ByPurpose[purpose];
+        var key = $"{policy.KeyPrefix}{uploader}/{Guid.NewGuid():N}.jpg";
+        Storage.Put(Bucket, key, FakeStorageObjectVerifier.JpegBytes);
+        Storage.Unavailable = true;
+        try
+        {
+            await Files().RegisterAsync(new RegisterFileCommand(uploader, purpose, null, key, "file.jpg", FilePolicies.Jpeg, FakeStorageObjectVerifier.JpegBytes.Length, null),
+                CancellationToken.None);
+        }
+        finally
+        {
+            Storage.Unavailable = false;
+        }
+        var file = await Db.StoredFiles.AsNoTracking().SingleAsync(f => f.ObjectKey == key);
+        Assert.Equal(FileStatuses.PendingVerification, file.Status);
+        return file.Id;
     }
 
     /// <summary>Puts synthetic bytes into the object store and registers + verifies them for the uploader.</summary>

@@ -10,13 +10,20 @@ using SmartSolar.Modules.SolarSimulation.Energy;
 using SmartSolar.Modules.SolarSimulation.GetSimulation;
 using SmartSolar.Modules.SolarSimulation.Installation;
 using SmartSolar.Modules.SolarSimulation.Models;
+using SmartSolar.Modules.SolarSimulation.SelectSimulation;
 using SmartSolar.Tests.TestSupport;
 
 namespace SmartSolar.Tests.Unit.SolarSimulation;
 
-/// <summary>Provider results in these tests come from SYNTHETIC fakes, never live services.</summary>
+/// <summary>
+/// Provider results in these tests come from SYNTHETIC fakes, never live services. Results are
+/// cached (in-memory fake distributed cache), never written to PostgreSQL, and never auto-selected.
+/// </summary>
 public sealed class CreateSimulationHandlerTests
 {
+    private static async Task<IReadOnlyList<Guid>> CachedIdsAsync(PreSurveyTestContext ctx, Guid preSurveyId)
+        => await ctx.SimulationCache.GetRecentIdsAsync(preSurveyId, CancellationToken.None);
+
     private static readonly InstallationRequest Defaults = new(null, null, null, null, null);
 
     private static CreateSimulationCommand Flush(Guid userId, Guid preSurveyId, Guid productId, int geometryVersion = 1, InstallationRequest? installation = null)
@@ -37,8 +44,10 @@ public sealed class CreateSimulationHandlerTests
         Assert.Equal(CreateSimulationOutcome.Created, result.Outcome);
         var detail = result.Simulation!;
         Assert.Equal(SimulationStatusCodes.Completed, detail.Status);
-        Assert.True(detail.IsSelected);
+        Assert.False(detail.IsSelected);
         Assert.False(detail.IsStale);
+        Assert.Equal(SimulationSources.Cache, detail.Source);
+        Assert.Equal(detail.CreatedAt.AddMinutes(ctx.SimulationOptions.ResultTtlMinutes), detail.ExpiresAt);
         Assert.True(detail.EngineeringReviewRequired);
         Assert.True(detail.Layout.PanelCount > 0);
         Assert.Equal(Math.Round(detail.Layout.PanelCount * 550m / 1000m, 3), detail.Layout.InstalledCapacityKwp);
@@ -66,12 +75,16 @@ public sealed class CreateSimulationHandlerTests
             Assert.Equal(14m, r.SystemLossPercent);
         });
 
-        var stored = await ctx.Db.SolarSimulations.AsNoTracking().SingleAsync();
+        // Cached only: no PostgreSQL row and no automatic selection.
+        var cached = (await ctx.SimulationCache.GetAsync(detail.SimulationId, CancellationToken.None))!;
         var preSurvey = await ctx.Db.PreSurveys.AsNoTracking().SingleAsync();
-        Assert.Equal(stored.Id, preSurvey.SelectedSimulationId);
-        Assert.Equal(1, stored.PreSurveyGeometryVersion);
-        Assert.Equal("PNL-550", stored.ProductSku);
-        Assert.True(stored.IsReusable);
+        Assert.Null(preSurvey.SelectedSimulationId);
+        Assert.Empty(await ctx.Db.SelectedSimulations.AsNoTracking().ToListAsync());
+        Assert.Equal(draft.Id, cached.PreSurveyId);
+        Assert.Equal(user.Id, cached.OwnerUserId);
+        Assert.Equal(1, cached.GeometryVersion);
+        Assert.Equal("PNL-550", cached.Detail.Product.Sku);
+        Assert.True(cached.IsReusable);
     }
 
     [Fact]
@@ -137,7 +150,7 @@ public sealed class CreateSimulationHandlerTests
         Assert.Contains(detail.Warnings, w => w.Code == SimulationWarningCodes.LocationMissing);
         Assert.Empty(ctx.PvEnergy.Requests);
         Assert.Equal(0, ctx.Climate.Calls);
-        Assert.Single(await ctx.Db.SolarSimulations.AsNoTracking().ToListAsync());
+        Assert.Single(await CachedIdsAsync(ctx, draft.Id));
     }
 
     [Fact]
@@ -161,8 +174,9 @@ public sealed class CreateSimulationHandlerTests
 
         Assert.Equal(CreateSimulationOutcome.Created, retried.Outcome);
         Assert.Equal(SimulationStatusCodes.Completed, retried.Simulation!.Status);
-        Assert.Equal(2, await ctx.Db.SolarSimulations.CountAsync());
-        Assert.Equal(retried.Simulation.SimulationId, (await ctx.Db.PreSurveys.AsNoTracking().SingleAsync()).SelectedSimulationId);
+        Assert.NotEqual(failed.Simulation.SimulationId, retried.Simulation.SimulationId);
+        Assert.Equal(2, (await CachedIdsAsync(ctx, draft.Id)).Count);
+        Assert.Null((await ctx.Db.PreSurveys.AsNoTracking().SingleAsync()).SelectedSimulationId);
     }
 
     [Fact]
@@ -179,17 +193,16 @@ public sealed class CreateSimulationHandlerTests
 
         Assert.Equal(SimulationStatusCodes.PartiallyCompleted, failed.Simulation!.Status);
         Assert.Equal(SimulationStatusCodes.PartiallyCompleted, noLocation.Simulation!.Status);
-        var rows = await ctx.Db.SolarSimulations.AsNoTracking().ToListAsync();
-        Assert.Equal(2, rows.Count);
-        Assert.All(rows, r =>
+        foreach (var id in new[] { failed.Simulation.SimulationId, noLocation.Simulation.SimulationId })
         {
-            Assert.False(string.IsNullOrWhiteSpace(r.Energy));
-            Assert.False(string.IsNullOrWhiteSpace(r.Climate));
-        });
-
-        var entity = ctx.Db.Model.FindEntityType(typeof(Modules.SolarSimulation.Entities.SolarSimulation))!;
-        Assert.False(entity.FindProperty(nameof(Modules.SolarSimulation.Entities.SolarSimulation.Energy))!.IsNullable);
-        Assert.False(entity.FindProperty(nameof(Modules.SolarSimulation.Entities.SolarSimulation.Climate))!.IsNullable);
+            var cached = (await ctx.SimulationCache.GetAsync(id, CancellationToken.None))!;
+            Assert.NotNull(cached.Detail.Energy);
+            Assert.NotNull(cached.Detail.Climate);
+            Assert.False(string.IsNullOrWhiteSpace(cached.Detail.Energy.Status));
+            Assert.False(string.IsNullOrWhiteSpace(cached.Detail.Climate.Status));
+            // A failed provider is cached for reading but never indexed for reuse.
+            Assert.Equal(id == noLocation.Simulation.SimulationId, cached.IsReusable);
+        }
     }
 
     [Theory]
@@ -275,7 +288,8 @@ public sealed class CreateSimulationHandlerTests
         Assert.Equal(first.Simulation!.SimulationId, second.Simulation!.SimulationId);
         Assert.Equal(2, ctx.PvEnergy.Requests.Count);
         Assert.Equal(1, ctx.Climate.Calls);
-        Assert.Single(await ctx.Db.SolarSimulations.AsNoTracking().ToListAsync());
+        Assert.Equal(first.Simulation.ExpiresAt, second.Simulation.ExpiresAt);
+        Assert.Single(await CachedIdsAsync(ctx, draft.Id));
     }
 
     [Fact]
@@ -295,7 +309,7 @@ public sealed class CreateSimulationHandlerTests
     }
 
     [Fact]
-    public async Task Changed_input_creates_a_new_snapshot_and_selects_it()
+    public async Task Changed_input_creates_a_new_result_and_identical_input_reuses_without_selecting()
     {
         await using var ctx = new PreSurveyTestContext();
         var (user, draft) = await ctx.SeedDraftWithSurfaceAsync();
@@ -308,7 +322,9 @@ public sealed class CreateSimulationHandlerTests
 
         Assert.NotEqual(first.Simulation!.SimulationId, second.Simulation!.SimulationId);
         Assert.Equal(CreateSimulationOutcome.Reused, back.Outcome);
-        Assert.Equal(first.Simulation.SimulationId, (await ctx.Db.PreSurveys.AsNoTracking().SingleAsync()).SelectedSimulationId);
+        Assert.Equal(first.Simulation.SimulationId, back.Simulation!.SimulationId);
+        Assert.Equal(2, (await CachedIdsAsync(ctx, draft.Id)).Count);
+        Assert.Null((await ctx.Db.PreSurveys.AsNoTracking().SingleAsync()).SelectedSimulationId);
     }
 
     [Fact]
@@ -336,11 +352,11 @@ public sealed class CreateSimulationHandlerTests
         Assert.Single(results, r => r.Outcome == CreateSimulationOutcome.Reused);
         Assert.Equal(results[0].Simulation!.SimulationId, results[1].Simulation!.SimulationId);
         Assert.Equal(2, ctx.PvEnergy.Requests.Count);
-        Assert.Single(await ctx.Db.SolarSimulations.AsNoTracking().ToListAsync());
+        Assert.Single(await CachedIdsAsync(ctx, draft.Id));
     }
 
     [Fact]
-    public async Task Geometry_changed_during_calculation_stores_nothing()
+    public async Task Geometry_changed_during_calculation_caches_nothing()
     {
         await using var ctx = PreSurveyTestContext.CreateFileBacked();
         var (user, draft) = await ctx.SeedDraftWithSurfaceAsync();
@@ -364,12 +380,13 @@ public sealed class CreateSimulationHandlerTests
         var result = await ctx.CreateSimulationHandlerOnNewConnection().HandleAsync(Flush(user.Id, draft.Id, product.Id), CancellationToken.None);
 
         Assert.Equal(CreateSimulationOutcome.SourceChanged, result.Outcome);
-        Assert.Empty(await ctx.Db.SolarSimulations.AsNoTracking().ToListAsync());
+        Assert.Empty(await CachedIdsAsync(ctx, draft.Id));
+        Assert.Empty(await ctx.Db.SelectedSimulations.AsNoTracking().ToListAsync());
         Assert.Null((await ctx.Db.PreSurveys.AsNoTracking().SingleAsync()).SelectedSimulationId);
     }
 
     [Fact]
-    public async Task Submit_during_calculation_stores_nothing()
+    public async Task Submit_during_calculation_caches_nothing()
     {
         await using var ctx = PreSurveyTestContext.CreateFileBacked();
         var (user, draft) = await ctx.SeedDraftWithSurfaceAsync();
@@ -390,7 +407,7 @@ public sealed class CreateSimulationHandlerTests
         var result = await ctx.CreateSimulationHandlerOnNewConnection().HandleAsync(Flush(user.Id, draft.Id, product.Id), CancellationToken.None);
 
         Assert.Equal(CreateSimulationOutcome.NotEditable, result.Outcome);
-        Assert.Empty(await ctx.Db.SolarSimulations.AsNoTracking().ToListAsync());
+        Assert.Empty(await CachedIdsAsync(ctx, draft.Id));
     }
 
     [Fact]
@@ -428,7 +445,7 @@ public sealed class CreateSimulationHandlerTests
         Assert.Equal(SimulationQueryOutcome.Found, old.Outcome);
         Assert.True(old.Simulation!.IsStale);
         Assert.Equal(8m, old.Simulation.Surface.WidthM);
-        Assert.True(Assert.Single(list.Simulations!).IsStale);
+        Assert.True(Assert.Single(list.Simulations!.Items).IsStale);
 
         var renewed = await ctx.CreateSimulationHandler().HandleAsync(Flush(user.Id, draft.Id, product.Id, geometryVersion: 2), CancellationToken.None);
         Assert.Equal(CreateSimulationOutcome.Created, renewed.Outcome);
@@ -463,6 +480,8 @@ public sealed class CreateSimulationHandlerTests
         var (user, draft) = await ctx.SeedDraftWithSurfaceAsync();
         var product = await ctx.SeedPanelProductAsync();
         var created = await ctx.CreateSimulationHandler().HandleAsync(Flush(user.Id, draft.Id, product.Id), CancellationToken.None);
+        Assert.Equal(SelectSimulationResultOutcome.Selected,
+            (await ctx.SelectSimulationAsync(user.Id, draft.Id, created.Simulation!.SimulationId)).Outcome);
         Assert.Equal(SubmitPreSurveyOutcome.Submitted,
             (await ctx.SubmitPreSurveyHandler().HandleAsync(new SubmitPreSurveyCommand(user.Id, draft.Id), CancellationToken.None)).Outcome);
         ctx.Db.ChangeTracker.Clear();
@@ -599,11 +618,15 @@ public sealed class CreateSimulationHandlerTests
         var product = await ctx.SeedPanelProductAsync();
         var simulationA = (await ctx.CreateSimulationHandler().HandleAsync(Flush(userA.Id, draftA.Id, product.Id), CancellationToken.None)).Simulation!;
 
-        // Application level: the conditional select refuses a foreign snapshot.
-        var outcome = await ctx.SimulationUnitOfWork.TrySelectAsync(draftB.Id, simulationA.SimulationId, 1, CancellationToken.None);
-        Assert.NotEqual(Modules.SolarSimulation.Contracts.Persistence.SelectSimulationOutcome.Selected, outcome);
+        var userB = (await ctx.Db.PreSurveys.AsNoTracking().Where(p => p.Id == draftB.Id).Select(p => p.Property.Customer.UserId).SingleAsync());
+        Assert.Equal(SelectSimulationResultOutcome.Selected, (await ctx.SelectSimulationAsync(userA.Id, draftA.Id, simulationA.SimulationId)).Outcome);
 
-        // Database level: the composite foreign key rejects it even when bypassing the application.
+        // Application level: a result cached for pre-survey A cannot be selected for B.
+        var outcome = await ctx.SelectSimulationAsync(userB, draftB.Id, simulationA.SimulationId);
+        Assert.Equal(SelectSimulationResultOutcome.SimulationNotFound, outcome.Outcome);
+
+        // Database level: the composite foreign key to selected_simulation (pre_survey_id, simulation_id)
+        // rejects it even when bypassing the application.
         await Assert.ThrowsAnyAsync<Exception>(() => ctx.Db.PreSurveys
             .Where(p => p.Id == draftB.Id)
             .ExecuteUpdateAsync(s => s.SetProperty(p => p.SelectedSimulationId, simulationA.SimulationId)));
@@ -611,19 +634,19 @@ public sealed class CreateSimulationHandlerTests
     }
 
     [Fact]
-    public async Task Snapshot_records_are_never_updated_by_later_simulations()
+    public async Task Cached_results_are_never_altered_by_later_simulations()
     {
         await using var ctx = new PreSurveyTestContext();
         var (user, draft) = await ctx.SeedDraftWithSurfaceAsync();
         var product = await ctx.SeedPanelProductAsync();
         var first = (await ctx.CreateSimulationHandler().HandleAsync(Flush(user.Id, draft.Id, product.Id), CancellationToken.None)).Simulation!;
-        var before = await ctx.Db.SolarSimulations.AsNoTracking().SingleAsync();
+        var key = Infrastructure.Caching.DistributedSimulationResultCache.ResultKey(first.SimulationId);
+        var before = ctx.DistributedCache.Raw(key);
 
         await ctx.CreateSimulationHandler().HandleAsync(Flush(user.Id, draft.Id, product.Id, installation: Defaults with { EdgeSetbackMm = 600m }), CancellationToken.None);
-        var after = await ctx.Db.SolarSimulations.AsNoTracking().SingleAsync(s => s.Id == first.SimulationId);
+        await ctx.CreateSimulationHandler().HandleAsync(Flush(user.Id, draft.Id, product.Id), CancellationToken.None);
 
-        Assert.Equal(before.Layout, after.Layout);
-        Assert.Equal(before.Energy, after.Energy);
-        Assert.Equal(before.PanelCount, after.PanelCount);
+        Assert.NotNull(before);
+        Assert.Equal(before, ctx.DistributedCache.Raw(key));
     }
 }

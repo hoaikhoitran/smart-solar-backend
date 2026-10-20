@@ -24,7 +24,6 @@ internal static class ProductDetailsMapper
         product.HeightMm = details.HeightMm;
         product.WarrantyMonth = details.WarrantyMonth;
         product.Spec = details.Spec;
-        product.ImageUrl = details.ImageUrl;
     }
 
     private static string? NullIfBlank(string? value)

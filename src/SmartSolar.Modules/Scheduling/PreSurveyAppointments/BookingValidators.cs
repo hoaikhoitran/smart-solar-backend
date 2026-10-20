@@ -31,5 +31,27 @@ public sealed class AssignTechnicianCommandValidator : AbstractValidator<AssignT
         RuleFor(x => x.SaleUserId).NotEmpty();
         RuleFor(x => x.SurveyRequestId).NotEmpty();
         RuleFor(x => x.TechnicianUserId).NotEmpty();
+        RuleFor(x => x.Reason).NotEmpty().MaximumLength(500);
+    }
+}
+
+public sealed class OverrideTechnicianCommandValidator : AbstractValidator<OverrideTechnicianCommand>
+{
+    public OverrideTechnicianCommandValidator()
+    {
+        RuleFor(x => x.ManagerUserId).NotEmpty();
+        RuleFor(x => x.AppointmentId).NotEmpty();
+        RuleFor(x => x.TechnicianUserId).NotEmpty();
+        RuleFor(x => x.Reason).NotEmpty().MaximumLength(500);
+    }
+}
+
+public sealed class SetSalesOwnerCommandValidator : AbstractValidator<SetSalesOwnerCommand>
+{
+    public SetSalesOwnerCommandValidator()
+    {
+        RuleFor(x => x.SurveyRequestId).NotEmpty();
+        RuleFor(x => x.SaleUserId).NotEmpty();
+        RuleFor(x => x.Reason).NotEmpty().MaximumLength(500);
     }
 }

@@ -1,6 +1,8 @@
 using SmartSolar.Modules.SolarSimulation.CreateSimulation;
 using SmartSolar.Modules.SolarSimulation.GetSimulation;
 using SmartSolar.Modules.SolarSimulation.Options;
+using SmartSolar.Modules.SolarSimulation.SelectSimulation;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace SmartSolar.Api.Extensions;
 
@@ -22,6 +24,9 @@ public static class SolarSimulationModuleExtensions
         services.AddScoped<CreateSimulationHandler>();
         services.AddScoped<GetSimulationHandler>();
         services.AddScoped<ListSimulationsHandler>();
+        services.AddScoped<SelectSimulationHandler>();
+        // The result cache and snapshot store are registered by AddInfrastructure.
+        services.TryAddSingleton(TimeProvider.System);
 
         return services;
     }
@@ -58,6 +63,12 @@ public static class SolarSimulationModuleExtensions
         if (o.LayoutOffsetSamples is < 1 or > 200) errors.Add("SolarSimulation:LayoutOffsetSamples must be between 1 and 200.");
         if (o.ProviderBudgetSeconds is < 1 or > 120) errors.Add("SolarSimulation:ProviderBudgetSeconds must be between 1 and 120.");
         if (o.RackSupportHeightWarningMm <= 0) errors.Add("SolarSimulation:RackSupportHeightWarningMm must be positive.");
+        if (o.ResultTtlMinutes is < 1 or > 10080) errors.Add("SolarSimulation:ResultTtlMinutes must be between 1 and 10080 (7 days).");
+        if (o.MaxRecentResults is < 1 or > 20) errors.Add("SolarSimulation:MaxRecentResults must be between 1 and 20.");
+        if (o.Snapshots.Enabled && string.IsNullOrWhiteSpace(o.Snapshots.Bucket))
+            errors.Add("SolarSimulation:Snapshots:Bucket is required when SolarSimulation:Snapshots:Enabled is true.");
+        if (o.Snapshots.TimeoutSeconds is < 1 or > 120) errors.Add("SolarSimulation:Snapshots:TimeoutSeconds must be between 1 and 120.");
+        if (o.Snapshots.MaxSnapshotBytes is < 1024 or > 64L * 1024 * 1024) errors.Add("SolarSimulation:Snapshots:MaxSnapshotBytes must be between 1 KiB and 64 MiB.");
         if (o.DeclaredAreaMismatchRatio < 0) errors.Add("SolarSimulation:DeclaredAreaMismatchRatio must not be negative.");
         if (o.Shading.StartSolarHour < 0 || o.Shading.EndSolarHour > 24 || o.Shading.StartSolarHour > o.Shading.EndSolarHour
             || o.Shading.StepMinutes <= 0 || o.Shading.DeclinationDegree is < 0 or > 23.5)

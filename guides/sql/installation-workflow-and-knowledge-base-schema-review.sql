@@ -2,8 +2,12 @@
 -- SmartSolar — Installation Flow (on-site survey, quotation, contract, payment, installation) + knowledge base (RAG)
 -- SCHEMA REVIEW SCRIPT
 --
--- STATUS: PENDING_MANUAL_MIGRATION
---   * Review only. It has NOT been executed against Supabase or any shared/production database.
+-- STATUS: HISTORICAL — DO NOT RUN
+--   * This is the pre-application review of 20261013182132_InstallationWorkflowAndKnowledgeBase, which was APPLIED to
+--     Supabase Dev on 2026-10-13. It describes that migration's schema only; later migrations changed it
+--     (20261016161547_BusinessRulesFlow1And2Redesign: responsible-technician installation model, RAG configuration
+--     columns, ...). The current schema is defined by the EF migrations; this file is no longer checked against the model.
+--   * (Original note) Review only. It has NOT been executed against Supabase or any shared/production database.
 --   * The EF migration 20261013182132_InstallationWorkflowAndKnowledgeBase implements exactly this script
 --     (checked by Unit/Persistence/InstallationWorkflowMigrationTests). Superseded path, kept for reference:
 --     review this script, then have the

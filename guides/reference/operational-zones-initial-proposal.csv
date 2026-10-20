@@ -1,0 +1,169 @@
+zone_code,zone_name,commune_code,commune_name,unit_type,status,former_districts
+KHU-THU-DAU-MOT,Khu Thủ Dầu Một,25747,Phường Thủ Dầu Một,WARD,PROPOSED,74:718 Thành phố Thủ Dầu Một
+KHU-THU-DAU-MOT,Khu Thủ Dầu Một,25750,Phường Phú Lợi,WARD,PROPOSED,74:718 Thành phố Thủ Dầu Một
+,,25760,Phường Bình Dương,WARD,NEEDS_REVIEW,74:718 Thành phố Thủ Dầu Một | 74:723 Thành phố Tân Uyên
+,,25768,Phường Phú An,WARD,NEEDS_REVIEW,74:718 Thành phố Thủ Dầu Một | 74:721 Thành phố Bến Cát
+KHU-THU-DAU-MOT,Khu Thủ Dầu Một,25771,Phường Chánh Hiệp,WARD,PROPOSED,74:718 Thành phố Thủ Dầu Một
+KHU-DAU-TIENG,Khu Dầu Tiếng,25777,Xã Dầu Tiếng,COMMUNE,PROPOSED,74:720 Huyện Dầu Tiếng
+KHU-DAU-TIENG,Khu Dầu Tiếng,25780,Xã Minh Thạnh,COMMUNE,PROPOSED,74:720 Huyện Dầu Tiếng
+KHU-DAU-TIENG,Khu Dầu Tiếng,25792,Xã Long Hòa,COMMUNE,PROPOSED,74:720 Huyện Dầu Tiếng
+KHU-DAU-TIENG,Khu Dầu Tiếng,25807,Xã Thanh An,COMMUNE,PROPOSED,74:720 Huyện Dầu Tiếng
+,,25813,Phường Bến Cát,WARD,NEEDS_REVIEW,74:719 Huyện Bàu Bàng | 74:721 Thành phố Bến Cát
+KHU-BAU-BANG,Khu Bàu Bàng,25819,Xã Trừ Văn Thố,COMMUNE,PROPOSED,74:719 Huyện Bàu Bàng
+KHU-BAU-BANG,Khu Bàu Bàng,25822,Xã Bàu Bàng,COMMUNE,PROPOSED,74:719 Huyện Bàu Bàng
+,,25837,Phường Chánh Phú Hòa,WARD,NEEDS_REVIEW,74:719 Huyện Bàu Bàng | 74:721 Thành phố Bến Cát
+,,25840,Phường Long Nguyên,WARD,NEEDS_REVIEW,74:719 Huyện Bàu Bàng | 74:721 Thành phố Bến Cát
+,,25843,Phường Tây Nam,WARD,NEEDS_REVIEW,74:720 Huyện Dầu Tiếng | 74:721 Thành phố Bến Cát
+KHU-BEN-CAT,Khu Bến Cát,25846,Phường Thới Hòa,WARD,PROPOSED,74:721 Thành phố Bến Cát
+KHU-BEN-CAT,Khu Bến Cát,25849,Phường Hòa Lợi,WARD,PROPOSED,74:721 Thành phố Bến Cát
+KHU-PHU-GIAO,Khu Phú Giáo,25858,Xã Phú Giáo,COMMUNE,PROPOSED,74:722 Huyện Phú Giáo
+KHU-PHU-GIAO,Khu Phú Giáo,25864,Xã Phước Thành,COMMUNE,PROPOSED,74:722 Huyện Phú Giáo
+KHU-PHU-GIAO,Khu Phú Giáo,25867,Xã An Long,COMMUNE,PROPOSED,74:722 Huyện Phú Giáo
+KHU-PHU-GIAO,Khu Phú Giáo,25882,Xã Phước Hòa,COMMUNE,PROPOSED,74:722 Huyện Phú Giáo
+,,25888,Phường Tân Uyên,WARD,NEEDS_REVIEW,74:723 Thành phố Tân Uyên | 74:726 Huyện Bắc Tân Uyên
+KHU-TAN-UYEN,Khu Tân Uyên,25891,Phường Tân Khánh,WARD,PROPOSED,74:723 Thành phố Tân Uyên
+KHU-BAC-TAN-UYEN,Khu Bắc Tân Uyên,25906,Xã Bắc Tân Uyên,COMMUNE,PROPOSED,74:726 Huyện Bắc Tân Uyên
+KHU-BAC-TAN-UYEN,Khu Bắc Tân Uyên,25909,Xã Thường Tân,COMMUNE,PROPOSED,74:726 Huyện Bắc Tân Uyên
+,,25912,Phường Vĩnh Tân,WARD,NEEDS_REVIEW,74:723 Thành phố Tân Uyên | 74:726 Huyện Bắc Tân Uyên
+,,25915,Phường Bình Cơ,WARD,NEEDS_REVIEW,74:723 Thành phố Tân Uyên | 74:726 Huyện Bắc Tân Uyên
+KHU-TAN-UYEN,Khu Tân Uyên,25920,Phường Tân Hiệp,WARD,PROPOSED,74:723 Thành phố Tân Uyên
+KHU-DI-AN,Khu Dĩ An,25942,Phường Dĩ An,WARD,PROPOSED,74:724 Thành phố Dĩ An
+,,25945,Phường Tân Đông Hiệp,WARD,NEEDS_REVIEW,74:723 Thành phố Tân Uyên | 74:724 Thành phố Dĩ An
+KHU-DI-AN,Khu Dĩ An,25951,Phường Đông Hòa,WARD,PROPOSED,74:724 Thành phố Dĩ An
+KHU-THUAN-AN,Khu Thuận An,25966,Phường Lái Thiêu,WARD,PROPOSED,74:725 Thành phố Thuận An
+KHU-THUAN-AN,Khu Thuận An,25969,Phường Thuận Giao,WARD,PROPOSED,74:725 Thành phố Thuận An
+KHU-THUAN-AN,Khu Thuận An,25975,Phường An Phú,WARD,PROPOSED,74:725 Thành phố Thuận An
+KHU-THUAN-AN,Khu Thuận An,25978,Phường Thuận An,WARD,PROPOSED,74:725 Thành phố Thuận An
+KHU-THUAN-AN,Khu Thuận An,25987,Phường Bình Hòa,WARD,PROPOSED,74:725 Thành phố Thuận An
+KHU-VUNG-TAU,Khu Vũng Tàu,26506,Phường Vũng Tàu,WARD,PROPOSED,77:747 Thành phố Vũng Tàu
+KHU-VUNG-TAU,Khu Vũng Tàu,26526,Phường Tam Thắng,WARD,PROPOSED,77:747 Thành phố Vũng Tàu
+KHU-VUNG-TAU,Khu Vũng Tàu,26536,Phường Rạch Dừa,WARD,PROPOSED,77:747 Thành phố Vũng Tàu
+KHU-VUNG-TAU,Khu Vũng Tàu,26542,Phường Phước Thắng,WARD,PROPOSED,77:747 Thành phố Vũng Tàu
+KHU-VUNG-TAU,Khu Vũng Tàu,26545,Xã Long Sơn,COMMUNE,PROPOSED,77:747 Thành phố Vũng Tàu
+KHU-BA-RIA,Khu Bà Rịa,26560,Phường Bà Rịa,WARD,PROPOSED,77:748 Thành phố Bà Rịa
+KHU-BA-RIA,Khu Bà Rịa,26566,Phường Long Hương,WARD,PROPOSED,77:748 Thành phố Bà Rịa
+KHU-BA-RIA,Khu Bà Rịa,26572,Phường Tam Long,WARD,PROPOSED,77:748 Thành phố Bà Rịa
+KHU-CHAU-DUC,Khu Châu Đức,26575,Xã Ngãi Giao,COMMUNE,PROPOSED,77:750 Huyện Châu Đức
+KHU-CHAU-DUC,Khu Châu Đức,26584,Xã Xuân Sơn,COMMUNE,PROPOSED,77:750 Huyện Châu Đức
+KHU-CHAU-DUC,Khu Châu Đức,26590,Xã Bình Giã,COMMUNE,PROPOSED,77:750 Huyện Châu Đức
+KHU-CHAU-DUC,Khu Châu Đức,26596,Xã Châu Đức,COMMUNE,PROPOSED,77:750 Huyện Châu Đức
+KHU-CHAU-DUC,Khu Châu Đức,26608,Xã Kim Long,COMMUNE,PROPOSED,77:750 Huyện Châu Đức
+KHU-CHAU-DUC,Khu Châu Đức,26617,Xã Nghĩa Thành,COMMUNE,PROPOSED,77:750 Huyện Châu Đức
+KHU-XUYEN-MOC,Khu Xuyên Mộc,26620,Xã Hồ Tràm,COMMUNE,PROPOSED,77:751 Huyện Xuyên Mộc
+KHU-XUYEN-MOC,Khu Xuyên Mộc,26632,Xã Xuyên Mộc,COMMUNE,PROPOSED,77:751 Huyện Xuyên Mộc
+KHU-XUYEN-MOC,Khu Xuyên Mộc,26638,Xã Bàu Lâm,COMMUNE,PROPOSED,77:751 Huyện Xuyên Mộc
+KHU-XUYEN-MOC,Khu Xuyên Mộc,26641,Xã Hòa Hội,COMMUNE,PROPOSED,77:751 Huyện Xuyên Mộc
+KHU-XUYEN-MOC,Khu Xuyên Mộc,26647,Xã Hòa Hiệp,COMMUNE,PROPOSED,77:751 Huyện Xuyên Mộc
+KHU-XUYEN-MOC,Khu Xuyên Mộc,26656,Xã Bình Châu,COMMUNE,PROPOSED,77:751 Huyện Xuyên Mộc
+KHU-LONG-DAT,Khu Long Đất,26659,Xã Long Điền,COMMUNE,PROPOSED,77:753 Huyện Long Đất
+KHU-LONG-DAT,Khu Long Đất,26662,Xã Long Hải,COMMUNE,PROPOSED,77:753 Huyện Long Đất
+KHU-LONG-DAT,Khu Long Đất,26680,Xã Đất Đỏ,COMMUNE,PROPOSED,77:753 Huyện Long Đất
+KHU-LONG-DAT,Khu Long Đất,26686,Xã Phước Hải,COMMUNE,PROPOSED,77:753 Huyện Long Đất
+KHU-PHU-MY,Khu Phú Mỹ,26704,Phường Phú Mỹ,WARD,PROPOSED,77:754 Thành phố Phú Mỹ
+KHU-PHU-MY,Khu Phú Mỹ,26710,Phường Tân Hải,WARD,PROPOSED,77:754 Thành phố Phú Mỹ
+KHU-PHU-MY,Khu Phú Mỹ,26713,Phường Tân Phước,WARD,PROPOSED,77:754 Thành phố Phú Mỹ
+KHU-PHU-MY,Khu Phú Mỹ,26725,Phường Tân Thành,WARD,PROPOSED,77:754 Thành phố Phú Mỹ
+KHU-PHU-MY,Khu Phú Mỹ,26728,Xã Châu Pha,COMMUNE,PROPOSED,77:754 Thành phố Phú Mỹ
+KHU-CON-DAO,Khu Côn Đảo,26732,Đặc khu Côn Đảo,SPECIAL_ZONE,PROPOSED,77:755 Huyện Côn Đảo
+KHU-1,Khu 1,26737,Phường Tân Định,WARD,PROPOSED,79:760 Quận 1
+KHU-1,Khu 1,26740,Phường Sài Gòn,WARD,PROPOSED,79:760 Quận 1
+KHU-1,Khu 1,26743,Phường Bến Thành,WARD,PROPOSED,79:760 Quận 1
+KHU-1,Khu 1,26758,Phường Cầu Ông Lãnh,WARD,PROPOSED,79:760 Quận 1
+KHU-12,Khu 12,26767,Phường An Phú Đông,WARD,PROPOSED,79:761 Quận 12
+KHU-12,Khu 12,26773,Phường Thới An,WARD,PROPOSED,79:761 Quận 12
+KHU-12,Khu 12,26782,Phường Tân Thới Hiệp,WARD,PROPOSED,79:761 Quận 12
+KHU-12,Khu 12,26785,Phường Trung Mỹ Tây,WARD,PROPOSED,79:761 Quận 12
+KHU-12,Khu 12,26791,Phường Đông Hưng Thuận,WARD,PROPOSED,79:761 Quận 12
+KHU-THU-DUC,Khu Thủ Đức,26800,Phường Linh Xuân,WARD,PROPOSED,79:769 Thành phố Thủ Đức
+KHU-THU-DUC,Khu Thủ Đức,26803,Phường Tam Bình,WARD,PROPOSED,79:769 Thành phố Thủ Đức
+KHU-THU-DUC,Khu Thủ Đức,26809,Phường Hiệp Bình,WARD,PROPOSED,79:769 Thành phố Thủ Đức
+KHU-THU-DUC,Khu Thủ Đức,26824,Phường Thủ Đức,WARD,PROPOSED,79:769 Thành phố Thủ Đức
+KHU-THU-DUC,Khu Thủ Đức,26833,Phường Long Bình,WARD,PROPOSED,79:769 Thành phố Thủ Đức
+KHU-THU-DUC,Khu Thủ Đức,26842,Phường Tăng Nhơn Phú,WARD,PROPOSED,79:769 Thành phố Thủ Đức
+KHU-THU-DUC,Khu Thủ Đức,26848,Phường Phước Long,WARD,PROPOSED,79:769 Thành phố Thủ Đức
+KHU-THU-DUC,Khu Thủ Đức,26857,Phường Long Phước,WARD,PROPOSED,79:769 Thành phố Thủ Đức
+KHU-THU-DUC,Khu Thủ Đức,26860,Phường Long Trường,WARD,PROPOSED,79:769 Thành phố Thủ Đức
+KHU-GO-VAP,Khu Gò Vấp,26876,Phường An Nhơn,WARD,PROPOSED,79:764 Quận Gò Vấp
+KHU-GO-VAP,Khu Gò Vấp,26878,Phường An Hội Đông,WARD,PROPOSED,79:764 Quận Gò Vấp
+KHU-GO-VAP,Khu Gò Vấp,26882,Phường An Hội Tây,WARD,PROPOSED,79:764 Quận Gò Vấp
+KHU-GO-VAP,Khu Gò Vấp,26884,Phường Gò Vấp,WARD,PROPOSED,79:764 Quận Gò Vấp
+KHU-GO-VAP,Khu Gò Vấp,26890,Phường Hạnh Thông,WARD,PROPOSED,79:764 Quận Gò Vấp
+KHU-GO-VAP,Khu Gò Vấp,26898,Phường Thông Tây Hội,WARD,PROPOSED,79:764 Quận Gò Vấp
+KHU-BINH-THANH,Khu Bình Thạnh,26905,Phường Bình Lợi Trung,WARD,PROPOSED,79:765 Quận Bình Thạnh
+KHU-BINH-THANH,Khu Bình Thạnh,26911,Phường Bình Quới,WARD,PROPOSED,79:765 Quận Bình Thạnh
+KHU-BINH-THANH,Khu Bình Thạnh,26929,Phường Bình Thạnh,WARD,PROPOSED,79:765 Quận Bình Thạnh
+KHU-BINH-THANH,Khu Bình Thạnh,26944,Phường Gia Định,WARD,PROPOSED,79:765 Quận Bình Thạnh
+KHU-BINH-THANH,Khu Bình Thạnh,26956,Phường Thạnh Mỹ Tây,WARD,PROPOSED,79:765 Quận Bình Thạnh
+KHU-TAN-BINH,Khu Tân Bình,26968,Phường Tân Sơn Nhất,WARD,PROPOSED,79:766 Quận Tân Bình
+KHU-TAN-BINH,Khu Tân Bình,26977,Phường Tân Sơn Hòa,WARD,PROPOSED,79:766 Quận Tân Bình
+KHU-TAN-BINH,Khu Tân Bình,26983,Phường Bảy Hiền,WARD,PROPOSED,79:766 Quận Tân Bình
+KHU-TAN-BINH,Khu Tân Bình,26995,Phường Tân Hòa,WARD,PROPOSED,79:766 Quận Tân Bình
+KHU-TAN-BINH,Khu Tân Bình,27004,Phường Tân Bình,WARD,PROPOSED,79:766 Quận Tân Bình
+KHU-TAN-BINH,Khu Tân Bình,27007,Phường Tân Sơn,WARD,PROPOSED,79:766 Quận Tân Bình
+KHU-TAN-PHU,Khu Tân Phú,27013,Phường Tây Thạnh,WARD,PROPOSED,79:767 Quận Tân Phú
+KHU-TAN-PHU,Khu Tân Phú,27019,Phường Tân Sơn Nhì,WARD,PROPOSED,79:767 Quận Tân Phú
+KHU-TAN-PHU,Khu Tân Phú,27022,Phường Phú Thọ Hòa,WARD,PROPOSED,79:767 Quận Tân Phú
+KHU-TAN-PHU,Khu Tân Phú,27028,Phường Phú Thạnh,WARD,PROPOSED,79:767 Quận Tân Phú
+KHU-TAN-PHU,Khu Tân Phú,27031,Phường Tân Phú,WARD,PROPOSED,79:767 Quận Tân Phú
+KHU-PHU-NHUAN,Khu Phú Nhuận,27043,Phường Đức Nhuận,WARD,PROPOSED,79:768 Quận Phú Nhuận
+KHU-PHU-NHUAN,Khu Phú Nhuận,27058,Phường Cầu Kiệu,WARD,PROPOSED,79:768 Quận Phú Nhuận
+KHU-PHU-NHUAN,Khu Phú Nhuận,27073,Phường Phú Nhuận,WARD,PROPOSED,79:768 Quận Phú Nhuận
+KHU-THU-DUC,Khu Thủ Đức,27094,Phường An Khánh,WARD,PROPOSED,79:769 Thành phố Thủ Đức
+KHU-THU-DUC,Khu Thủ Đức,27097,Phường Bình Trưng,WARD,PROPOSED,79:769 Thành phố Thủ Đức
+KHU-THU-DUC,Khu Thủ Đức,27112,Phường Cát Lái,WARD,PROPOSED,79:769 Thành phố Thủ Đức
+KHU-3,Khu 3,27139,Phường Xuân Hòa,WARD,PROPOSED,79:770 Quận 3
+KHU-3,Khu 3,27142,Phường Nhiêu Lộc,WARD,PROPOSED,79:770 Quận 3
+KHU-3,Khu 3,27154,Phường Bàn Cờ,WARD,PROPOSED,79:770 Quận 3
+KHU-10,Khu 10,27163,Phường Hòa Hưng,WARD,PROPOSED,79:771 Quận 10
+KHU-10,Khu 10,27169,Phường Diên Hồng,WARD,PROPOSED,79:771 Quận 10
+KHU-10,Khu 10,27190,Phường Vườn Lài,WARD,PROPOSED,79:771 Quận 10
+KHU-11,Khu 11,27211,Phường Hòa Bình,WARD,PROPOSED,79:772 Quận 11
+KHU-11,Khu 11,27226,Phường Phú Thọ,WARD,PROPOSED,79:772 Quận 11
+KHU-11,Khu 11,27232,Phường Bình Thới,WARD,PROPOSED,79:772 Quận 11
+KHU-11,Khu 11,27238,Phường Minh Phụng,WARD,PROPOSED,79:772 Quận 11
+KHU-4,Khu 4,27259,Phường Xóm Chiếu,WARD,PROPOSED,79:773 Quận 4
+KHU-4,Khu 4,27265,Phường Khánh Hội,WARD,PROPOSED,79:773 Quận 4
+KHU-4,Khu 4,27286,Phường Vĩnh Hội,WARD,PROPOSED,79:773 Quận 4
+KHU-5,Khu 5,27301,Phường Chợ Quán,WARD,PROPOSED,79:774 Quận 5
+KHU-5,Khu 5,27316,Phường An Đông,WARD,PROPOSED,79:774 Quận 5
+KHU-5,Khu 5,27343,Phường Chợ Lớn,WARD,PROPOSED,79:774 Quận 5
+KHU-6,Khu 6,27349,Phường Phú Lâm,WARD,PROPOSED,79:775 Quận 6
+,,27364,Phường Bình Phú,WARD,NEEDS_REVIEW,79:775 Quận 6 | 79:776 Quận 8
+KHU-6,Khu 6,27367,Phường Bình Tây,WARD,PROPOSED,79:775 Quận 6
+KHU-6,Khu 6,27373,Phường Bình Tiên,WARD,PROPOSED,79:775 Quận 6
+KHU-8,Khu 8,27418,Phường Chánh Hưng,WARD,PROPOSED,79:776 Quận 8
+,,27424,Phường Bình Đông,WARD,NEEDS_REVIEW,79:776 Quận 8 | 79:785 Huyện Bình Chánh
+KHU-8,Khu 8,27427,Phường Phú Định,WARD,PROPOSED,79:776 Quận 8
+,,27439,Phường Bình Hưng Hòa,WARD,NEEDS_REVIEW,79:767 Quận Tân Phú | 79:777 Quận Bình Tân
+KHU-BINH-TAN,Khu Bình Tân,27442,Phường Bình Tân,WARD,PROPOSED,79:777 Quận Bình Tân
+KHU-BINH-TAN,Khu Bình Tân,27448,Phường Bình Trị Đông,WARD,PROPOSED,79:777 Quận Bình Tân
+,,27457,Phường Tân Tạo,WARD,NEEDS_REVIEW,79:777 Quận Bình Tân | 79:785 Huyện Bình Chánh
+KHU-BINH-TAN,Khu Bình Tân,27460,Phường An Lạc,WARD,PROPOSED,79:777 Quận Bình Tân
+KHU-7,Khu 7,27475,Phường Tân Hưng,WARD,PROPOSED,79:778 Quận 7
+KHU-7,Khu 7,27478,Phường Tân Thuận,WARD,PROPOSED,79:778 Quận 7
+KHU-7,Khu 7,27484,Phường Phú Thuận,WARD,PROPOSED,79:778 Quận 7
+KHU-7,Khu 7,27487,Phường Tân Mỹ,WARD,PROPOSED,79:778 Quận 7
+KHU-CU-CHI,Khu Củ Chi,27496,Xã Tân An Hội,COMMUNE,PROPOSED,79:783 Huyện Củ Chi
+KHU-CU-CHI,Khu Củ Chi,27508,Xã An Nhơn Tây,COMMUNE,PROPOSED,79:783 Huyện Củ Chi
+KHU-CU-CHI,Khu Củ Chi,27511,Xã Nhuận Đức,COMMUNE,PROPOSED,79:783 Huyện Củ Chi
+KHU-CU-CHI,Khu Củ Chi,27526,Xã Thái Mỹ,COMMUNE,PROPOSED,79:783 Huyện Củ Chi
+KHU-CU-CHI,Khu Củ Chi,27541,Xã Phú Hòa Đông,COMMUNE,PROPOSED,79:783 Huyện Củ Chi
+KHU-CU-CHI,Khu Củ Chi,27544,Xã Bình Mỹ,COMMUNE,PROPOSED,79:783 Huyện Củ Chi
+KHU-CU-CHI,Khu Củ Chi,27553,Xã Củ Chi,COMMUNE,PROPOSED,79:783 Huyện Củ Chi
+KHU-HOC-MON,Khu Hóc Môn,27559,Xã Hóc Môn,COMMUNE,PROPOSED,79:784 Huyện Hóc Môn
+KHU-HOC-MON,Khu Hóc Môn,27568,Xã Đông Thạnh,COMMUNE,PROPOSED,79:784 Huyện Hóc Môn
+KHU-HOC-MON,Khu Hóc Môn,27577,Xã Xuân Thới Sơn,COMMUNE,PROPOSED,79:784 Huyện Hóc Môn
+KHU-HOC-MON,Khu Hóc Môn,27592,Xã Bà Điểm,COMMUNE,PROPOSED,79:784 Huyện Hóc Môn
+,,27595,Xã Tân Nhựt,COMMUNE,NEEDS_REVIEW,79:776 Quận 8 | 79:777 Quận Bình Tân | 79:785 Huyện Bình Chánh
+KHU-BINH-CHANH,Khu Bình Chánh,27601,Xã Vĩnh Lộc,COMMUNE,PROPOSED,79:785 Huyện Bình Chánh
+,,27604,Xã Tân Vĩnh Lộc,COMMUNE,NEEDS_REVIEW,79:777 Quận Bình Tân | 79:785 Huyện Bình Chánh
+KHU-BINH-CHANH,Khu Bình Chánh,27610,Xã Bình Lợi,COMMUNE,PROPOSED,79:785 Huyện Bình Chánh
+,,27619,Xã Bình Hưng,COMMUNE,NEEDS_REVIEW,79:776 Quận 8 | 79:785 Huyện Bình Chánh
+KHU-BINH-CHANH,Khu Bình Chánh,27628,Xã Hưng Long,COMMUNE,PROPOSED,79:785 Huyện Bình Chánh
+KHU-BINH-CHANH,Khu Bình Chánh,27637,Xã Bình Chánh,COMMUNE,PROPOSED,79:785 Huyện Bình Chánh
+KHU-NHA-BE,Khu Nhà Bè,27655,Xã Nhà Bè,COMMUNE,PROPOSED,79:786 Huyện Nhà Bè
+KHU-NHA-BE,Khu Nhà Bè,27658,Xã Hiệp Phước,COMMUNE,PROPOSED,79:786 Huyện Nhà Bè
+KHU-CAN-GIO,Khu Cần Giờ,27664,Xã Cần Giờ,COMMUNE,PROPOSED,79:787 Huyện Cần Giờ
+KHU-CAN-GIO,Khu Cần Giờ,27667,Xã Bình Khánh,COMMUNE,PROPOSED,79:787 Huyện Cần Giờ
+KHU-CAN-GIO,Khu Cần Giờ,27673,Xã An Thới Đông,COMMUNE,PROPOSED,79:787 Huyện Cần Giờ
+KHU-CAN-GIO,Khu Cần Giờ,27676,Xã Thạnh An,COMMUNE,PROPOSED,79:787 Huyện Cần Giờ

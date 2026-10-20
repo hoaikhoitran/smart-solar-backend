@@ -1,68 +1,58 @@
 using SmartSolar.Modules.Scheduling.Constants;
 using SmartSolar.Modules.Scheduling.Contracts.Persistence;
 using SmartSolar.Modules.Scheduling.Domain;
-using SmartSolar.Modules.Scheduling.Entities;
 using SmartSolar.Modules.Scheduling.Options;
-using SmartSolar.Modules.Scheduling.Travel;
 
 namespace SmartSolar.Modules.Scheduling.Services;
 
-/// <summary>What to reserve: the candidate interval and location on a local date, optionally a required technician.</summary>
+/// <summary>
+/// What to reserve: an interval on a site. <see cref="RequiredTechnicianId"/> keeps one technician (a confirmed
+/// appointment being moved); otherwise a capacity holder is chosen among the eligible technicians.
+/// <see cref="IgnoreAppointmentIds"/> are the appointments being replaced (their capacity is reusable).
+/// </summary>
 public sealed record ReservationSpec(
-    AppointmentCandidate Candidate,
-    DateOnly LocalDate,
+    DateTimeOffset StartsAtUtc,
+    DateTimeOffset EndsAtUtc,
+    Guid PropertySiteId,
     Guid? RequiredTechnicianId,
-    IReadOnlyList<Guid> AdditionalLockTechnicianIds,
-    string EstimateContext);
+    IReadOnlySet<Guid> IgnoreAppointmentIds,
+    IReadOnlyList<Guid> AdditionalLockTechnicianIds);
 
-/// <summary>Inside the locked transaction: the chosen technician and the verified routes.</summary>
-public sealed record ReservationContext(TechnicianOption Option, TechnicianDayState LockedDay, DateTimeOffset NowUtc);
+/// <summary>Inside the locked transaction: the chosen technician, the site coverage re-read under the site lock, and now.</summary>
+public sealed record ReservationContext(TechnicianDayState Technician, SiteCoverage Coverage, DateTimeOffset NowUtc);
 
 /// <summary>Result of the caller's write inside the reservation transaction.</summary>
 public sealed record ApplyResult(bool Succeeded, Guid? AppointmentId, string? ErrorCode, string? Message)
 {
+    /// <summary>
+    /// Internal outcome (never returned to clients): the row the caller wanted to change got a new revision in the meantime.
+    /// Nothing is written; the caller re-reads and decides whether the change is still allowed and retries (bounded).
+    /// </summary>
+    public const string StaleCode = "APPLY_STALE_RETRY";
+
     public static ApplyResult Applied(Guid appointmentId) => new(true, appointmentId, null, null);
     public static ApplyResult Abort(string code, string message) => new(false, null, code, message);
+    public static ApplyResult Stale() => new(false, null, StaleCode, "The appointment changed meanwhile.");
 }
 
-public sealed record ReservationOutcome(bool Succeeded, Guid? AppointmentId, TechnicianOption? Option, string? ErrorCode, string? Message, CandidateEvaluation? Evaluation)
+public sealed record ReservationOutcome(bool Succeeded, Guid? AppointmentId, Guid? TechnicianUserId, string? ErrorCode, string? Message)
 {
-    public static ReservationOutcome Fail(string code, string message, CandidateEvaluation? evaluation = null) => new(false, null, null, code, message, evaluation);
+    public static ReservationOutcome Fail(string code, string message) => new(false, null, null, code, message);
 }
 
 /// <summary>
-/// Estimate-then-validate reservation. Provider calls happen with no transaction open; then, in a
-/// short transaction, the technician rows are locked, the day is re-read and the plan re-checked
-/// (same neighbours, same rules, same working schedule). Only then is the caller's write applied
-/// and committed together with the new route snapshots (older snapshots of the same legs are
-/// superseded). If the schedule changed, the transaction is rolled back and the whole step is
-/// retried; database constraints remain the final guard against double booking.
+/// Capacity reservation for bookings and reschedules (capacity decision: per-technician hold). Outside any
+/// transaction the eligible technicians are ranked (fewest survey commitments that day, then id). Then, in a
+/// short transaction, the chosen technician and the site are locked, the technician's day and the site
+/// coverage are re-read and the rules re-checked; only then is the caller's write applied. A concurrent
+/// change rolls back and retries; the exclusion constraint stays the final guard against double booking.
 /// </summary>
-public sealed class AppointmentReservationService
+public sealed class AppointmentReservationService(
+    ISchedulingUnitOfWork unitOfWork,
+    TechnicianEligibility eligibility,
+    SchedulingOptions options,
+    TimeProvider time)
 {
-    private readonly ISchedulingUnitOfWork _unitOfWork;
-    private readonly TechnicianAvailabilityEvaluator _evaluator;
-    private readonly ITravelTimeEstimator _estimator;
-    private readonly SchedulingOptions _options;
-    private readonly TimeProvider _time;
-    private readonly TechnicianDayLoader _days;
-
-    public AppointmentReservationService(
-        ISchedulingUnitOfWork unitOfWork,
-        TechnicianAvailabilityEvaluator evaluator,
-        ITravelTimeEstimator estimator,
-        SchedulingOptions options,
-        TimeProvider time,
-        WorkingCalendar calendar)
-    {
-        _unitOfWork = unitOfWork;
-        _evaluator = evaluator;
-        _estimator = estimator;
-        _options = options;
-        _time = time;
-        _days = new TechnicianDayLoader(unitOfWork, calendar);
-    }
-
     private enum Step { Done, Retry }
 
     public async Task<ReservationOutcome> ReserveAsync(
@@ -70,128 +60,126 @@ public sealed class AppointmentReservationService
         Func<ReservationContext, CancellationToken, Task<ApplyResult>> apply,
         CancellationToken cancellationToken)
     {
-        var budget = new RouteBudget(_estimator, _options.MaxRouteRequestsPerOperation);
-        CandidateEvaluation? lastEvaluation = null;
-
-        for (var attempt = 0; attempt < Math.Max(1, _options.MaxReservationAttempts); attempt++)
+        var date = eligibility.Calendar.LocalDateOf(spec.StartsAtUtc);
+        for (var attempt = 0; attempt < Math.Max(1, options.MaxReservationAttempts); attempt++)
         {
-            var days = await _days.LoadAsync(spec.LocalDate, spec.RequiredTechnicianId, cancellationToken);
-            var evaluation = await _evaluator.EvaluateAsync(spec.Candidate, days, 1, budget, cancellationToken);
-            lastEvaluation = evaluation;
+            var coverage = await unitOfWork.GetSiteCoverageAsync(spec.PropertySiteId, cancellationToken);
+            if (CoverageError(coverage) is { } coverageError) return coverageError;
 
-            if (evaluation.Feasible.Count == 0)
+            var request = new EligibilityRequest(spec.StartsAtUtc, spec.EndsAtUtc, coverage.ZoneIds, spec.IgnoreAppointmentIds);
+            TechnicianDayState option;
+            if (spec.RequiredTechnicianId is { } required)
             {
-                var code = spec.RequiredTechnicianId is not null && !evaluation.HadUnverifiedRoutes
-                    ? SchedulingErrorCodes.TechnicianNotAvailable
-                    : evaluation.NoCapacityErrorCode();
-                return ReservationOutcome.Fail(code, Describe(code, evaluation), evaluation);
+                var (day, reason) = await eligibility.CheckAsync(required, request, cancellationToken);
+                if (reason is not null) return ReservationOutcome.Fail(reason, Describe(reason));
+                option = day!;
+            }
+            else
+            {
+                var ranked = eligibility.Rank(await eligibility.LoadDaysAsync(date, new TechnicianScope(ZoneIds: coverage.ZoneIds), cancellationToken), request);
+                if (ranked.Count == 0)
+                    return ReservationOutcome.Fail(SchedulingErrorCodes.SlotUnavailable, "No technician of this zone can take this appointment time.");
+                option = ranked[0].Day;
             }
 
-            var option = evaluation.Feasible[0];
             (Step Step, ApplyResult? Applied) result;
             try
             {
-                result = await _unitOfWork.ExecuteInTransactionAsync<(Step, ApplyResult?)>(async token =>
+                result = await unitOfWork.ExecuteInTransactionAsync<(Step, ApplyResult?)>(async token =>
                 {
-                    await _unitOfWork.LockTechniciansAsync(spec.AdditionalLockTechnicianIds.Append(option.Day.TechnicianUserId), token);
+                    await unitOfWork.LockTechniciansAsync(spec.AdditionalLockTechnicianIds.Append(option.TechnicianUserId), token);
+                    await unitOfWork.LockPropertySiteAsync(spec.PropertySiteId, token);
+                    // FOR SHARE: the zone recorded on the appointment cannot be deactivated or lose the commune before this commits.
+                    await unitOfWork.LockZonesAsync(coverage.ZoneIds, shared: true, token);
 
-                    var fresh = (await _days.LoadAsync(spec.LocalDate, option.Day.TechnicianUserId, token)).SingleOrDefault();
-                    var now = _time.GetUtcNow();
-                    if (fresh is null
-                        || FeasibilityRules.PreCheck(fresh, spec.Candidate, fresh.MaxAppointmentsPerDayOverride ?? _options.MaxAppointmentsPerTechnicianPerDay) is not null
-                        || !SameNeighbours(FeasibilityRules.PlanLegs(fresh, spec.Candidate, _evaluator.SafetyBuffer, now), option.Plan)
-                        || !FeasibilityRules.Evaluate(fresh, spec.Candidate, option.Plan, option.Inbound, option.Outbound, _evaluator.SafetyBuffer, now).IsFeasible)
+                    var freshCoverage = await unitOfWork.GetSiteCoverageAsync(spec.PropertySiteId, token);
+                    var fresh = (await eligibility.LoadDaysAsync(date, new TechnicianScope([option.TechnicianUserId], SchedulableOnly: false), token)).SingleOrDefault();
+                    if (fresh is null || freshCoverage.Status != Zones.CoverageStatuses.Covered || freshCoverage.Zone!.Id != coverage.Zone!.Id
+                        || eligibility.Evaluate(fresh, request with { AcceptableZoneIds = freshCoverage.ZoneIds }) is not null)
                     {
                         return ((Step.Retry, null), false);
                     }
 
-                    var applied = await apply(new ReservationContext(option, fresh, now), token);
-                    if (!applied.Succeeded)
-                    {
-                        return ((Step.Done, applied), false);
-                    }
+                    var applied = await apply(new ReservationContext(fresh, freshCoverage, time.GetUtcNow()), token);
+                    if (!applied.Succeeded) return ((Step.Done, applied), false);
 
-                    var estimates = BuildEstimates(option, spec.Candidate, applied.AppointmentId!.Value, spec.EstimateContext).ToList();
-                    await _unitOfWork.SupersedeEstimatesAsync(estimates.Select(e => e.AppointmentId).ToList(), now, token);
-                    _unitOfWork.AddTravelEstimates(estimates);
-                    await _unitOfWork.SaveChangesAsync(token);
+                    await unitOfWork.SaveChangesAsync(token);
                     return ((Step.Done, applied), true);
                 }, cancellationToken);
             }
             catch (SchedulingConflictException ex) when (ex.Kind is SchedulingConflictException.TechnicianOverlap or SchedulingConflictException.StaleAppointment)
             {
-                // Another reservation won the race for this technician or appointment: re-estimate.
+                // Another reservation won the race for this technician or appointment: re-evaluate.
                 continue;
             }
 
             if (result.Step == Step.Retry) continue;
-
             var outcome = result.Applied!;
             return outcome.Succeeded
-                ? new ReservationOutcome(true, outcome.AppointmentId, option, null, null, evaluation)
-                : ReservationOutcome.Fail(outcome.ErrorCode!, outcome.Message!, evaluation);
+                ? new ReservationOutcome(true, outcome.AppointmentId, option.TechnicianUserId, null, null)
+                : ReservationOutcome.Fail(outcome.ErrorCode!, outcome.Message!);
         }
 
         return ReservationOutcome.Fail(SchedulingErrorCodes.ConcurrencyConflict,
-            "The technician schedule kept changing while the appointment was being reserved. Please try again.", lastEvaluation);
+            "The technician schedule kept changing while the appointment was being reserved. Please try again.");
     }
 
-    private static bool SameNeighbours(LegPlan fresh, LegPlan estimated)
-        => Same(fresh.Previous, estimated.Previous) && Same(fresh.Next, estimated.Next);
-
-    private static bool Same(ScheduledStop? a, ScheduledStop? b)
-        => a is null ? b is null : b is not null && a.AppointmentId == b.AppointmentId && a.StartsAtUtc == b.StartsAtUtc && a.EndsAtUtc == b.EndsAtUtc && a.Location == b.Location;
-
-    private IEnumerable<TechnicianTravelEstimate> BuildEstimates(TechnicianOption option, AppointmentCandidate candidate, Guid appointmentId, string context)
+    /// <summary>
+    /// SITE_LOCATION_REQUIRED without a valid commune, NO_ZONE_COVERAGE when no active zone maps the commune, ZONE_NOT_SERVICEABLE when
+    /// the zone is marked not serviceable; null when the site is covered.
+    /// </summary>
+    public static ReservationOutcome? CoverageError(SiteCoverage coverage) => coverage.Status switch
     {
-        var buffer = _evaluator.SafetyBuffer;
-        var inboundDeparture = option.Plan.Previous is null
-            ? candidate.StartsAtUtc - buffer - option.Inbound.Duration!.Value
-            : option.Plan.Inbound.DepartureAtUtc;
-        // Route snapshots belong to survey appointments only. A neighbouring installation shift (Installation Flow)
-        // is not a technician_appointment: its id is never stored as origin, and no snapshot is written for it.
-        var inboundLeg = option.Plan.Previous is { CountsTowardDailyLimit: false } ? option.Plan.Inbound with { OriginAppointmentId = null } : option.Plan.Inbound;
-        yield return Estimate(option.Day.TechnicianUserId, appointmentId, inboundLeg, option.Inbound, inboundDeparture, context);
+        Zones.CoverageStatuses.SiteLocationRequired => ReservationOutcome.Fail(SchedulingErrorCodes.SiteLocationRequired, CoverageMessages.SiteLocationRequired),
+        Zones.CoverageStatuses.NoZoneCoverage => ReservationOutcome.Fail(SchedulingErrorCodes.NoZoneCoverage, CoverageMessages.NoZoneCoverage),
+        Zones.CoverageStatuses.ZoneNotServiceable => ReservationOutcome.Fail(SchedulingErrorCodes.ZoneNotServiceable, CoverageMessages.ZoneNotServiceable),
+        _ => null,
+    };
 
-        if (option.Plan.Outbound is { } outLeg && option.Outbound is { } outbound && outLeg.DestinationAppointmentId is { } nextId
-            && option.Plan.Next is { CountsTowardDailyLimit: true })
-        {
-            yield return Estimate(option.Day.TechnicianUserId, nextId, outLeg with { OriginAppointmentId = appointmentId }, outbound, outLeg.DepartureAtUtc, context);
-        }
-    }
-
-    private TechnicianTravelEstimate Estimate(Guid technicianId, Guid destinationAppointmentId, RequiredLeg leg, TravelEstimateResult result, DateTimeOffset departure, string context)
-        => new()
-        {
-            Id = Guid.NewGuid(),
-            AppointmentId = destinationAppointmentId,
-            TechnicianUserId = technicianId,
-            Context = context,
-            OriginKind = leg.OriginKind,
-            OriginAppointmentId = leg.OriginAppointmentId,
-            OriginLatitude = leg.Origin.Latitude,
-            OriginLongitude = leg.Origin.Longitude,
-            DestinationLatitude = leg.Destination.Latitude,
-            DestinationLongitude = leg.Destination.Longitude,
-            DepartureAt = departure,
-            EstimatedAt = result.EstimatedAtUtc,
-            DistanceMeters = result.DistanceMeters is { } m ? Math.Round((decimal)m, 1) : null,
-            DurationSeconds = result.Duration is { } d ? (int)Math.Ceiling(d.TotalSeconds) : null,
-            SafetyBufferMinutes = _options.SafetyBufferMinutes,
-            EstimatedArrivalAt = result.Duration is { } duration ? departure + duration : null,
-            Status = result.Status,
-            Provider = result.Provider,
-            ProviderVersion = result.ProviderVersion,
-            Vehicle = result.Vehicle,
-            CongestionSummary = PreSurveyAppointments.TravelEstimateViews.Serialize(result.Congestion),
-        };
-
-    private static string Describe(string code, CandidateEvaluation evaluation) => code switch
+    public static string Describe(string reason) => reason switch
     {
-        SchedulingErrorCodes.TravelProviderQuotaExceeded => "Travel times cannot be verified right now because the routing quota is exhausted.",
-        SchedulingErrorCodes.TravelProviderUnavailable => "Travel times cannot be verified right now because the routing provider is unavailable.",
-        SchedulingErrorCodes.TravelRouteUnavailable => "No motorcycle route could be found to this location.",
-        SchedulingErrorCodes.TechnicianNotAvailable => $"The technician cannot take this appointment ({string.Join(", ", evaluation.Rejected.Select(r => r.Reason).Distinct())}).",
-        _ => "No technician can take this appointment time.",
+        EligibilityReasons.TechnicianInactive => "The technician account is not active.",
+        EligibilityReasons.SchedulingDisabled => "Scheduling is disabled for this technician.",
+        EligibilityReasons.OutsideZone => "The technician is not a member of the site's operational zone.",
+        EligibilityReasons.OutsideWorkingHours => "The time is outside the technician's working hours.",
+        EligibilityReasons.OnLeave => "The technician is on leave at that time.",
+        EligibilityReasons.ScheduleConflict => "The technician has another commitment too close to this time.",
+        EligibilityReasons.DailyLimitReached => "The technician reached the daily appointment limit.",
+        _ => "The technician cannot take this appointment.",
+    };
+}
+
+/// <summary>Safe, stable messages of the technician-independent coverage codes (shared by Flow 1 and the Installation Flow).</summary>
+public static class CoverageMessages
+{
+    public const string SiteLocationRequired =
+        "The property site has no valid administrative location. Set the province and the current (post-2025) commune of the site first.";
+
+    public const string NoZoneCoverage = "No active operational zone serves the commune of this property site yet.";
+
+    public const string ZoneNotServiceable = "The operational zone of this property site is currently not serviceable.";
+
+    public const string NoZoneTechnician =
+        "No technician serves this area yet. You can request a dispatch: our staff will arrange a technician and send you a proposal.";
+
+    public const string NoAvailableTechnician =
+        "No technician of this area is free within the booking horizon. You can request a dispatch: our staff will arrange a technician.";
+
+    public const string ScheduleConflict =
+        "No technician of this area is free at this time. Choose another time, or request a dispatch: our staff will arrange a technician.";
+
+    public const string NoZoneCoverageDispatch =
+        NoZoneCoverage + " You can request a dispatch: our staff will arrange a technician and send you a proposal.";
+
+    /// <summary>Customer-safe explanation of a coverage status (null for COVERED).</summary>
+    public static string? Describe(string status) => status switch
+    {
+        Zones.CoverageStatuses.SiteLocationRequired => SiteLocationRequired,
+        Zones.CoverageStatuses.NoZoneCoverage => NoZoneCoverageDispatch,
+        Zones.CoverageStatuses.ZoneNotServiceable => ZoneNotServiceable,
+        Zones.CoverageStatuses.NoZoneTechnician => NoZoneTechnician,
+        Zones.CoverageStatuses.NoAvailableTechnician => NoAvailableTechnician,
+        Zones.CoverageStatuses.ScheduleConflict => ScheduleConflict,
+        _ => null,
     };
 }

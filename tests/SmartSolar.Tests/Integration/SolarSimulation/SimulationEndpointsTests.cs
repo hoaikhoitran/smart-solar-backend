@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -124,9 +125,24 @@ public sealed class SimulationEndpointsTests
         Assert.Equal(HttpStatusCode.OK, repeated.StatusCode);
         Assert.Equal(simulationId, (await DataOf(repeated)).GetProperty("simulationId").GetGuid());
 
+        Assert.False(simulation.GetProperty("isSelected").GetBoolean());
+        Assert.Equal("CACHE", simulation.GetProperty("source").GetString());
+        Assert.NotEqual(JsonValueKind.Null, simulation.GetProperty("expiresAt").ValueKind);
+
         var list = await DataOf(await client.GetAsync($"/api/pre-surveys/{preSurveyId}/simulations"));
-        Assert.Equal(1, list.GetArrayLength());
-        Assert.True(list[0].GetProperty("isSelected").GetBoolean());
+        Assert.Equal(1, list.GetProperty("items").GetArrayLength());
+        Assert.False(list.GetProperty("items")[0].GetProperty("isSelected").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, list.GetProperty("selected").ValueKind);
+        Assert.True(list.GetProperty("cacheAvailable").GetBoolean());
+
+        // Explicit selection stores the compact summary.
+        var select = await client.PostAsJsonAsync($"/api/pre-surveys/{preSurveyId}/simulations/{simulationId}/select", new { expectedGeometryVersion = 1 });
+        var selection = await DataOf(select);
+        Assert.Equal(simulationId, selection.GetProperty("simulationId").GetGuid());
+        Assert.Equal("SUMMARY", selection.GetProperty("source").GetString());
+        list = await DataOf(await client.GetAsync($"/api/pre-surveys/{preSurveyId}/simulations"));
+        Assert.True(list.GetProperty("items")[0].GetProperty("isSelected").GetBoolean());
+        Assert.Equal(simulationId, list.GetProperty("selected").GetProperty("simulationId").GetGuid());
 
         // Submit (no simulation requirement), claim as Sales, read through the survey request.
         var submit = await DataOf(await client.PostAsync($"/api/pre-surveys/{preSurveyId}/submit", null));
@@ -156,7 +172,7 @@ public sealed class SimulationEndpointsTests
         var preSurvey = await factory.SeedAsync(PreSurveyTestContext.NewPreSurvey(customer.Site.Id, Modules.PreSurvey.Enums.PreSurveyStatus.Submitted));
         var (sale, sales) = await factory.SeedUserClientAsync(RoleCodes.Sales);
         var request = await factory.SeedAsync(PreSurveyTestContext.NewSurveyRequest(
-            preSurvey.Id, Modules.PreSurvey.Enums.SurveyRequestStatus.Assigned, sale.Id, assignedAt: DateTimeOffset.UtcNow));
+            preSurvey.Id, Modules.PreSurvey.Enums.SurveyRequestStatus.Pending, sale.Id, assignedAt: DateTimeOffset.UtcNow));
 
         var detail = await DataOf(await sales.GetAsync($"/api/survey-requests/{request.Id}"));
 
@@ -289,5 +305,160 @@ public sealed class SimulationEndpointsTests
 
         await AssertFailureAsync(await sales.GetAsync($"/api/pre-surveys/{preSurveyId}/simulations"),
             HttpStatusCode.Forbidden, SimulationErrorCodes.AccessDenied);
+    }
+
+    private static async Task<(SeededCustomer Customer, Guid PreSurveyId, Guid SimulationId)> SimulatedAsync(AuthApiFactory factory)
+    {
+        var (customer, preSurveyId, productId) = await SeedDraftAsync(factory);
+        await customer.Client.PutAsJsonAsync($"/api/pre-surveys/{preSurveyId}/surface", SurfaceBody(0));
+        var created = await customer.Client.PostAsJsonAsync($"/api/pre-surveys/{preSurveyId}/simulations", FlushBody(1, productId));
+        return (customer, preSurveyId, (await DataOf(created)).GetProperty("simulationId").GetGuid());
+    }
+
+    [Fact]
+    public async Task Sales_cannot_select_and_bad_input_is_a_validation_error()
+    {
+        using var factory = new AuthApiFactory();
+        var (customer, preSurveyId, simulationId) = await SimulatedAsync(factory);
+        var (_, sales) = await factory.SeedUserClientAsync(RoleCodes.Sales);
+
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await sales.PostAsJsonAsync($"/api/pre-surveys/{preSurveyId}/simulations/{simulationId}/select", new { expectedGeometryVersion = 1 })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await sales.DeleteAsync($"/api/pre-surveys/{preSurveyId}/simulations/selection")).StatusCode);
+        await AssertFailureAsync(
+            await customer.Client.PostAsJsonAsync($"/api/pre-surveys/{preSurveyId}/simulations/{simulationId}/select", new { }),
+            HttpStatusCode.BadRequest, SimulationErrorCodes.ValidationFailed);
+        await AssertFailureAsync(
+            await customer.Client.PostAsJsonAsync($"/api/pre-surveys/{preSurveyId}/simulations/{simulationId}/select", new { expectedGeometryVersion = 0 }),
+            HttpStatusCode.Conflict, SimulationErrorCodes.SourceChanged);
+    }
+
+    [Fact]
+    public async Task Expired_result_returns_410_and_the_selected_summary_stays_readable()
+    {
+        using var factory = new AuthApiFactory();
+        var (customer, preSurveyId, simulationId) = await SimulatedAsync(factory);
+        var client = customer.Client;
+        var productId2 = (await DataOf(await client.GetAsync($"/api/pre-surveys/{preSurveyId}/simulations/{simulationId}")))
+            .GetProperty("product").GetProperty("id").GetGuid();
+        var other = await DataOf(await client.PostAsJsonAsync($"/api/pre-surveys/{preSurveyId}/simulations",
+            new { expectedGeometryVersion = 1, productId = productId2, mountingType = "FLUSH", installation = new { panelGapMm = 60 } }));
+        var otherId = other.GetProperty("simulationId").GetGuid();
+        Assert.Equal(HttpStatusCode.OK,
+            (await client.PostAsJsonAsync($"/api/pre-surveys/{preSurveyId}/simulations/{simulationId}/select", new { expectedGeometryVersion = 1 })).StatusCode);
+
+        factory.SimulationTime.Now = factory.SimulationTime.Now.AddDays(2);
+
+        await AssertFailureAsync(await client.GetAsync($"/api/pre-surveys/{preSurveyId}/simulations/{otherId}"),
+            HttpStatusCode.Gone, SimulationErrorCodes.SimulationExpired);
+        await AssertFailureAsync(
+            await client.PostAsJsonAsync($"/api/pre-surveys/{preSurveyId}/simulations/{otherId}/select", new { expectedGeometryVersion = 1 }),
+            HttpStatusCode.Gone, SimulationErrorCodes.SimulationExpired);
+        var summary = await DataOf(await client.GetAsync($"/api/pre-surveys/{preSurveyId}/simulations/{simulationId}"));
+        Assert.Equal("SUMMARY", summary.GetProperty("source").GetString());
+        Assert.Equal(simulationId, summary.GetProperty("simulationId").GetGuid());
+    }
+
+    [Fact]
+    public async Task Cache_outage_returns_503_on_read_select_and_create()
+    {
+        using var factory = new AuthApiFactory();
+        var (customer, preSurveyId, simulationId) = await SimulatedAsync(factory);
+        factory.SimulationCache.Outage = true;
+
+        await AssertFailureAsync(await customer.Client.GetAsync($"/api/pre-surveys/{preSurveyId}/simulations/{simulationId}"),
+            HttpStatusCode.ServiceUnavailable, SimulationErrorCodes.CacheUnavailable);
+        await AssertFailureAsync(
+            await customer.Client.PostAsJsonAsync($"/api/pre-surveys/{preSurveyId}/simulations/{simulationId}/select", new { expectedGeometryVersion = 1 }),
+            HttpStatusCode.ServiceUnavailable, SimulationErrorCodes.CacheUnavailable);
+        var list = await DataOf(await customer.Client.GetAsync($"/api/pre-surveys/{preSurveyId}/simulations"));
+        Assert.False(list.GetProperty("cacheAvailable").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Selection_can_be_cleared_while_draft_and_is_frozen_after_submit()
+    {
+        using var factory = new AuthApiFactory();
+        var (customer, preSurveyId, simulationId) = await SimulatedAsync(factory);
+        var client = customer.Client;
+        var selectUrl = $"/api/pre-surveys/{preSurveyId}/simulations/{simulationId}/select";
+
+        await client.PostAsJsonAsync(selectUrl, new { expectedGeometryVersion = 1 });
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync($"/api/pre-surveys/{preSurveyId}/simulations/selection")).StatusCode);
+        var list = await DataOf(await client.GetAsync($"/api/pre-surveys/{preSurveyId}/simulations"));
+        Assert.Equal(JsonValueKind.Null, list.GetProperty("selected").ValueKind);
+
+        await client.PostAsJsonAsync(selectUrl, new { expectedGeometryVersion = 1 });
+        await DataOf(await client.PostAsync($"/api/pre-surveys/{preSurveyId}/submit", null));
+        await AssertFailureAsync(await client.PostAsJsonAsync(selectUrl, new { expectedGeometryVersion = 1 }),
+            HttpStatusCode.Conflict, PreSurveyErrorCodes.PreSurveyNotEditable);
+        await AssertFailureAsync(await client.DeleteAsync($"/api/pre-surveys/{preSurveyId}/simulations/selection"),
+            HttpStatusCode.Conflict, PreSurveyErrorCodes.PreSurveyNotEditable);
+    }
+
+    [Fact]
+    public async Task Another_customer_cannot_select()
+    {
+        using var factory = new AuthApiFactory();
+        var (_, preSurveyId, simulationId) = await SimulatedAsync(factory);
+        var stranger = await factory.SeedCustomerWithSiteAsync("Stranger");
+
+        await AssertFailureAsync(
+            await stranger.Client.PostAsJsonAsync($"/api/pre-surveys/{preSurveyId}/simulations/{simulationId}/select", new { expectedGeometryVersion = 1 }),
+            HttpStatusCode.Forbidden, PreSurveyErrorCodes.PreSurveyNotOwned);
+    }
+
+    /// <summary>
+    /// Technician read access through the real pipeline: only the technician confirmed on the request's appointment (ACCEPTED,
+    /// ASSIGNED or COMPLETED) reads the simulations; the internal capacity holder of a PENDING_ACCEPTANCE appointment does not.
+    /// </summary>
+    [Fact]
+    public async Task Technicians_read_simulations_only_once_confirmed_on_the_survey_appointment()
+    {
+        using var factory = new AuthApiFactory();
+        var (customer, preSurveyId, simulationId) = await SimulatedAsync(factory);
+        Assert.Equal(HttpStatusCode.OK, (await customer.Client.PostAsJsonAsync($"/api/pre-surveys/{preSurveyId}/simulations/{simulationId}/select",
+            new { expectedGeometryVersion = 1 })).StatusCode);
+        var surveyRequestId = (await DataOf(await customer.Client.PostAsync($"/api/pre-surveys/{preSurveyId}/submit", null))).GetProperty("surveyRequestId").GetGuid();
+        var (technician, technicianClient) = await factory.SeedUserClientAsync(RoleCodes.Technician);
+        var (_, otherClient) = await factory.SeedUserClientAsync(RoleCodes.Technician);
+        var now = DateTimeOffset.UtcNow;
+        var appointment = await factory.SeedAsync(new SmartSolar.Modules.Scheduling.Entities.TechnicianAppointment
+        {
+            Id = Guid.NewGuid(), AppointmentType = SmartSolar.Modules.Scheduling.Constants.AppointmentTypes.PreSurvey, SurveyRequestId = surveyRequestId,
+            PropertySiteId = customer.Site.Id, StartsAt = now.AddDays(1), EndsAt = now.AddDays(1).AddMinutes(90), ReservedTechnicianUserId = technician.Id,
+            Status = SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.PendingAcceptance, AcceptanceDeadlineAt = now.AddHours(4),
+            BookedByUserId = customer.User.Id, BookedAt = now, CreatedAt = now, UpdatedAt = now,
+        });
+        var list = $"/api/pre-surveys/{preSurveyId}/simulations";
+        var detail = $"/api/pre-surveys/{preSurveyId}/simulations/{simulationId}";
+
+        // The capacity holder of a pending appointment is not the confirmed technician.
+        await AssertFailureAsync(await technicianClient.GetAsync(list), HttpStatusCode.Forbidden, SimulationErrorCodes.AccessDenied);
+        await AssertFailureAsync(await technicianClient.GetAsync(detail), HttpStatusCode.Forbidden, SimulationErrorCodes.AccessDenied);
+
+        foreach (var (status, source, reason) in new[]
+        {
+            (SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.Accepted, SmartSolar.Modules.Scheduling.Constants.AssignmentSources.SelfAccepted, (string?)null),
+            (SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.Assigned, SmartSolar.Modules.Scheduling.Constants.AssignmentSources.SalesAssigned, "Sales fallback"),
+            (SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.Completed, SmartSolar.Modules.Scheduling.Constants.AssignmentSources.SelfAccepted, null),
+        })
+        {
+            await using (var db = factory.CreateDbContext())
+            {
+                var row = await db.TechnicianAppointments.SingleAsync(a => a.Id == appointment.Id);
+                row.Status = status;
+                row.AssignedTechnicianUserId = technician.Id;
+                row.AssignedAt = now;
+                row.AssignmentSource = source;
+                row.AssignmentReason = reason;
+                row.CompletedAt = status == SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.Completed ? now : null;
+                await db.SaveChangesAsync();
+            }
+
+            Assert.Equal(HttpStatusCode.OK, (await technicianClient.GetAsync(list)).StatusCode);
+            Assert.Equal(simulationId, (await DataOf(await technicianClient.GetAsync(detail))).GetProperty("simulationId").GetGuid());
+            await AssertFailureAsync(await otherClient.GetAsync(list), HttpStatusCode.Forbidden, SimulationErrorCodes.AccessDenied);
+        }
     }
 }

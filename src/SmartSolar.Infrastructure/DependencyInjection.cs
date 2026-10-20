@@ -46,13 +46,17 @@ public static class DependencyInjection
 
         services.AddScoped<IIdentityUnitOfWork, IdentityUnitOfWork>();
         services.AddScoped<ICatalogUnitOfWork, CatalogUnitOfWork>();
+        services.AddScoped<IProductImageUnitOfWork, ProductImageUnitOfWork>();
         services.AddScoped<SystemRoleSeeder>();
         services.AddScoped<IPreSurveyUnitOfWork, PreSurveyUnitOfWork>();
         services.AddScoped<ISolarSimulationUnitOfWork, SolarSimulationUnitOfWork>();
-        var includeInstallationShifts = SmartSolar.Infrastructure.Features.FeatureConfiguration.Read(configuration).InstallationWorkflowEnabled;
-        services.AddScoped<ISchedulingUnitOfWork>(sp => new SchedulingUnitOfWork(sp.GetRequiredService<AppDbContext>(), includeInstallationShifts));
+        AddSimulationResultStorage(services, configuration);
+        var includeInstallationAssignments = SmartSolar.Infrastructure.Features.FeatureConfiguration.Read(configuration).InstallationWorkflowEnabled;
+        services.AddScoped<ISchedulingUnitOfWork>(sp => new SchedulingUnitOfWork(sp.GetRequiredService<AppDbContext>(), includeInstallationAssignments,
+            sp.GetService<TimeProvider>()));
+        services.AddScoped<SmartSolar.Modules.AdministrativeUnits.IAdministrativeCatalogReader, Persistence.AdministrativeUnits.AdministrativeCatalogStore>();
         services.AddScoped<IAccessTokenRevocationCheck, AccessTokenRevocationCheck>();
-        services.AddScoped<IAdminUserStore>(sp => new AdminUserStore(sp.GetRequiredService<AppDbContext>(), includeInstallationShifts));
+        services.AddScoped<IAdminUserStore>(sp => new AdminUserStore(sp.GetRequiredService<AppDbContext>(), includeInstallationAssignments));
         services.AddSolarProviders(configuration);
         services.AddSingleton<IPasswordHashingService, PasswordHashingService>();
 
@@ -113,6 +117,43 @@ public static class DependencyInjection
         services.AddSingleton<SmartSolar.Modules.Common.RateLimiting.IDistributedRateLimitCounter>(sp => new RedisRateLimitCounter(
             sp.GetRequiredService<StackExchange.Redis.IConnectionMultiplexer>(),
             (string.IsNullOrWhiteSpace(instanceName) ? "SmartSolar:" : instanceName) + "ratelimit:"));
+    }
+
+    /// <summary>
+    /// Temporary full simulation results go to the distributed cache registered by
+    /// <see cref="AddCaching"/> (Redis, or the in-process memory cache when Redis is disabled:
+    /// single instance only). The optional durable snapshot store is S3 when
+    /// 'SolarSimulation:Snapshots:Enabled' is true, otherwise disabled. Snapshot credentials are
+    /// the default AWS chain or the optional Storage:S3 static keys; none are read into logs.
+    /// </summary>
+    private static void AddSimulationResultStorage(
+        IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.TryAddSingleton(TimeProvider.System);
+        services.AddSingleton<SmartSolar.Modules.SolarSimulation.Contracts.Caching.ISimulationResultCache, DistributedSimulationResultCache>();
+
+        var snapshots = new SmartSolar.Modules.SolarSimulation.Options.SimulationSnapshotOptions();
+        configuration.GetSection("SolarSimulation:Snapshots").Bind(snapshots);
+        if (!snapshots.Enabled)
+        {
+            services.AddSingleton<SmartSolar.Modules.SolarSimulation.Contracts.Storage.ISimulationSnapshotStore, SmartSolar.Infrastructure.Storage.DisabledSimulationSnapshotStore>();
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(snapshots.Bucket))
+        {
+            throw new InvalidOperationException(
+                "'SolarSimulation:Snapshots:Bucket' is required when 'SolarSimulation:Snapshots:Enabled' is true.");
+        }
+
+        var accessKeyId = configuration["Storage:S3:AccessKeyId"];
+        var secretAccessKey = configuration["Storage:S3:SecretAccessKey"];
+        services.AddSingleton<SmartSolar.Modules.SolarSimulation.Contracts.Storage.ISimulationSnapshotStore>(sp =>
+            new SmartSolar.Infrastructure.Storage.S3SimulationSnapshotStore(
+                SmartSolar.Infrastructure.Storage.S3SimulationSnapshotStore.CreateClient(snapshots, accessKeyId, secretAccessKey),
+                snapshots,
+                sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<SmartSolar.Infrastructure.Storage.S3SimulationSnapshotStore>>()));
     }
 
     private static void AddPersistence(

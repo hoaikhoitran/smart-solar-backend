@@ -20,56 +20,40 @@ public sealed record SimulationSource(
     decimal? Longitude,
     IReadOnlyList<Guid>? AssignedTechnicianUserIds = null);
 
-/// <summary>List row; excludes the large JSON documents.</summary>
-public sealed record SimulationSummary(
-    Guid SimulationId,
-    int PreSurveyGeometryVersion,
-    string Status,
-    string EnergyStatus,
-    string ClimateStatus,
-    string MountingType,
-    Guid ProductId,
-    string ProductSku,
-    string ProductName,
-    int PanelCount,
-    decimal InstalledCapacityKwp,
-    decimal? AnnualEnergyKwh,
-    DateTimeOffset CreatedAt);
-
-public enum SaveSimulationOutcome
-{
-    Saved,
-    DuplicateFingerprint,
-    SourceChanged,
-    NotDraft
-}
-
 public enum SelectSimulationOutcome
 {
     Selected,
     SourceChanged,
+    NotDraft,
+
+    /// <summary>A concurrent selection inserted its row first (unique violation); nothing was changed.</summary>
+    Conflict
+}
+
+public enum ClearSelectionOutcome
+{
+    Cleared,
     NotDraft
 }
 
+/// <summary>
+/// PostgreSQL side of simulations: the pre-survey read model and the compact
+/// <c>selected_simulation</c> summary. Full results are never stored here (see ISimulationResultCache).
+/// </summary>
 public interface ISolarSimulationUnitOfWork
 {
     Task<SimulationSource?> GetSourceAsync(Guid preSurveyId, CancellationToken cancellationToken);
 
-    Task<Entities.SolarSimulation?> FindReusableAsync(Guid preSurveyId, string fingerprint, CancellationToken cancellationToken);
+    /// <summary>The stored selection summary of this pre-survey, or null.</summary>
+    Task<Entities.SelectedSimulation?> GetSelectionAsync(Guid preSurveyId, CancellationToken cancellationToken);
 
     /// <summary>
-    /// In one transaction: lock the pre-survey row only if it is still Draft at the snapshot's
-    /// geometry version, insert the snapshot and select it. Nothing is stored otherwise.
+    /// In one transaction, only while the pre-survey is Draft at the summary's geometry version:
+    /// replace this pre-survey's selected_simulation row with <paramref name="selection"/> and point
+    /// pre_survey.selected_simulation_id at it. Nothing changes otherwise.
     /// </summary>
-    Task<SaveSimulationOutcome> TrySaveAndSelectAsync(Entities.SolarSimulation simulation, CancellationToken cancellationToken);
+    Task<SelectSimulationOutcome> TrySelectAsync(Entities.SelectedSimulation selection, CancellationToken cancellationToken);
 
-    /// <summary>
-    /// Selects an existing snapshot only when it belongs to this pre-survey, was calculated
-    /// at the current geometry version, and the pre-survey is still Draft.
-    /// </summary>
-    Task<SelectSimulationOutcome> TrySelectAsync(Guid preSurveyId, Guid simulationId, int geometryVersion, CancellationToken cancellationToken);
-
-    Task<IReadOnlyList<SimulationSummary>> ListAsync(Guid preSurveyId, CancellationToken cancellationToken);
-
-    Task<Entities.SolarSimulation?> FindAsync(Guid preSurveyId, Guid simulationId, CancellationToken cancellationToken);
+    /// <summary>Removes the selection while the pre-survey is Draft (idempotent when nothing is selected).</summary>
+    Task<ClearSelectionOutcome> TryClearSelectionAsync(Guid preSurveyId, CancellationToken cancellationToken);
 }

@@ -32,7 +32,11 @@ public sealed class ProductListRequest
     public string? SortDirection { get; init; }
 }
 
-/// <summary>Status is optional and defaults to ACTIVE.</summary>
+/// <summary>
+/// Status is optional and defaults to ACTIVE. Images seeds the gallery in order,
+/// the first image being primary. ImageUrl is deprecated: accepted as the single
+/// primary image when Images is absent, otherwise it must equal Images[0].url.
+/// </summary>
 public sealed record CreateProductRequest(
     string? Sku,
     string? ProductType,
@@ -49,11 +53,15 @@ public sealed record CreateProductRequest(
     int? WarrantyMonth,
     JsonElement? Spec,
     string? ImageUrl,
-    string? Status);
+    string? Status,
+    IReadOnlyList<ProductImageRequest>? Images = null);
+
+public sealed record ProductImageRequest(string? Url, string? AltText);
 
 /// <summary>
-/// The editable fields only. There is no id, status or timestamp here, so a
-/// client cannot overwrite them through this endpoint.
+/// The editable fields only. There is no id, status, timestamp or image here, so a
+/// client cannot overwrite them through this endpoint (a legacy imageUrl property
+/// is ignored; the gallery has its own endpoints).
 /// </summary>
 public sealed record UpdateProductRequest(
     string? Sku,
@@ -69,10 +77,20 @@ public sealed record UpdateProductRequest(
     decimal? WidthMm,
     decimal? HeightMm,
     int? WarrantyMonth,
-    JsonElement? Spec,
-    string? ImageUrl);
+    JsonElement? Spec);
 
 public sealed record ChangeProductStatusRequest(string? Status);
+
+public sealed record AddProductImageRequest(string? Url, string? AltText, bool? MakePrimary);
+
+/// <summary>Must list exactly the product's current image ids, in the new order.</summary>
+public sealed record ReorderProductImagesRequest(IReadOnlyList<Guid>? ImageIds);
+
+public sealed record ProductImageResponse(Guid Id, string Url, string? AltText, int SortOrder, bool IsPrimary)
+{
+    public static ProductImageResponse From(ProductImageDto image)
+        => new(image.Id, image.Url, image.AltText, image.SortOrder, image.IsPrimary);
+}
 
 public sealed record ProductResponse(
     Guid Id,
@@ -91,7 +109,8 @@ public sealed record ProductResponse(
     int? WarrantyMonth,
     JsonElement? Spec,
     string Status,
-    string? ImageUrl,
+    [property: Obsolete("Deprecated: use Images; this is the primary image's URL.")] string? ImageUrl,
+    IReadOnlyList<ProductImageResponse> Images,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt)
 {
@@ -113,6 +132,7 @@ public sealed record ProductResponse(
         SpecJson.ToElement(product.Spec),
         ProductStatusCodes.ToCode(product.Status),
         product.ImageUrl,
+        (product.Images ?? []).OrderBy(i => i.SortOrder).Select(ProductImageResponse.From).ToList(),
         product.CreatedAt,
         product.UpdatedAt);
 }

@@ -26,6 +26,12 @@ public static class KnowledgeBaseModuleExtensions
             // Each call has its own deadline (RagServiceClient); this outer bound only catches a stuck socket.
             client.Timeout = TimeSpan.FromSeconds(Math.Clamp(Math.Max(rag.RequestTimeoutSeconds, rag.IngestTimeoutSeconds), 1, 1800) + 30);
         }).RemoveAllLoggers();
+        // Admin runtime configuration: the registry/bounds are validated at startup (invalid Rag:GenerationModels fails fast);
+        // the effective configuration is read per request through a short process-wide cache.
+        services.AddSingleton(new SmartSolar.Modules.KnowledgeBase.RagConfigurationRules(rag));
+        services.AddSingleton(SmartSolar.Modules.KnowledgeBase.RagConfigurationCache.From(rag));
+        services.AddScoped<SmartSolar.Modules.KnowledgeBase.IRagConfigurationProvider, SmartSolar.Modules.KnowledgeBase.EffectiveRagConfigurationProvider>();
+        services.AddScoped<SmartSolar.Modules.KnowledgeBase.RagConfigurationService>();
         services.AddScoped<SmartSolar.Modules.KnowledgeBase.IKnowledgeUnitOfWork, KnowledgeUnitOfWork>();
         services.AddScoped<SmartSolar.Modules.KnowledgeBase.KnowledgeDocumentHandlers>();
         services.AddScoped<SmartSolar.Modules.KnowledgeBase.KnowledgeIngestionService>();

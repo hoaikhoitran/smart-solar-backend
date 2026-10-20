@@ -12,4 +12,6 @@ public sealed record CreatePropertySiteRequest(
     decimal? Longitude,
     InstallationSurfaceType? InstallationSurfaceType,
     string? SurfaceMaterial,
-    string? Note);
+    string? Note,
+    string? ProvinceCode = null,
+    string? CommuneCode = null);

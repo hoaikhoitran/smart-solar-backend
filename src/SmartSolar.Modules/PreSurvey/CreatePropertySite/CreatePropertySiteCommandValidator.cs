@@ -1,4 +1,5 @@
 using FluentValidation;
+using SmartSolar.Modules.AdministrativeUnits;
 
 namespace SmartSolar.Modules.PreSurvey.CreatePropertySite;
 
@@ -40,5 +41,19 @@ public sealed class CreatePropertySiteCommandValidator
 
         RuleFor(x => x.Note)
             .MaximumLength(1000);
+
+        RuleFor(x => x)
+            .Custom((command, context) =>
+            {
+                // Official catalog codes (formats only here; existence and validity are checked by the handler).
+                var error = AdministrativeLocationRules.CheckFormat(
+                    AdministrativeCodeFormats.Normalize(command.ProvinceCode),
+                    AdministrativeCodeFormats.Normalize(command.CommuneCode),
+                    communeRequired: false);
+                if (error is { } e)
+                {
+                    context.AddFailure(e.Field, e.Message);
+                }
+            });
     }
 }

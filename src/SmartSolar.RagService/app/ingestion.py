@@ -1,11 +1,15 @@
-"""Ingestion: download → integrity check → extract → chunk → embed → atomic replace of the version's chunks."""
+"""Ingestion: download → integrity check → extract → chunk → embed → atomic replace of the version's chunks.
+
+Chunk settings come from the request (the API's configuration snapshot for the job) and default to the environment. Nothing
+is written unless every step succeeds, so a failed reindex leaves the version's previous chunks in place.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import time
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from .chunking import chunk_sections
 from .config import SUPPORTED_CONTENT_TYPES, Settings
@@ -26,12 +30,35 @@ class IngestOutcome:
     embedding_model: Optional[str] = None
     embedding_dimension: Optional[int] = None
     error: Optional[str] = None
+    config_version: Optional[int] = None
+    chunk_characters: Optional[int] = None
+    chunk_overlap: Optional[int] = None
+
+
+def chunk_settings(settings: Settings, request: dict) -> Tuple[int, int]:
+    """Chunk size/overlap of this request (environment defaults for absent values)."""
+    size = request.get("chunkCharacters")
+    overlap = request.get("chunkOverlap")
+    return (settings.chunk_characters if size is None else int(size), settings.chunk_overlap if overlap is None else int(overlap))
 
 
 def ingest(settings: Settings, storage: ObjectStorage, embedder: Embedder, store: VectorStore, request: dict,
            clock: Callable[[], float] = time.monotonic) -> IngestOutcome:
     """Runs within settings.ingest_deadline_seconds; past it, stops and reports FAILED so the API retries
-    later instead of this process working on after the caller timed out."""
+    later instead of this process working on after the caller timed out. The outcome echoes the configuration
+    version and the chunk settings used."""
+    size, overlap = chunk_settings(settings, request)
+    config_version = request.get("configVersion")
+    outcome = _ingest(settings, storage, embedder, store, request, clock, size, overlap)
+    outcome.config_version = None if config_version is None else int(config_version)
+    outcome.chunk_characters, outcome.chunk_overlap = size, overlap
+    return outcome
+
+
+def _ingest(settings: Settings, storage: ObjectStorage, embedder: Embedder, store: VectorStore, request: dict,
+            clock: Callable[[], float], size: int, overlap: int) -> IngestOutcome:
+    if size <= 0 or not 0 <= overlap < size:
+        return IngestOutcome(UNSUPPORTED_CONTENT, error="invalid chunk settings")
     deadline = clock() + settings.ingest_deadline_seconds
     version_id = str(request["versionId"])
     document_id = str(request["documentId"])
@@ -56,7 +83,7 @@ def ingest(settings: Settings, storage: ObjectStorage, embedder: Embedder, store
     if extraction.status != READY:
         return IngestOutcome(extraction.status, page_count=extraction.page_count, characters=extraction.characters, error=extraction.error)
 
-    chunks = chunk_sections(extraction.sections, settings.chunk_characters, settings.chunk_overlap)
+    chunks = chunk_sections(extraction.sections, size, overlap)
     if not chunks:
         return IngestOutcome(UNSUPPORTED_CONTENT, error="no indexable text")
     if len(chunks) > settings.max_chunks:

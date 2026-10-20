@@ -175,5 +175,37 @@ public sealed class KnowledgeUnitOfWork(AppDbContext db) : TransactionalUnitOfWo
         return (user, global);
     }
 
+    public Task<RagConfiguration?> FindConfigurationAsync(string status, bool track, CancellationToken cancellationToken)
+        => Configurations(track).FirstOrDefaultAsync(c => c.Status == status, cancellationToken);
+
+    public Task<RagConfiguration?> FindConfigurationByVersionAsync(int version, bool track, CancellationToken cancellationToken)
+        => Configurations(track).FirstOrDefaultAsync(c => c.Version == version, cancellationToken);
+
+    public async Task<int> MaxConfigurationVersionAsync(CancellationToken cancellationToken)
+        => await Db.Set<RagConfiguration>().AsNoTracking().MaxAsync(c => (int?)c.Version, cancellationToken) ?? 0;
+
+    public async Task<(IReadOnlyList<RagConfiguration> Items, int Total)> ListConfigurationsAsync(int skip, int take, CancellationToken cancellationToken)
+    {
+        var query = Db.Set<RagConfiguration>().AsNoTracking();
+        var total = await query.CountAsync(cancellationToken);
+        var items = await query.OrderByDescending(c => c.Version).Skip(skip).Take(take).ToListAsync(cancellationToken);
+        return (items, total);
+    }
+
+    public async Task<IReadOnlyList<KnowledgeDocumentVersion>> GetIndexedVersionsAsync(bool track, CancellationToken cancellationToken)
+        => await (track ? Db.KnowledgeDocumentVersions : Db.KnowledgeDocumentVersions.AsNoTracking())
+            .Where(v => (v.Status == VersionStatuses.ReadyForReview || v.Status == VersionStatuses.Published)
+                        && Db.KnowledgeDocuments.Any(d => d.Id == v.DocumentId && d.Status != DocumentStatuses.Archived))
+            .ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<Guid>> GetVersionsWithOpenJobsAsync(CancellationToken cancellationToken)
+        => await Db.KnowledgeIngestionJobs.AsNoTracking()
+            .Where(j => j.Status == JobStatuses.Pending || j.Status == JobStatuses.Running || j.Status == JobStatuses.RetryWaiting)
+            .Select(j => j.VersionId).Distinct().ToListAsync(cancellationToken);
+
+    private IQueryable<RagConfiguration> Configurations(bool track) => track ? Db.Set<RagConfiguration>() : Db.Set<RagConfiguration>().AsNoTracking();
+
     public void Add<TEntity>(TEntity entity) where TEntity : class => Db.Set<TEntity>().Add(entity);
+
+    public void Remove<TEntity>(TEntity entity) where TEntity : class => Db.Set<TEntity>().Remove(entity);
 }

@@ -8,4 +8,9 @@ public sealed record SchedulingResult<T>(T? Value, string? ErrorCode, string? Me
     public static SchedulingResult<T> Ok(T value) => new(value, null, null);
 
     public static SchedulingResult<T> Fail(string code, string message, object? details = null) => new(default, code, message, details);
+
+    /// <summary>The same failure as another result type (only for failures).</summary>
+    public SchedulingResult<TOther> As<TOther>() => Succeeded
+        ? throw new InvalidOperationException("Only a failure can be converted.")
+        : new(default, ErrorCode, Message, Details);
 }

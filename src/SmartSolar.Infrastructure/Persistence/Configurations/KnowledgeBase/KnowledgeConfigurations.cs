@@ -49,6 +49,10 @@ public sealed class KnowledgeDocumentVersionConfiguration : IEntityTypeConfigura
         {
             t.HasCheckConstraint("ck_knowledge_document_version_status", $"status IN ({string.Join(", ", VersionStatuses.All.Select(s => $"'{s}'"))})");
             t.HasCheckConstraint("ck_knowledge_document_version_number", "version_number >= 1");
+            t.HasCheckConstraint("ck_knowledge_document_version_indexed_chunking",
+                "(indexed_chunk_characters IS NULL) = (indexed_chunk_overlap IS NULL) AND (indexed_chunk_characters IS NULL OR "
+                + "(indexed_chunk_characters > 0 AND indexed_chunk_overlap >= 0 AND indexed_chunk_overlap < indexed_chunk_characters))");
+            t.HasCheckConstraint("ck_knowledge_document_version_indexed_config", "indexed_config_version IS NULL OR indexed_config_version >= 0");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -66,6 +70,11 @@ public sealed class KnowledgeDocumentVersionConfiguration : IEntityTypeConfigura
         builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.IngestedAt).HasColumnName("ingested_at");
         builder.Property(x => x.PublishedAt).HasColumnName("published_at");
+        builder.Property(x => x.IndexedConfigVersion).HasColumnName("indexed_config_version");
+        builder.Property(x => x.IndexedChunkCharacters).HasColumnName("indexed_chunk_characters");
+        builder.Property(x => x.IndexedChunkOverlap).HasColumnName("indexed_chunk_overlap");
+        builder.Property(x => x.LastIngestStatus).HasColumnName("last_ingest_status").HasMaxLength(30);
+        builder.Property(x => x.LastIngestError).HasColumnName("last_ingest_error").HasMaxLength(300);
         builder.Property(x => x.Revision).HasColumnName("revision").IsConcurrencyToken().IsRequired();
         builder.HasIndex(x => new { x.DocumentId, x.VersionNumber }).IsUnique().HasDatabaseName("ux_knowledge_document_version_number");
         builder.HasIndex(x => x.FileId).IsUnique().HasDatabaseName("ux_knowledge_document_version_file");
@@ -88,6 +97,10 @@ public sealed class KnowledgeIngestionJobConfiguration : IEntityTypeConfiguratio
             t.HasCheckConstraint("ck_knowledge_ingestion_job_status", $"status IN ({string.Join(", ", JobStatuses.All.Select(s => $"'{s}'"))})");
             t.HasCheckConstraint("ck_knowledge_ingestion_job_kind", $"kind IN ('{JobKinds.Ingest}', '{JobKinds.DeleteVectors}')");
             t.HasCheckConstraint("ck_knowledge_ingestion_job_attempts", "attempts >= 0 AND max_attempts >= 1");
+            t.HasCheckConstraint("ck_knowledge_ingestion_job_chunking",
+                "(chunk_characters IS NULL) = (chunk_overlap IS NULL) AND (chunk_characters IS NULL OR "
+                + "(chunk_characters > 0 AND chunk_overlap >= 0 AND chunk_overlap < chunk_characters))");
+            t.HasCheckConstraint("ck_knowledge_ingestion_job_config_version", "config_version IS NULL OR config_version >= 0");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -103,6 +116,9 @@ public sealed class KnowledgeIngestionJobConfiguration : IEntityTypeConfiguratio
         builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
         builder.Property(x => x.CompletedAt).HasColumnName("completed_at");
+        builder.Property(x => x.ConfigVersion).HasColumnName("config_version");
+        builder.Property(x => x.ChunkCharacters).HasColumnName("chunk_characters");
+        builder.Property(x => x.ChunkOverlap).HasColumnName("chunk_overlap");
         builder.HasIndex(x => x.IdempotencyKey).IsUnique().HasDatabaseName("ux_knowledge_ingestion_job_idempotency");
         builder.HasIndex(x => new { x.Status, x.NextAttemptAt }).HasDatabaseName("ix_knowledge_ingestion_job_due");
         builder.HasOne<KnowledgeDocumentVersion>().WithMany().HasForeignKey(x => x.VersionId).OnDelete(DeleteBehavior.Restrict);
@@ -222,3 +238,66 @@ public sealed class RagUsageReservationConfiguration : IEntityTypeConfiguration<
     }
 }
 
+
+/// <summary>
+/// Admin runtime configuration of the chatbot. Hard bounds are check constraints (configured limits can only narrow them);
+/// partial unique indexes allow at most one ACTIVE and one DRAFT row. No secrets and no URLs are stored here.
+/// </summary>
+public sealed class RagConfigurationConfiguration : IEntityTypeConfiguration<RagConfiguration>
+{
+    public void Configure(EntityTypeBuilder<RagConfiguration> builder)
+    {
+        var h = RagConfigurationLimits.Hard;
+        static string D(decimal d) => d.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        builder.ToTable("rag_configuration", t =>
+        {
+            t.HasCheckConstraint("ck_rag_configuration_status", $"status IN ({string.Join(", ", RagConfigurationStatuses.All.Select(s => $"'{s}'"))})");
+            t.HasCheckConstraint("ck_rag_configuration_version", "version >= 1 AND (based_on_version IS NULL OR based_on_version >= 1)");
+            t.HasCheckConstraint("ck_rag_configuration_activated",
+                $"(status = '{RagConfigurationStatuses.Draft}') = (activated_at IS NULL) AND (activated_at IS NULL) = (activated_by_user_id IS NULL)");
+            t.HasCheckConstraint("ck_rag_configuration_model", "length(generation_model) > 0 AND length(prompt_version) > 0");
+            t.HasCheckConstraint("ck_rag_configuration_temperature",
+                $"temperature IS NULL OR (temperature >= {D(h.TemperatureMin)} AND temperature <= {D(h.TemperatureMax)})");
+            t.HasCheckConstraint("ck_rag_configuration_max_output_tokens", $"max_output_tokens BETWEEN {h.MaxOutputTokensMin} AND {h.MaxOutputTokensMax}");
+            t.HasCheckConstraint("ck_rag_configuration_chunking",
+                $"chunk_characters BETWEEN {h.ChunkCharactersMin} AND {h.ChunkCharactersMax} AND chunk_overlap >= 0 AND chunk_overlap * 2 <= chunk_characters "
+                + "AND chunk_overlap < chunk_characters");
+            t.HasCheckConstraint("ck_rag_configuration_top_k", $"top_k BETWEEN {h.TopKMin} AND {h.TopKMax}");
+            t.HasCheckConstraint("ck_rag_configuration_min_score", $"min_score >= {D(h.MinScoreMin)} AND min_score <= {D(h.MinScoreMax)}");
+            t.HasCheckConstraint("ck_rag_configuration_max_context_tokens", $"max_context_tokens BETWEEN {h.MaxContextTokensMin} AND {h.MaxContextTokensMax}");
+            t.HasCheckConstraint("ck_rag_configuration_max_history_messages",
+                $"max_history_messages BETWEEN {h.MaxHistoryMessagesMin} AND {h.MaxHistoryMessagesMax}");
+        });
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.Version).HasColumnName("version").IsRequired();
+        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(20).IsRequired();
+        builder.Property(x => x.GenerationModel).HasColumnName("generation_model").HasMaxLength(100).IsRequired();
+        builder.Property(x => x.Temperature).HasColumnName("temperature").HasPrecision(3, 2);
+        builder.Property(x => x.MaxOutputTokens).HasColumnName("max_output_tokens").IsRequired();
+        builder.Property(x => x.ChunkCharacters).HasColumnName("chunk_characters").IsRequired();
+        builder.Property(x => x.ChunkOverlap).HasColumnName("chunk_overlap").IsRequired();
+        builder.Property(x => x.TopK).HasColumnName("top_k").IsRequired();
+        builder.Property(x => x.MinScore).HasColumnName("min_score").HasPrecision(4, 3).IsRequired();
+        builder.Property(x => x.MaxContextTokens).HasColumnName("max_context_tokens").IsRequired();
+        builder.Property(x => x.MaxHistoryMessages).HasColumnName("max_history_messages").IsRequired();
+        builder.Property(x => x.PromptVersion).HasColumnName("prompt_version").HasMaxLength(20).IsRequired();
+        builder.Property(x => x.Notes).HasColumnName("notes").HasMaxLength(500);
+        builder.Property(x => x.BasedOnVersion).HasColumnName("based_on_version");
+        builder.Property(x => x.CreatedByUserId).HasColumnName("created_by_user_id").IsRequired();
+        builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
+        builder.Property(x => x.ActivatedByUserId).HasColumnName("activated_by_user_id");
+        builder.Property(x => x.ActivatedAt).HasColumnName("activated_at");
+        builder.Property(x => x.Revision).HasColumnName("revision").IsConcurrencyToken().IsRequired();
+        builder.HasIndex(x => x.Version).IsUnique().HasDatabaseName("ux_rag_configuration_version");
+        builder.HasIndex(x => x.Status, "ux_rag_configuration_one_active").IsUnique().HasFilter($"status = '{RagConfigurationStatuses.Active}'");
+        builder.HasIndex(x => x.Status, "ux_rag_configuration_one_draft").IsUnique().HasFilter($"status = '{RagConfigurationStatuses.Draft}'");
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.CreatedByUserId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_rag_configuration_user_account_created_by_user_id");
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.ActivatedByUserId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_rag_configuration_user_account_activated_by_user_id");
+        builder.HasIndex(x => x.CreatedByUserId).HasDatabaseName("ix_rag_configuration_created_by_user_id");
+        builder.HasIndex(x => x.ActivatedByUserId).HasDatabaseName("ix_rag_configuration_activated_by_user_id");
+    }
+}

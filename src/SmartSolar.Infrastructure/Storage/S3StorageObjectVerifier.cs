@@ -35,7 +35,8 @@ public sealed class S3StorageObjectVerifier : IStorageObjectVerifier, IDisposabl
         _logger = logger;
     }
 
-    private static IAmazonS3 CreateClient(S3VerificationOptions o)
+    /// <summary>Client for the configured endpoint/region and credential (shared with <see cref="S3StorageUrlSigner"/>).</summary>
+    internal static IAmazonS3 CreateClient(S3VerificationOptions o)
     {
         var config = new AmazonS3Config
         {
@@ -99,6 +100,26 @@ public sealed class S3StorageObjectVerifier : IStorageObjectVerifier, IDisposabl
         }
     }
 
+    public async Task<StorageObjectProbe> HeadAsync(StorageObjectLocation location, CancellationToken cancellationToken)
+    {
+        if (!_options.Buckets().Contains(location.Bucket))
+            return StorageObjectProbe.Unavailable("Bucket is not allowed.");
+        try
+        {
+            var head = await _s3.GetObjectMetadataAsync(new GetObjectMetadataRequest { BucketName = location.Bucket, Key = location.ObjectKey, VersionId = location.VersionId }, cancellationToken);
+            return new StorageObjectProbe(StorageProbeStatus.Found, head.ContentLength, head.Headers.ContentType, head.VersionId, head.ETag, null, null, null);
+        }
+        catch (AmazonS3Exception ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            return StorageObjectProbe.Missing();
+        }
+        catch (Exception ex) when (ex is AmazonServiceException or AmazonClientException or HttpRequestException or TaskCanceledException && !cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning("Storage HEAD unavailable ({ExceptionType}).", ex.GetType().Name);
+            return StorageObjectProbe.Unavailable("Storage could not be reached.");
+        }
+    }
+
     private async Task<byte[]> ReadAsync(StorageObjectLocation location, string? versionId, long from, long to, CancellationToken cancellationToken)
     {
         using var response = await _s3.GetObjectAsync(new GetObjectRequest
@@ -117,5 +138,8 @@ public sealed class S3StorageObjectVerifier : IStorageObjectVerifier, IDisposabl
 public sealed class DisabledStorageObjectVerifier : IStorageObjectVerifier
 {
     public Task<StorageObjectProbe> ProbeAsync(StorageObjectLocation location, bool computeSha256, long maxBytes, CancellationToken cancellationToken)
+        => Task.FromResult(StorageObjectProbe.Unavailable("Storage verification is not configured."));
+
+    public Task<StorageObjectProbe> HeadAsync(StorageObjectLocation location, CancellationToken cancellationToken)
         => Task.FromResult(StorageObjectProbe.Unavailable("Storage verification is not configured."));
 }

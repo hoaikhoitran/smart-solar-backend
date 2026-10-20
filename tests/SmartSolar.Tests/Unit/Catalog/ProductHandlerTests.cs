@@ -19,7 +19,7 @@ public class ProductHandlerTests
     private static UpdateProductCommand UpdateCommandFor(Product product, string? sku = null, string name = "Renamed") => new(
         product.Id, sku ?? product.Sku, product.ProductType, product.Category, name, product.Brand,
         product.Model, product.Unit, 999m, product.Currency, product.RatedPowerW, product.WidthMm,
-        product.HeightMm, product.WarrantyMonth, product.Spec, product.ImageUrl);
+        product.HeightMm, product.WarrantyMonth, product.Spec);
 
     // ---- cache-aside read ----
 
@@ -34,7 +34,9 @@ public class ProductHandlerTests
 
         var result = await ctx.CreateGetHandler().HandleAsync(cached.Id, CancellationToken.None);
 
-        Assert.Equal(cached, result);
+        // The gallery list is a new instance after the JSON round trip, so compare it by value.
+        Assert.Equal(cached.Images, result!.Images);
+        Assert.Equal(cached with { Images = result.Images }, result);
         Assert.Empty(ctx.Cache.Sets);
     }
 
@@ -43,7 +45,7 @@ public class ProductHandlerTests
     {
         await using var ctx = new CatalogTestContext();
         var product = await ctx.SeedAsync(CatalogTestContext.NewPanel("MISS"));
-        var key = $"catalog:product:{product.Id}";
+        var key = $"catalog:product:v2:{product.Id}";
 
         var result = await ctx.CreateGetHandler().HandleAsync(product.Id, CancellationToken.None);
 

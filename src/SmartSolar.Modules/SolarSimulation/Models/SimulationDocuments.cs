@@ -164,7 +164,24 @@ public sealed record LayoutView(
     public string? InfeasibleReason => PanelCount > 0 ? null : Details.NoPanelsReason;
 }
 
-/// <summary>Full simulation payload for 2D/3D rendering, energy charts and limitations.</summary>
+/// <summary>Where a returned simulation payload came from.</summary>
+public static class SimulationSources
+{
+    /// <summary>Full temporary result from the distributed cache (has an expiry).</summary>
+    public const string Cache = "CACHE";
+
+    /// <summary>Full durable snapshot of the selected simulation (object storage, integrity verified).</summary>
+    public const string Snapshot = "SNAPSHOT";
+
+    /// <summary>Only the compact selected-simulation summary from PostgreSQL is available.</summary>
+    public const string Summary = "SUMMARY";
+}
+
+/// <summary>
+/// Full simulation payload for 2D/3D rendering, energy charts and limitations.
+/// <see cref="ExpiresAt"/> is when the temporary result leaves the cache (null for a durable snapshot);
+/// <see cref="Source"/> is one of <see cref="SimulationSources"/>.
+/// </summary>
 public sealed record SimulationDetail(
     Guid SimulationId,
     Guid PreSurveyId,
@@ -183,8 +200,11 @@ public sealed record SimulationDetail(
     EnergyDocument Energy,
     ClimateDocument Climate,
     IReadOnlyList<SimulationWarning> Warnings,
-    IReadOnlyList<string> Limitations);
+    IReadOnlyList<string> Limitations,
+    DateTimeOffset? ExpiresAt = null,
+    string Source = SimulationSources.Cache);
 
+/// <summary>A cached (temporary) result in the list; it disappears from the list when it expires.</summary>
 public sealed record SimulationListItem(
     Guid SimulationId,
     string Status,
@@ -200,7 +220,70 @@ public sealed record SimulationListItem(
     int PanelCount,
     decimal InstalledCapacityKwp,
     decimal? AnnualEnergyKwh,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    DateTimeOffset ExpiresAt);
+
+/// <summary>
+/// The durable selected-simulation summary (PostgreSQL). Returned by select, in the list, and by
+/// GET {simulationId} when the full result has expired and no verified snapshot is available.
+/// <see cref="SnapshotStatus"/>: NONE (no snapshot stored), STORED (recorded, not read in this response), VERIFIED, MISSING, UNAVAILABLE or INTEGRITY_FAILED.
+/// </summary>
+public sealed record SelectedSimulationView(
+    Guid SimulationId,
+    Guid PreSurveyId,
+    bool IsStale,
+    int PreSurveyGeometryVersion,
+    string AlgorithmVersion,
+    string Status,
+    string EnergyStatus,
+    string MountingType,
+    Guid ProductId,
+    string ProductSku,
+    string ProductName,
+    int PanelCount,
+    decimal InstalledCapacityKwp,
+    decimal? AnnualEnergyKwh,
+    decimal? SpecificYieldKwhPerKwpYear,
+    decimal PanelTiltDegree,
+    decimal PanelAzimuthDegree,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset SelectedAt,
+    bool SnapshotStored,
+    string SnapshotStatus,
+    string Source = SimulationSources.Summary);
+
+public static class SnapshotStatuses
+{
+    public const string None = "NONE";
+    public const string Stored = "STORED";
+    public const string Verified = "VERIFIED";
+    public const string Missing = "MISSING";
+    public const string Unavailable = "UNAVAILABLE";
+    public const string IntegrityFailed = "INTEGRITY_FAILED";
+}
+
+/// <summary>
+/// GET list: cached recent results (newest first) plus the durable selected summary.
+/// <see cref="CacheAvailable"/> is false when the cache could not be reached; the items are then
+/// unknown (not "expired") and only the selected summary is shown.
+/// </summary>
+public sealed record SimulationListView(
+    IReadOnlyList<SimulationListItem> Items,
+    SelectedSimulationView? Selected,
+    bool CacheAvailable);
+
+/// <summary>Durable snapshot document written to object storage on select (schema "simulation-snapshot-v1").</summary>
+public sealed record SimulationSnapshotDocument(
+    string Schema,
+    Guid SimulationId,
+    Guid PreSurveyId,
+    int GeometryVersion,
+    string Fingerprint,
+    DateTimeOffset CreatedAt,
+    SimulationDetail Detail)
+{
+    public const string CurrentSchema = "simulation-snapshot-v1";
+}
 
 public static class SimulationLimitations
 {

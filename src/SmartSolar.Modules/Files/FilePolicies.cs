@@ -54,6 +54,18 @@ public sealed class S3VerificationOptions
     /// to the same key could replace a verified file (detected by the integrity re-check).
     /// </summary>
     public bool RequireObjectVersioning { get; set; } = true;
+
+    public const int MinPresignedUrlTtlSeconds = 30;
+    public const int MaxPresignedUrlTtlSeconds = 3600;
+
+    /// <summary>
+    /// Lifetime of presigned read URLs (validated at startup to 30–3600 s). A per-request lifetime never exceeds it.
+    /// The URL works for anyone who holds it until it expires, so keep it short.
+    /// </summary>
+    public int PresignedUrlTtlSeconds { get; set; } = 300;
+
+    /// <summary>HEAD the pinned object version before signing, so a deleted object answers 410 instead of a URL that fails.</summary>
+    public bool VerifyObjectBeforeSigning { get; set; } = true;
 }
 
 public static partial class FilePolicies
@@ -100,6 +112,19 @@ public static partial class FilePolicies
             return $"The object key must start with '{policy.KeyPrefix}{{yourUserId}}/'.";
         return null;
     }
+
+    /// <summary>The first registered extension of a content type (".jpg" for image/jpeg), or null for an unknown type.</summary>
+    public static string? CanonicalExtension(string contentType) => Extensions.TryGetValue(contentType, out var extensions) ? extensions[0] : null;
+
+    /// <summary>
+    /// Defence in depth before signing a read URL for a stored object key: no traversal, no absolute path, no empty segment,
+    /// only allowed characters, and the key must sit under the purpose prefix (so a row can never be used to sign an
+    /// object outside its purpose's area of the bucket).
+    /// </summary>
+    public static bool IsSignableKey(FilePurposePolicy policy, string? objectKey)
+        => !string.IsNullOrWhiteSpace(objectKey) && KeyCharacters().IsMatch(objectKey) && !objectKey.Contains("..") && !objectKey.Contains("//")
+           && !objectKey.StartsWith('/') && !objectKey.EndsWith('/') && objectKey.StartsWith(policy.KeyPrefix, StringComparison.Ordinal)
+           && objectKey.Length > policy.KeyPrefix.Length;
 
     public static bool ExtensionMatches(string contentType, string fileName)
         => Extensions.TryGetValue(contentType, out var extensions)

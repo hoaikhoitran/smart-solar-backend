@@ -7,26 +7,30 @@ using SmartSolar.Modules.PreSurvey.Enums;
 using SmartSolar.Modules.PreSurvey.Surface;
 using SmartSolar.Modules.SolarSimulation.Calculation;
 using SmartSolar.Modules.SolarSimulation.Constants;
+using SmartSolar.Modules.SolarSimulation.Contracts.Caching;
 using SmartSolar.Modules.SolarSimulation.Contracts.Persistence;
 using SmartSolar.Modules.SolarSimulation.Energy;
 using SmartSolar.Modules.SolarSimulation.Geometry;
 using SmartSolar.Modules.SolarSimulation.Installation;
 using SmartSolar.Modules.SolarSimulation.Models;
 using SmartSolar.Modules.SolarSimulation.Options;
-using SimulationEntity = SmartSolar.Modules.SolarSimulation.Entities.SolarSimulation;
 
 namespace SmartSolar.Modules.SolarSimulation.CreateSimulation;
 
 /// <summary>
-/// Calculates and stores a simulation snapshot for a draft pre-survey owned by the caller.
+/// Calculates a simulation for a draft pre-survey owned by the caller and caches the full result
+/// temporarily (<c>SolarSimulation:ResultTtlMinutes</c>). Nothing is written to PostgreSQL and
+/// nothing is selected: the customer selects a result explicitly (SelectSimulationHandler).
 /// <list type="number">
 /// <item>Validate ownership, Draft status, expected geometry version, surface and product.</item>
 /// <item>Resolve mounting and installation values; compute the input fingerprint.</item>
-/// <item>Reuse an identical reusable snapshot when one exists (no provider calls).</item>
+/// <item>Reuse an identical reusable cached result when one exists within its TTL (no provider calls).</item>
 /// <item>Otherwise calculate once per fingerprint (single-flight), call providers within a bounded budget,
-/// and save + select in one transaction that re-checks Draft status and geometry version.</item>
+/// re-check Draft status and geometry version, and cache the result.</item>
 /// </list>
-/// Provider failures become explicit statuses; energy is never fabricated.
+/// Provider failures become explicit statuses; energy is never fabricated. Results with a failed
+/// provider are cached (readable, selectable) but not indexed for reuse, so a retry recalculates.
+/// A cache outage fails the request with <see cref="CreateSimulationOutcome.CacheUnavailable"/>.
 /// </summary>
 public sealed class CreateSimulationHandler
 {
@@ -42,6 +46,8 @@ public sealed class CreateSimulationHandler
     private readonly IClimateContextProvider _climate;
     private readonly SolarSimulationOptions _options;
     private readonly SimulationSingleFlight _singleFlight;
+    private readonly ISimulationResultCache _cache;
+    private readonly TimeProvider _time;
     private readonly ILogger<CreateSimulationHandler> _logger;
 
     public CreateSimulationHandler(
@@ -51,6 +57,8 @@ public sealed class CreateSimulationHandler
         IClimateContextProvider climate,
         SolarSimulationOptions options,
         SimulationSingleFlight singleFlight,
+        ISimulationResultCache cache,
+        TimeProvider time,
         ILogger<CreateSimulationHandler> logger)
     {
         _unitOfWork = unitOfWork;
@@ -59,6 +67,8 @@ public sealed class CreateSimulationHandler
         _climate = climate;
         _options = options;
         _singleFlight = singleFlight;
+        _cache = cache;
+        _time = time;
         _logger = logger;
     }
 
@@ -197,10 +207,19 @@ public sealed class CreateSimulationHandler
             ["declaredAreaMismatchRatio"] = _options.DeclaredAreaMismatchRatio,
         });
 
-        var reusable = await _unitOfWork.FindReusableAsync(source.PreSurveyId, fingerprint, cancellationToken);
-        if (reusable is not null)
+        CachedSimulation? reusable;
+        try
         {
-            return await SelectExistingAsync(reusable, source, cancellationToken);
+            reusable = await _cache.FindByFingerprintAsync(source.PreSurveyId, fingerprint, cancellationToken);
+        }
+        catch (SimulationCacheUnavailableException)
+        {
+            return CreateSimulationResult.Fail(CreateSimulationOutcome.CacheUnavailable, SimulationErrorCodes.CacheUnavailable);
+        }
+
+        if (reusable is not null && reusable.OwnerUserId == source.OwnerUserId && reusable.GeometryVersion == source.GeometryVersion)
+        {
+            return CreateSimulationResult.Success(CreateSimulationOutcome.Reused, SimulationDetailMapper.ForViewer(reusable, source));
         }
 
         var input = new SimulationGeometryInput(
@@ -224,48 +243,56 @@ public sealed class CreateSimulationHandler
                 "The layout calculation exceeded the configured computational budget for this surface and panel size.");
         }
 
+        // The identity is assigned inside the flight, so every caller sharing it reports the same result;
+        // only the caller whose factory ran reports Created, the others Reused.
+        var ranHere = false;
         var computed = await _singleFlight.RunAsync(
             fingerprint,
-            () => ComputeAsync(layout, input, product, specParse, installation, systemLoss, command.SystemLossPercent.HasValue, source, command.MountingType!, obstacles, surfaceFrame),
+            async () =>
+            {
+                ranHere = true;
+                var result = await ComputeAsync(layout, input, product, specParse, installation, systemLoss, command.SystemLossPercent.HasValue, source, command.MountingType!, obstacles, surfaceFrame);
+                return result with { SimulationId = Guid.NewGuid(), CreatedAt = _time.GetUtcNow() };
+            },
             cancellationToken);
 
-        var entity = ToEntity(computed, fingerprint, command, source, product, specParse, length, width, surfaceTilt, surfaceAzimuth, panelTilt, panelAzimuth);
-
-        var saved = await _unitOfWork.TrySaveAndSelectAsync(entity, cancellationToken);
-        switch (saved)
+        // Re-check after the (slow) provider calls: a result for a superseded geometry or a submitted
+        // pre-survey is not cached at all.
+        var current = await _unitOfWork.GetSourceAsync(source.PreSurveyId, cancellationToken);
+        if (current is null || current.Status != PreSurveyStatus.Draft)
         {
-            case SaveSimulationOutcome.Saved:
-                return CreateSimulationResult.Success(CreateSimulationOutcome.Created,
-                    SimulationDetailMapper.ToDetail(entity, source.GeometryVersion, entity.Id));
-
-            case SaveSimulationOutcome.DuplicateFingerprint:
-                var winner = await _unitOfWork.FindReusableAsync(source.PreSurveyId, fingerprint, cancellationToken);
-                return winner is null
-                    ? CreateSimulationResult.Fail(CreateSimulationOutcome.SourceChanged, SimulationErrorCodes.SourceChanged)
-                    : await SelectExistingAsync(winner, source, cancellationToken);
-
-            case SaveSimulationOutcome.NotDraft:
-                return CreateSimulationResult.Fail(CreateSimulationOutcome.NotEditable);
-
-            default:
-                return CreateSimulationResult.Fail(CreateSimulationOutcome.SourceChanged, SimulationErrorCodes.SourceChanged);
+            return CreateSimulationResult.Fail(CreateSimulationOutcome.NotEditable);
         }
+
+        if (current.GeometryVersion != source.GeometryVersion)
+        {
+            return CreateSimulationResult.Fail(CreateSimulationOutcome.SourceChanged, SimulationErrorCodes.SourceChanged);
+        }
+
+        var detail = SimulationDetailMapper.ToDetail(
+            computed, computed.SimulationId, source.PreSurveyId, source.GeometryVersion, computed.CreatedAt, product,
+            length, width, surfaceTilt, surfaceAzimuth, source.Latitude, source.Longitude, command.MountingType!, panelTilt, panelAzimuth);
+        var cached = new CachedSimulation(
+            computed.SimulationId, source.PreSurveyId, source.OwnerUserId, command.UserId, source.GeometryVersion, fingerprint,
+            computed.IsReusable, computed.CreatedAt, computed.CreatedAt.AddMinutes(_options.ResultTtlMinutes), detail);
+
+        try
+        {
+            // Idempotent: callers sharing one flight store the same entry.
+            await _cache.StoreAsync(cached, cancellationToken);
+        }
+        catch (SimulationCacheUnavailableException)
+        {
+            return CreateSimulationResult.Fail(CreateSimulationOutcome.CacheUnavailable, SimulationErrorCodes.CacheUnavailable);
+        }
+
+        return CreateSimulationResult.Success(
+            ranHere ? CreateSimulationOutcome.Created : CreateSimulationOutcome.Reused,
+            SimulationDetailMapper.ForViewer(cached, current));
     }
 
     private static CreateSimulationResult Reject(string code, string? parameter, string message)
         => CreateSimulationResult.Fail(CreateSimulationOutcome.Rejected, code, [new SimulationProblem(code, parameter, message)]);
-
-    private async Task<CreateSimulationResult> SelectExistingAsync(SimulationEntity existing, SimulationSource source, CancellationToken cancellationToken)
-    {
-        var selected = await _unitOfWork.TrySelectAsync(source.PreSurveyId, existing.Id, source.GeometryVersion, cancellationToken);
-        return selected switch
-        {
-            SelectSimulationOutcome.Selected => CreateSimulationResult.Success(CreateSimulationOutcome.Reused,
-                SimulationDetailMapper.ToDetail(existing, source.GeometryVersion, existing.Id)),
-            SelectSimulationOutcome.NotDraft => CreateSimulationResult.Fail(CreateSimulationOutcome.NotEditable),
-            _ => CreateSimulationResult.Fail(CreateSimulationOutcome.SourceChanged, SimulationErrorCodes.SourceChanged),
-        };
-    }
 
     private async Task<ComputedSimulation> ComputeAsync(
         SimulationLayoutResult layout,
@@ -606,58 +633,4 @@ public sealed class CreateSimulationHandler
                 D3(p.HighEdgeHeightM))).ToList(),
             frame);
     }
-
-    private static SimulationEntity ToEntity(
-        ComputedSimulation computed, string fingerprint, CreateSimulationCommand command, SimulationSource source, ProductDto product,
-        InstallationSpecParseResult specParse, decimal length, decimal width, decimal surfaceTilt, decimal surfaceAzimuth,
-        decimal panelTilt, decimal panelAzimuth)
-        => new()
-        {
-            Id = Guid.NewGuid(),
-            PreSurveyId = source.PreSurveyId,
-            CreatedByUserId = command.UserId,
-            CreatedAt = DateTimeOffset.UtcNow,
-            PreSurveyGeometryVersion = source.GeometryVersion,
-            InputFingerprint = fingerprint,
-            IsReusable = computed.IsReusable,
-            Status = computed.Status,
-            EnergyStatus = computed.EnergyStatus,
-            ClimateStatus = computed.ClimateStatus,
-            AlgorithmVersion = AlgorithmVersions.Current,
-            ProductId = product.Id,
-            ProductSku = product.Sku,
-            ProductName = product.Name,
-            ProductBrand = product.Brand,
-            ProductModel = product.Model,
-            ProductRatedPowerW = product.RatedPowerW!.Value,
-            ProductWidthMm = product.WidthMm!.Value,
-            ProductHeightMm = product.HeightMm!.Value,
-            ProductInstallationSpec = specParse.Spec is null ? null : SnapshotJson.Serialize(specParse.Spec),
-            SurfaceLengthM = length,
-            SurfaceWidthM = width,
-            SurfaceTiltDegree = surfaceTilt,
-            SurfaceAzimuthDegree = surfaceAzimuth,
-            Latitude = source.Latitude,
-            Longitude = source.Longitude,
-            MountingType = command.MountingType!,
-            PanelTiltDegree = panelTilt,
-            PanelAzimuthDegree = panelAzimuth,
-            LayoutOrientation = computed.LayoutOrientation,
-            PanelCount = computed.PanelCount,
-            InstalledCapacityKwp = computed.InstalledCapacityKwp,
-            GrossSurfaceAreaM2 = computed.Areas.GrossSurfaceAreaM2,
-            ObstacleOccupiedAreaM2 = computed.Areas.ObstacleOccupiedAreaM2,
-            AvailableSurfaceAreaM2 = computed.Areas.AvailableSurfaceAreaM2,
-            InstallableAreaM2 = computed.Areas.InstallableAreaM2,
-            PanelCoveredAreaM2 = computed.Areas.PanelCoveredAreaM2,
-            TotalModuleAreaM2 = computed.Areas.TotalModuleAreaM2,
-            AnnualEnergyKwh = computed.AnnualEnergyKwh,
-            SpecificYieldKwhPerKwpYear = computed.SpecificYieldKwhPerKwpYear,
-            Obstacles = SnapshotJson.Serialize(computed.Obstacles),
-            Installation = SnapshotJson.Serialize(computed.Installation),
-            Layout = SnapshotJson.Serialize(computed.Layout),
-            Warnings = SnapshotJson.Serialize(computed.Warnings),
-            Energy = SnapshotJson.Serialize(computed.Energy),
-            Climate = SnapshotJson.Serialize(computed.Climate),
-        };
 }

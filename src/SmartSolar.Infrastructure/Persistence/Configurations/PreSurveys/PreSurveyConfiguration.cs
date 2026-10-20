@@ -2,7 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using SmartSolar.Modules.PreSurvey.Entities;
 using SmartSolar.Modules.PreSurvey.Enums;
-using SimulationEntity = SmartSolar.Modules.SolarSimulation.Entities.SolarSimulation;
+using SmartSolar.Modules.SolarSimulation.Entities;
 
 namespace SmartSolar.Infrastructure.Persistence.Configurations.PreSurveys;
 
@@ -79,16 +79,16 @@ public sealed class PreSurveyConfiguration
             .HasColumnName("selected_simulation_id")
             .IsRequired(false);
 
-        // The selected simulation must belong to this same pre-survey: a composite FK
-        // (id, selected_simulation_id) -> solar_simulation (pre_survey_id, id).
+        // The selection must be this same pre-survey's summary row: a composite FK
+        // (id, selected_simulation_id) -> selected_simulation (pre_survey_id, simulation_id).
         // A null selection skips the check (MATCH SIMPLE).
-        builder.HasOne<SimulationEntity>()
+        builder.HasOne<SelectedSimulation>()
             .WithMany()
             .HasForeignKey(x => new { x.Id, x.SelectedSimulationId })
-            .HasPrincipalKey(x => new { x.PreSurveyId, x.Id })
+            .HasPrincipalKey(x => new { x.PreSurveyId, x.SimulationId })
             .IsRequired(false)
             .OnDelete(DeleteBehavior.Restrict)
-            .HasConstraintName("fk_pre_survey_selected_simulation_same_pre_survey");
+            .HasConstraintName("fk_pre_survey_selected_simulation");
 
         builder.Property(x => x.Status)
             .HasColumnName("status")

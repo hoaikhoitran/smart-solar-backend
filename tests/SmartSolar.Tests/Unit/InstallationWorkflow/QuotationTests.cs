@@ -13,7 +13,7 @@ public sealed class QuotationTests
             ValidUntil: ctx.Clock.Now.AddDays(validDays), Terms: "Payment 100% before installation", Notes: null);
 
     /// <summary>Survey completed, draft with 12 panels and 1 inverter, issued. Returns the issued view.</summary>
-    public static async Task<(AcknowledgedSurvey Survey, QuotationView Issued)> IssuedAsync(InstallationWorkflowTestContext ctx, string customer = "Customer")
+    public static async Task<(ConfirmedSurvey Survey, QuotationView Issued)> IssuedAsync(InstallationWorkflowTestContext ctx, string customer = "Customer")
     {
         var s = await ctx.QuotableSurveyAsync(customer);
         var panel = await ctx.ProductAsync($"PNL-{Guid.NewGuid():N}"[..20], 2_500_000m);
@@ -65,7 +65,7 @@ public sealed class QuotationTests
     {
         var ctx = InstallationWorkflowTestContext.Create();
         await using var _ = ctx;
-        var s = await ctx.AcknowledgedSurveyAsync();
+        var s = await ctx.ConfirmedSurveyAsync();
         var q = ctx.Quotations();
 
         Assert.Equal(QuotationErrorCodes.SurveyNotCompleted, (await q.CreateAsync(s.Sales.Id, s.Request.Request.Id, Header(ctx), CancellationToken.None)).ErrorCode);

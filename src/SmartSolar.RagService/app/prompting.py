@@ -30,6 +30,22 @@ SYSTEM_PROMPT = (
     "Trả lời ngắn gọn bằng ngôn ngữ của câu hỏi."
 )
 
+# Versioned system prompts (the API's admin configuration selects one by version). "v1" is the original prompt;
+# a new wording is added as a new version, never by editing an existing one, so an activation can be rolled back exactly.
+PROMPT_TEMPLATES: Dict[str, str] = {"v1": SYSTEM_PROMPT}
+
+
+class UnknownPromptVersion(ValueError):
+    """The requested prompt version is not one of PROMPT_TEMPLATES."""
+
+
+def system_prompt(version: str) -> str:
+    try:
+        return PROMPT_TEMPLATES[version]
+    except KeyError:
+        raise UnknownPromptVersion(version) from None
+
+
 _TAG = re.compile(r"</?\s*(source|sources|system|assistant|user|instructions?)\b[^>]*>", re.IGNORECASE)
 
 
@@ -56,8 +72,9 @@ def select_sources(hits: List[SearchHit], titles: Dict[str, str], max_context_to
     return selected
 
 
-def build_messages(question: str, history: List[Dict[str, str]], sources: List[NumberedSource], max_history_chars: int = 4000) -> List[Dict[str, str]]:
-    messages: List[Dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+def build_messages(question: str, history: List[Dict[str, str]], sources: List[NumberedSource], max_history_chars: int = 4000,
+                   prompt_version: str = "v1") -> List[Dict[str, str]]:
+    messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt(prompt_version)}]
     budget = max_history_chars
     kept: List[Dict[str, str]] = []
     for turn in reversed(history):

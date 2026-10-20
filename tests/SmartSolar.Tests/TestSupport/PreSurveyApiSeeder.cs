@@ -37,6 +37,19 @@ internal static class PreSurveyApiSeeder
         string fullName = "Seeded User")
     {
         var user = await factory.SeedAsync(PreSurveyTestContext.NewUser(fullName));
+        // The token carries the role; the account holds it too (as for every real token), because some rules re-check the
+        // actor's CURRENT roles in the backend (e.g. Admin-only zone structure, Manager zone scope).
+        await using (var db = factory.CreateDbContext())
+        {
+            var stored = await db.Roles.FirstOrDefaultAsync(r => r.Code == role);
+            if (stored is null)
+            {
+                stored = new Role { Id = Guid.NewGuid(), Code = role, Name = role };
+                db.Roles.Add(stored);
+            }
+            db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = stored.Id, AssignedAt = DateTimeOffset.UtcNow });
+            await db.SaveChangesAsync();
+        }
         return (user, CatalogEndpointsTests.ClientFor(factory, role, user.Id));
     }
 

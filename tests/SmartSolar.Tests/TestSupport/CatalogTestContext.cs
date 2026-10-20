@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
 using SmartSolar.Infrastructure.Persistence;
@@ -10,6 +11,7 @@ using SmartSolar.Modules.Catalog.Enums;
 using SmartSolar.Modules.Catalog.GetProduct;
 using SmartSolar.Modules.Catalog.ListProducts;
 using SmartSolar.Modules.Catalog.ManageProducts;
+using SmartSolar.Modules.Catalog.ProductImages;
 
 namespace SmartSolar.Tests.TestSupport;
 
@@ -21,7 +23,7 @@ public sealed class CatalogTestContext : IAsyncDisposable
 {
     private readonly SqliteConnection _connection;
 
-    public CatalogTestContext()
+    public CatalogTestContext(params IInterceptor[] interceptors)
     {
         _connection = new SqliteConnection("Filename=:memory:");
         _connection.Open();
@@ -29,13 +31,22 @@ public sealed class CatalogTestContext : IAsyncDisposable
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseSqlite(_connection)
             .ReplaceService<IModelCustomizer, SqliteCatalogModelCustomizer>()
+            .AddInterceptors(interceptors)
             .Options;
 
         Db = new AppDbContext(options);
         Db.Database.EnsureCreated();
 
         UnitOfWork = new CatalogUnitOfWork(Db);
+        ImageUnitOfWork = new ProductImageUnitOfWork(Db);
     }
+
+    public ProductImageUnitOfWork ImageUnitOfWork { get; }
+
+    public CatalogOptions Options { get; } = new();
+
+    public ProductImageHandlers CreateImageHandlers(IProductImageUnitOfWork? unitOfWork = null)
+        => new(unitOfWork ?? ImageUnitOfWork, CreateInvalidator(), Options);
 
     public AppDbContext Db { get; }
 
@@ -106,6 +117,32 @@ public sealed class CatalogTestContext : IAsyncDisposable
 
     public async Task<Product?> ReloadAsync(Guid productId)
         => await Db.Products.AsNoTracking().SingleOrDefaultAsync(p => p.Id == productId);
+
+    /// <summary>Stored images of a product, ordered by sort order, read untracked.</summary>
+    public async Task<List<ProductImage>> ImagesOfAsync(Guid productId)
+        => await Db.ProductImages.AsNoTracking()
+            .Where(i => i.ProductId == productId)
+            .OrderBy(i => i.SortOrder)
+            .ToListAsync();
+
+    public async Task<ProductImage> SeedImageAsync(
+        Guid productId, string url, int sortOrder, bool isPrimary, string? altText = null)
+    {
+        var image = new ProductImage
+        {
+            Id = Guid.NewGuid(),
+            ProductId = productId,
+            Url = url,
+            AltText = altText,
+            SortOrder = sortOrder,
+            IsPrimary = isPrimary,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        Db.ProductImages.Add(image);
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        return image;
+    }
 
     public async ValueTask DisposeAsync()
     {

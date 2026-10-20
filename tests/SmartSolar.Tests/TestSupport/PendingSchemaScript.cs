@@ -1,29 +1,29 @@
-using System.Text;
-using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
 using SmartSolar.Infrastructure.Persistence;
 
 namespace SmartSolar.Tests.TestSupport;
 
 /// <summary>
-/// Builds the Installation Flow + knowledge base schema review SQL from the EF model (PostgreSQL provider, offline: no
-/// connection is opened). Used to (1) check that guides/sql/installation-workflow-and-knowledge-base-schema-review.sql has not drifted
-/// from the model and (2) create the tables in a disposable PostgreSQL test database.
-/// It is never executed against a real database by application code.
+/// Facts about the schema used by the migration guards. The InstallationWorkflowAndKnowledgeBase migration is applied to
+/// Supabase Dev and therefore immutable: its table list and manual SQL are frozen here. The current EF model (PostgreSQL
+/// provider, never connected) is what later migrations must produce.
 /// </summary>
 public static class PendingSchemaScript
 {
-    public static readonly string[] Namespaces =
+    /// <summary>The 32 tables created by 20261013182132_InstallationWorkflowAndKnowledgeBase, exactly as applied.</summary>
+    public static readonly IReadOnlyList<string> InstallationWorkflowMigrationTables =
     [
-        "SmartSolar.Modules.Files", "SmartSolar.Modules.OnSiteSurveys", "SmartSolar.Modules.Quotations", "SmartSolar.Modules.CustomerContracts",
-        "SmartSolar.Modules.Payments", "SmartSolar.Modules.Installations", "SmartSolar.Modules.KnowledgeBase",
+        "chat_citation", "chat_message", "chat_session", "contract_event", "contract_signature_submission", "customer_contract",
+        "file_reference", "installation_acceptance", "installation_checklist_item", "installation_event", "installation_milestone",
+        "installation_milestone_evidence", "installation_project", "installation_shift", "installation_shift_assignment",
+        "installation_team_member", "installed_asset", "knowledge_document", "knowledge_document_version", "knowledge_ingestion_job",
+        "onsite_survey_amendment", "onsite_survey_attachment", "onsite_survey_obstacle", "onsite_survey_report", "payment_attempt",
+        "payment_event", "payment_webhook_event", "quotation", "quotation_event", "quotation_line", "rag_usage_daily", "rag_usage_reservation",
     ];
 
-    public const string GeneratedBegin = "-- <generated-from-ef-model>";
-    public const string GeneratedEnd = "-- </generated-from-ef-model>";
-
-    /// <summary>Constraints EF cannot express; applied after the generated tables.</summary>
+    /// <summary>Manual SQL of the InstallationWorkflowAndKnowledgeBase migration (frozen, as applied).</summary>
     public const string Manual = """
         -- Installation crews: one technician can never be in two overlapping ACTIVE installation shifts.
         -- (Survey appointments are serialised against installation planning through the technician_profile row lock.)
@@ -34,77 +34,38 @@ public static class PendingSchemaScript
             WHERE (status = 'ACTIVE');
         """;
 
-    public static IReadOnlyList<string> PendingTables()
-    {
-        using var db = NewModelContext();
-        return db.Model.GetEntityTypes()
-            .Where(e => Namespaces.Any(ns => e.ClrType.Namespace?.StartsWith(ns, StringComparison.Ordinal) == true))
-            .Select(e => e.GetTableName()!).Distinct().OrderBy(t => t, StringComparer.Ordinal).ToList();
-    }
-
     /// <summary>
-    /// Every statement of the EF create script that targets an Installation Flow / knowledge-base table:
-    /// CREATE TABLE, CREATE [UNIQUE] INDEX and ALTER TABLE (EF emits foreign keys between tables that
-    /// reference each other as separate ALTER TABLE … ADD CONSTRAINT statements). A statement that
-    /// mentions a pending table but cannot be classified fails loudly instead of being dropped.
+    /// Tables that are no longer in the EF model but intentionally stay in the database (no destructive migration):
+    /// they are only dropped by the approval-gated cleanup draft.
     /// </summary>
-    public static string GenerateTables()
-    {
-        using var db = NewModelContext();
-        var tables = PendingTables().ToHashSet(StringComparer.Ordinal);
-        var sb = new StringBuilder();
-        foreach (var statement in db.Database.GenerateCreateScript()
-                     .Split(";" + Environment.NewLine, StringSplitOptions.RemoveEmptyEntries)
-                     .Select(s => s.Trim())
-                     .Where(s => s.Length > 0))
-        {
-            var target = TargetTable(statement);
-            if (target is null)
-            {
-                if (tables.Any(t => Regex.IsMatch(statement, $@"\b{t}\b")))
-                    throw new InvalidOperationException($"Unclassified statement touching a pending table: {statement[..Math.Min(120, statement.Length)]}");
-                continue;
-            }
-            if (tables.Contains(target)) sb.Append(statement.ReplaceLineEndings("\n")).Append(";\n\n");
-        }
-        return sb.ToString().TrimEnd() + "\n";
-    }
-
-    private static readonly Regex[] TargetPatterns =
+    public static readonly IReadOnlyList<string> RetainedObsoleteTables =
     [
-        new(@"^CREATE TABLE ""?(?<t>\w+)""? \(", RegexOptions.Compiled),
-        new(@"^CREATE (UNIQUE )?INDEX ""?\w+""? ON ""?(?<t>\w+)""?", RegexOptions.Compiled),
-        new(@"^ALTER TABLE ""?(?<t>\w+)""? ", RegexOptions.Compiled),
+        "installation_milestone", "installation_milestone_evidence", "installation_shift", "installation_shift_assignment",
+        "installation_team_member", "solar_simulation", "technician_schedule_recalculation", "technician_travel_estimate",
     ];
 
-    public static string? TargetTable(string statement)
-        => TargetPatterns.Select(p => p.Match(statement)).FirstOrDefault(m => m.Success)?.Groups["t"].Value;
+    /// <summary>
+    /// Tables of the replaced 3-level service-area model, kept (empty) by the non-destructive round-2 migration and no longer
+    /// in the EF model; dropped only by an approved cleanup.
+    /// </summary>
+    public static readonly IReadOnlyList<string> RetainedServiceAreaTables = ["service_area", "technician_service_area"];
 
-    /// <summary>The EF model used for review (PostgreSQL provider, never connected).</summary>
-    public static IReadOnlyList<Microsoft.EntityFrameworkCore.Metadata.IEntityType> PendingEntityTypes()
+    /// <summary>
+    /// Legacy columns kept on tables that ARE in the model (no longer mapped, all NULL in Supabase Dev): their foreign keys to
+    /// the retained service_area table are expected in the catalog. Format "table.column".
+    /// </summary>
+    public static readonly IReadOnlyList<string> RetainedLegacyForeignKeyColumns =
+        ["technician_appointment.service_area_id", "installation_project.service_area_id"];
+
+    /// <summary>Every entity type of the current design-time model (keeps check constraints and other annotations).</summary>
+    public static IReadOnlyList<IEntityType> ModelEntityTypes()
     {
         using var db = NewModelContext();
-        // The design-time model keeps check constraints and other annotations the runtime model drops.
-        return db.GetService<Microsoft.EntityFrameworkCore.Metadata.IDesignTimeModel>().Model.GetEntityTypes()
-            .Where(e => Namespaces.Any(ns => e.ClrType.Namespace?.StartsWith(ns, StringComparison.Ordinal) == true)).ToList();
+        return db.GetService<IDesignTimeModel>().Model.GetEntityTypes().Where(e => e.GetTableName() is not null).ToList();
     }
 
-    public static string ReviewFilePath()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "SmartSolar.sln")) && !Directory.Exists(Path.Combine(dir.FullName, "guides")))
-            dir = dir.Parent;
-        return Path.Combine(dir?.FullName ?? throw new InvalidOperationException("Repository root not found."), "guides", "sql", "installation-workflow-and-knowledge-base-schema-review.sql");
-    }
-
-    /// <summary>Generated section of the committed review file.</summary>
-    public static string CommittedTables()
-    {
-        var text = File.ReadAllText(ReviewFilePath()).ReplaceLineEndings("\n");
-        var start = text.IndexOf(GeneratedBegin, StringComparison.Ordinal);
-        var end = text.IndexOf(GeneratedEnd, StringComparison.Ordinal);
-        return text[(start + GeneratedBegin.Length)..end].Trim() + "\n";
-    }
+    public static IReadOnlyList<string> ModelTables()
+        => ModelEntityTypes().Select(e => e.GetTableName()!).Distinct().OrderBy(t => t, StringComparer.Ordinal).ToList();
 
     private static AppDbContext NewModelContext()
         => new(new DbContextOptionsBuilder<AppDbContext>().UseNpgsql("Host=localhost;Database=model_only").Options);

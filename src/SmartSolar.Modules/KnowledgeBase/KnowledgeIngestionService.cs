@@ -14,10 +14,25 @@ namespace SmartSolar.Modules.KnowledgeBase;
 /// <item>A crashed worker leaves an expired lease: the attempt was already counted, so a job that keeps
 /// crashing its workers still ends FAILED instead of looping.</item>
 /// <item>Service shutdown (the caller's token) gives the lease back without using the attempt.</item>
+/// <item>An INGEST job runs with the chunk settings snapshotted when it was queued (jobs queued before the snapshot columns
+/// existed fall back to the effective configuration).</item>
+/// <item>A version that holds live chunks (READY_FOR_REVIEW, PUBLISHED, or WITHDRAWN and re-publishable) is never demoted by a
+/// reindex: it is not set to PROCESSING while the job runs, and a failed or non-READY outcome never turns it into REGISTERED/FAILED
+/// (the RAG service only replaces chunks on success, so the old chunks stay usable). The outcome is recorded in
+/// <see cref="KnowledgeDocumentVersion.LastIngestStatus"/> / <see cref="KnowledgeDocumentVersion.LastIngestError"/>; a READY outcome
+/// also refreshes the indexed_* settings and chunk metadata. REGISTERED/FAILED versions keep the classic lifecycle.</item>
 /// </list>
 /// </summary>
-public sealed class KnowledgeIngestionService(IKnowledgeUnitOfWork unitOfWork, IFileStore fileStore, IRagServiceClient rag, RagOptions options, TimeProvider time, ILogger<KnowledgeIngestionService> logger)
+public sealed class KnowledgeIngestionService(IKnowledgeUnitOfWork unitOfWork, IFileStore fileStore, IRagServiceClient rag, RagOptions options,
+    IRagConfigurationProvider configuration, TimeProvider time, ILogger<KnowledgeIngestionService> logger)
 {
+    /// <summary>Without dependency injection: the effective configuration is read from the same unit of work, uncached.</summary>
+    public KnowledgeIngestionService(IKnowledgeUnitOfWork unitOfWork, IFileStore fileStore, IRagServiceClient rag, RagOptions options, TimeProvider time,
+        ILogger<KnowledgeIngestionService> logger)
+        : this(unitOfWork, fileStore, rag, options, EffectiveRagConfigurationProvider.Uncached(unitOfWork, options, time), time, logger)
+    {
+    }
+
     /// <summary>Longer than the ingest call can take, so a live worker never loses its lease.</summary>
     private TimeSpan Lease => TimeSpan.FromSeconds(Math.Clamp(options.IngestTimeoutSeconds, 1, 1800) + 120);
 
@@ -55,7 +70,13 @@ public sealed class KnowledgeIngestionService(IKnowledgeUnitOfWork unitOfWork, I
         catch (Exception ex)
         {
             logger.LogError(ex, "Knowledge ingestion job {JobId} failed unexpectedly.", jobId);
-            await RecordAsync(jobId, lease, ok: false, $"Unexpected error ({ex.GetType().Name}).", terminal: false, BackToRegistered, CancellationToken.None);
+            var error = $"Unexpected error ({ex.GetType().Name}).";
+            await RecordAsync(jobId, lease, ok: false, error, terminal: false, v =>
+            {
+                v.LastIngestStatus = "FAILED";
+                v.LastIngestError = error;
+                BackToRegistered(v);
+            }, CancellationToken.None);
         }
         return true;
     }
@@ -81,21 +102,43 @@ public sealed class KnowledgeIngestionService(IKnowledgeUnitOfWork unitOfWork, I
         if (file is null || file.Status != FileStatuses.Verified || file.VerifiedChecksumSha256 is null)
         {
             await RecordAsync(jobId, lease, ok: false, "The source file is not verified.", terminal: true,
-                v => { v.Status = VersionStatuses.Failed; v.FailureReason = "Source file not verified."; }, cancellationToken);
+                v =>
+                {
+                    v.LastIngestStatus = "FAILED";
+                    v.LastIngestError = "Source file not verified.";
+                    if (HoldsLiveChunks(v)) return;
+                    v.Status = VersionStatuses.Failed;
+                    v.FailureReason = "Source file not verified.";
+                }, cancellationToken);
             return;
         }
         await SetVersionStatusAsync(version.Id, VersionStatuses.Processing, cancellationToken);
         var document = (await unitOfWork.FindDocumentAsync(version.DocumentId, false, cancellationToken))!;
 
+        int configVersion, chunkCharacters, chunkOverlap;
+        if (job is { ConfigVersion: { } cv, ChunkCharacters: { } cc, ChunkOverlap: { } co })
+            (configVersion, chunkCharacters, chunkOverlap) = (cv, cc, co);
+        else
+        {
+            var effective = await configuration.GetAsync(cancellationToken);
+            (configVersion, chunkCharacters, chunkOverlap) = (effective.Version, effective.Values.ChunkCharacters, effective.Values.ChunkOverlap);
+        }
+
         // No transaction is open here: the call can take minutes.
         var result = await rag.IngestAsync(new RagIngestRequest(version.Id, version.DocumentId, file.Bucket, file.ObjectKey, file.ObjectVersionId,
-            file.VerifiedContentType!, file.VerifiedChecksumSha256, document.Title, version.VersionNumber), cancellationToken);
+            file.VerifiedContentType!, file.VerifiedChecksumSha256, document.Title, version.VersionNumber, configVersion, chunkCharacters, chunkOverlap), cancellationToken);
 
         if (!result.Reached || result.Status == "FAILED")
         {
             logger.LogWarning("Ingestion of knowledge version {VersionId} failed: {Error}.", version.Id, result.Error);
-            await RecordAsync(jobId, lease, ok: false, result.Error ?? "RAG service unavailable", terminal: false,
-                v => { BackToRegistered(v); v.FailureReason = Truncate(result.Error); }, cancellationToken);
+            await RecordAsync(jobId, lease, ok: false, result.Error ?? "RAG service unavailable", terminal: false, v =>
+            {
+                v.LastIngestStatus = "FAILED";
+                v.LastIngestError = Truncate(result.Error ?? "RAG service unavailable");
+                if (HoldsLiveChunks(v)) return;
+                BackToRegistered(v);
+                v.FailureReason = Truncate(result.Error);
+            }, cancellationToken);
             return;
         }
 
@@ -107,8 +150,16 @@ public sealed class KnowledgeIngestionService(IKnowledgeUnitOfWork unitOfWork, I
         };
         await RecordAsync(jobId, lease, ok: true, null, terminal: true, v =>
         {
+            v.LastIngestStatus = Truncate(result.Status, 30);
+            v.LastIngestError = status == VersionStatuses.ReadyForReview ? null : Truncate(result.Error ?? result.Status);
+            if (status != VersionStatuses.ReadyForReview && HoldsLiveChunks(v))
+            {
+                // The service did not replace anything: the old chunks, status and metadata stay as they were.
+                logger.LogWarning("Reindex of live knowledge version {VersionId} returned {Status}; the previous chunks stay in use.", v.Id, result.Status);
+                return;
+            }
             // A published version being reindexed stays published (its chunks were replaced atomically).
-            if (v.Status != VersionStatuses.Published || status != VersionStatuses.ReadyForReview) v.Status = status;
+            if (!HoldsLiveChunks(v)) v.Status = status;
             v.PageCount = result.PageCount;
             v.ChunkCount = result.ChunkCount;
             v.ExtractedCharacters = result.Characters;
@@ -116,8 +167,21 @@ public sealed class KnowledgeIngestionService(IKnowledgeUnitOfWork unitOfWork, I
             v.EmbeddingDimension = result.EmbeddingDimension;
             v.FailureReason = status == VersionStatuses.ReadyForReview ? null : Truncate(result.Error ?? status);
             v.IngestedAt = time.GetUtcNow();
+            if (status == VersionStatuses.ReadyForReview)
+            {
+                // Only what the service reports having used counts as indexed (an older service that echoes nothing leaves the
+                // version "stale", so reindex-stale picks it up again).
+                v.IndexedConfigVersion = result.ConfigVersion;
+                v.IndexedChunkCharacters = result.ChunkCharacters;
+                v.IndexedChunkOverlap = result.ChunkOverlap;
+            }
         }, cancellationToken);
     }
+
+    /// <summary>Versions whose chunks are in use or ready to be (review, publication, re-publication without re-ingestion).</summary>
+    internal static bool HoldsLiveChunks(KnowledgeDocumentVersion v) => HoldsLiveChunks(v.Status);
+
+    internal static bool HoldsLiveChunks(string status) => status is VersionStatuses.ReadyForReview or VersionStatuses.Published or VersionStatuses.Withdrawn;
 
     private static void BackToRegistered(KnowledgeDocumentVersion v)
     {
@@ -126,6 +190,12 @@ public sealed class KnowledgeIngestionService(IKnowledgeUnitOfWork unitOfWork, I
 
     private static void MarkFailed(KnowledgeDocumentVersion v)
     {
+        if (v.LastIngestStatus != "FAILED")
+        {
+            v.LastIngestStatus = "FAILED";
+            v.LastIngestError = "Ingestion did not complete.";
+        }
+        if (HoldsLiveChunks(v)) return;
         if (v.Status is VersionStatuses.Registered or VersionStatuses.Processing) v.Status = VersionStatuses.Failed;
         v.FailureReason ??= "Ingestion did not complete.";
     }
@@ -134,7 +204,8 @@ public sealed class KnowledgeIngestionService(IKnowledgeUnitOfWork unitOfWork, I
         => await unitOfWork.ExecuteInTransactionAsync<bool>(async token =>
         {
             var version = await unitOfWork.FindVersionAsync(versionId, true, token);
-            if (version is null || version.Status == VersionStatuses.Published) return (false, false);
+            // A version with live chunks keeps its status during a reindex (only the outcome is recorded afterwards).
+            if (version is null || HoldsLiveChunks(version)) return (false, false);
             version.Status = status;
             version.Revision++;
             await unitOfWork.SaveChangesAsync(token);
@@ -213,5 +284,5 @@ public sealed class KnowledgeIngestionService(IKnowledgeUnitOfWork unitOfWork, I
             return (true, true);
         }, cancellationToken);
 
-    private static string? Truncate(string? value) => value is null ? null : value.Length <= 300 ? value : value[..300];
+    private static string? Truncate(string? value, int max = 300) => value is null ? null : value.Length <= max ? value : value[..max];
 }

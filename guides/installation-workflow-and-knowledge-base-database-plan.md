@@ -1,9 +1,10 @@
 # Installation Flow + knowledge base — database plan
 
-> **STATUS: migration CREATED, NOT APPLIED.** `20261013182132_InstallationWorkflowAndKnowledgeBase` exists in
-> `SmartSolar.Infrastructure/Persistence/Migrations`; it has only been executed on disposable local PostgreSQL 17
-> databases (including a restored copy of the Dev database). It has not been applied to Supabase, and
-> `knowledge_chunk.sql` has not been executed there either.
+> **STATUS: APPLIED to Supabase Dev on 2026-10-13** (`20261013182132_InstallationWorkflowAndKnowledgeBase`, together with
+> pgvector in schema `extensions` and `knowledge_chunk.sql`). This page is the historical plan of that migration. The later,
+> **not yet applied** redesign migration `20261016161547_BusinessRulesFlow1And2Redesign` replaces the installation
+> team/shift/milestone model by one responsible technician and adds RAG configuration columns — see
+> [database-migration-business-rules-redesign.md](database-migration-business-rules-redesign.md).
 
 ## 1. What changes
 

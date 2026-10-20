@@ -345,7 +345,7 @@ public sealed class AdminUsersEndpointsTests
         var preSurvey = await factory.SeedAsync(PreSurveyTestContext.NewPreSurvey(customer.Site.Id, PreSurveyStatus.Submitted));
         var request = PreSurveyTestContext.NewSurveyRequest(preSurvey.Id);
         request.AssignedSaleId = sales.Id;
-        request.Status = SurveyRequestStatus.Assigned;
+        request.Status = SurveyRequestStatus.Pending;
         await factory.SeedAsync(request);
 
         var response = await admin.PatchAsJsonAsync($"/api/admin/users/{sales.Id}/status", new { status = "DISABLED" });
@@ -424,12 +424,12 @@ public sealed class AdminUsersEndpointsTests
         var preSurvey = await factory.SeedAsync(PreSurveyTestContext.NewPreSurvey(customer.Site.Id, PreSurveyStatus.Submitted));
         var request = await factory.SeedAsync(PreSurveyTestContext.NewSurveyRequest(preSurvey.Id));
         var now = DateTimeOffset.UtcNow;
-        await factory.SeedAsync(new TechnicianProfile { UserId = technician.Id, BaseLatitude = 10.77m, BaseLongitude = 106.70m, IsSchedulingActive = true, CreatedAt = now, UpdatedAt = now });
+        await factory.SeedAsync(new TechnicianProfile { UserId = technician.Id, IsSchedulingActive = true, CreatedAt = now, UpdatedAt = now });
         await factory.SeedAsync(new TechnicianAppointment
         {
             Id = Guid.NewGuid(), AppointmentType = AppointmentTypes.PreSurvey, SurveyRequestId = request.Id, PropertySiteId = customer.Site.Id,
             StartsAt = now.AddDays(2), EndsAt = now.AddDays(2).AddMinutes(90), ReservedTechnicianUserId = technician.Id,
-            Status = AppointmentStatuses.Booked, BookedByUserId = customer.User.Id, BookedAt = now, CreatedAt = now, UpdatedAt = now,
+            Status = AppointmentStatuses.PendingAcceptance, AcceptanceDeadlineAt = now.AddHours(4), BookedByUserId = customer.User.Id, BookedAt = now, CreatedAt = now, UpdatedAt = now,
         });
         return technician.Id;
     }

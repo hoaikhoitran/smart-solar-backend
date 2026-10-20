@@ -10,8 +10,8 @@ using static SmartSolar.Tests.TestSupport.SchedulingTestContext;
 namespace SmartSolar.Tests.Integration.Persistence;
 
 /// <summary>
-/// The PENDING_MANUAL_MIGRATION review script applied to a disposable local PostgreSQL database:
-/// the catalog must contain exactly the EF model's constraints, and PostgreSQL must enforce them.
+/// Every EF migration applied to a disposable local PostgreSQL database: the catalog must contain exactly the current EF
+/// model's constraints (so the migrations and the model never drift), and PostgreSQL must enforce them.
 /// </summary>
 public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITestOutputHelper output)
 {
@@ -19,8 +19,22 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
 
     private sealed record ModelForeignKey(string Table, string Columns, string Principal, char DeleteRule);
 
+    private static readonly Dictionary<string, string> PairedColumns = new()
+    {
+        ["technician_appointment.assigned_technician_user_id"] = "reserved_technician_user_id",
+        ["technician_appointment.reserved_technician_user_id"] = "assigned_technician_user_id",
+    };
+
+    /// <summary>Text foreign keys (official catalog codes): a well-formed code that no principal row has, so only the FK can reject it.</summary>
+    private static readonly Dictionary<string, string> MissingCodeValues = new()
+    {
+        ["administrative_commune.province_code"] = "'99'",
+        ["administrative_legacy_commune_map.commune_code"] = "'99999'",
+        ["operational_zone_commune.commune_code"] = "'99999'",
+    };
+
     private static IReadOnlyList<ModelForeignKey> ModelForeignKeys()
-        => PendingSchemaScript.PendingEntityTypes().SelectMany(e =>
+        => PendingSchemaScript.ModelEntityTypes().SelectMany(e =>
         {
             var table = e.GetTableName()!;
             var store = StoreObjectIdentifier.Table(table, e.GetSchema());
@@ -66,7 +80,7 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
     public async Task Catalog_contains_every_foreign_key_check_unique_index_and_the_exclusion_constraint_of_the_model()
     {
         await using var database = await PostgresTestDatabase.CreateAsync(withPendingSchema: true);
-        var tables = PendingSchemaScript.PendingTables().ToArray();
+        var tables = PendingSchemaScript.ModelTables().ToArray();
 
         var actual = await QueryAsync(database, """
             SELECT c.conrelid::regclass::text, c.confrelid::regclass::text, c.confdeltype::text,
@@ -74,12 +88,16 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
                      WHERE a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey))
             FROM pg_constraint c WHERE c.contype = 'f' AND c.conrelid::regclass::text = ANY ($1)
             """, r => new ModelForeignKey(r.GetString(0), r.GetString(3), r.GetString(1), r.GetString(2)[0]), (object)tables);
+        // Legacy service_area_id columns stay in the database (non-destructive migration) with their FKs; they are not in the model.
+        Assert.Equal(PendingSchemaScript.RetainedLegacyForeignKeyColumns.Order(),
+            actual.Where(k => k.Principal == "service_area").Select(k => $"{k.Table}.{k.Columns}").Order());
+        actual = actual.Where(k => k.Principal != "service_area").ToList();
         var expected = ModelForeignKeys();
-        Assert.Equal(83, expected.Count);
+        Assert.True(expected.Count >= 100, $"Expected the model's foreign keys to be enumerated, got {expected.Count}.");
         Assert.Equal(expected.OrderBy(k => k.ToString()), actual.OrderBy(k => k.ToString()));
 
         var checks = await QueryAsync(database, "SELECT conname FROM pg_constraint WHERE contype = 'c' AND conrelid::regclass::text = ANY ($1)", r => r.GetString(0), (object)tables);
-        var modelChecks = PendingSchemaScript.PendingEntityTypes().SelectMany(e => e.GetCheckConstraints()).Select(c => c.Name!).ToList();
+        var modelChecks = PendingSchemaScript.ModelEntityTypes().SelectMany(e => e.GetCheckConstraints()).Select(c => c.Name!).ToList();
         Assert.NotEmpty(modelChecks);
         Assert.Equal(modelChecks.Order(), checks.Order());
 
@@ -88,7 +106,7 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
             WHERE x.indisunique AND NOT x.indisprimary AND x.indrelid::regclass::text = ANY ($1)
             """, r => r.GetString(0), (object)tables);
         // Unique indexes plus alternate keys (unique constraints are backed by unique indexes in PostgreSQL).
-        var modelUniques = PendingSchemaScript.PendingEntityTypes().SelectMany(e =>
+        var modelUniques = PendingSchemaScript.ModelEntityTypes().SelectMany(e =>
         {
             var store = StoreObjectIdentifier.Table(e.GetTableName()!, e.GetSchema());
             return e.GetIndexes().Where(i => i.IsUnique).Select(i => i.GetDatabaseName(store)!)
@@ -96,8 +114,12 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
         }).ToList();
         Assert.Equal(modelUniques.Order(), uniques.Order());
 
-        var exclusion = await QueryAsync(database, "SELECT conname FROM pg_constraint WHERE contype = 'x' AND conrelid = 'installation_shift_assignment'::regclass", r => r.GetString(0));
-        Assert.Equal(["ex_installation_shift_assignment_no_overlap"], exclusion);
+        // Survey appointments and current installation assignments (plus the retained, no longer written shift table).
+        var exclusion = await QueryAsync(database, "SELECT conname FROM pg_constraint WHERE contype = 'x' ORDER BY conname", r => r.GetString(0));
+        Assert.Equal(["ex_installation_assignment_no_overlap", "ex_installation_shift_assignment_no_overlap", "ex_technician_appointment_no_overlap"], exclusion);
+        // Obsolete tables are retained by the non-destructive migration until the approved cleanup.
+        var retained = await QueryAsync(database, "SELECT to_regclass(t) IS NOT NULL FROM unnest($1::text[]) t", r => r.GetBoolean(0), (object)PendingSchemaScript.RetainedObsoleteTables.ToArray());
+        Assert.All(retained, Assert.True);
     }
 
     [PostgresFact]
@@ -115,14 +137,23 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
         {
             var hasRow = (await QueryAsync(database, $"SELECT EXISTS (SELECT 1 FROM {fk.Table} WHERE {fk.Columns} IS NOT NULL)", r => r.GetBoolean(0)))[0];
             if (!hasRow) { skippedEmpty.Add($"{fk.Table}.{fk.Columns}"); continue; }
+            // Columns a check constraint keeps equal (confirmed technician == capacity holder) are changed together, so
+            // only the foreign key can reject the row.
+            var set = PairedColumns.TryGetValue($"{fk.Table}.{fk.Columns}", out var paired)
+                ? $"{fk.Columns} = x.v, {paired} = x.v FROM (SELECT gen_random_uuid() AS v) x"
+                : $"{fk.Columns} = {MissingCodeValues.GetValueOrDefault($"{fk.Table}.{fk.Columns}", "gen_random_uuid()")}";
             var state = await TryInRolledBackTransactionAsync(database,
-                $"UPDATE {fk.Table} SET {fk.Columns} = gen_random_uuid() WHERE ctid = (SELECT ctid FROM {fk.Table} WHERE {fk.Columns} IS NOT NULL LIMIT 1)");
+                $"UPDATE {fk.Table} SET {set} WHERE {fk.Table}.ctid = (SELECT ctid FROM {fk.Table} WHERE {fk.Columns} IS NOT NULL LIMIT 1)");
             Assert.True(state == PostgresErrorCodes.ForeignKeyViolation, $"{fk.Table}.{fk.Columns} → {fk.Principal}: expected 23503, got {state ?? "success"}");
             enforced++;
         }
         output.WriteLine($"Foreign keys violated and rejected: {enforced}; not exercised (no rows in the scenario): {string.Join(", ", skippedEmpty)}");
-        // Most of the graph is populated by the scenario; the rest is covered by the catalog test.
-        Assert.True(skippedEmpty.Count == 0, $"Only {enforced} foreign keys exercised; empty: {string.Join(", ", skippedEmpty)}");
+        // The Installation Flow + knowledge-base graph is fully populated by the scenario, so every one of its foreign keys
+        // must be exercised. Tables outside that scenario (identity, catalog, zones, RAG settings, ...) are covered
+        // by the catalog test, which proves each foreign key exists with its exact columns, principal and delete rule.
+        var scenarioGaps = skippedEmpty.Where(c => PendingSchemaScript.InstallationWorkflowMigrationTables.Contains(c[..c.IndexOf('.')])).ToList();
+        Assert.True(scenarioGaps.Count == 0, $"Only {enforced} foreign keys exercised; empty in the scenario: {string.Join(", ", scenarioGaps)}");
+        Assert.True(enforced >= 90, $"Only {enforced} foreign keys exercised.");
 
         // Composite FKs: a document cannot point at a missing version or at another document's version.
         var otherVersion = (await QueryAsync(database, "SELECT v.id FROM knowledge_document_version v JOIN knowledge_document d ON d.id <> v.document_id LIMIT 1",
@@ -138,28 +169,29 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
         Assert.Equal(PostgresErrorCodes.CheckViolation, await TryInRolledBackTransactionAsync(database,
             "UPDATE file_reference SET verified_checksum_sha256 = upper(verified_checksum_sha256) WHERE status = 'VERIFIED'"));
 
-        // RESTRICT: a project with milestones, team, shifts and events cannot be deleted.
+        // RESTRICT: a project with assignments, evidence, assets, acceptances and events cannot be deleted.
         Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, await TryInRolledBackTransactionAsync(database, $"DELETE FROM installation_project WHERE id = '{project.ProjectId}'"));
         // CHECK constraints.
         Assert.Equal(PostgresErrorCodes.CheckViolation, await TryInRolledBackTransactionAsync(database,
-            $"UPDATE installation_shift_assignment SET ends_at = starts_at WHERE technician_user_id = '{leader}'"));
+            $"UPDATE installation_assignment SET ends_at = starts_at WHERE technician_user_id = '{leader}'"));
         Assert.Equal(PostgresErrorCodes.CheckViolation, await TryInRolledBackTransactionAsync(database, "UPDATE payment_attempt SET status = 'SOMETHING'"));
-        Assert.Equal(PostgresErrorCodes.CheckViolation, await TryInRolledBackTransactionAsync(database, "UPDATE installation_milestone SET status = 'DONE'"));
-        // UNIQUE: exactly one leader per team.
+        Assert.Equal(PostgresErrorCodes.CheckViolation, await TryInRolledBackTransactionAsync(database, "UPDATE installation_project SET status = 'DONE'"));
+        Assert.Equal(PostgresErrorCodes.CheckViolation, await TryInRolledBackTransactionAsync(database, "UPDATE technician_appointment SET status = 'ACKNOWLEDGED'"));
+        // UNIQUE: one current (PENDING/ACCEPTED) responsible technician per project.
+        static string PendingAssignment(Guid projectId, Guid technician, string startsAt, string endsAt) => $"""
+            INSERT INTO installation_assignment (id, project_id, technician_user_id, starts_at, ends_at, status, assigned_by_user_id, assigned_at)
+            SELECT gen_random_uuid(), '{projectId}', '{technician}', timestamptz '{startsAt}', timestamptz '{endsAt}', 'PENDING', manager_user_id, now()
+            FROM installation_project WHERE id = '{projectId}';
+            """;
         Assert.Equal(PostgresErrorCodes.UniqueViolation, await TryInRolledBackTransactionAsync(database,
-            $"UPDATE installation_team_member SET is_leader = true WHERE project_id = '{project.ProjectId}'"));
-        // Exclusion: one technician cannot hold two overlapping ACTIVE installation assignments.
-        Assert.Equal(PostgresErrorCodes.ExclusionViolation, await TryInRolledBackTransactionAsync(database, $"""
-            WITH source AS (SELECT * FROM installation_shift_assignment WHERE technician_user_id = '{leader}' AND status = 'ACTIVE' LIMIT 1),
-                 shift AS (
-                     INSERT INTO installation_shift (id, project_id, local_date, local_start, local_end, starts_at, ends_at, status, created_at)
-                     SELECT gen_random_uuid(), s.project_id, s.local_date, s.local_start + interval '1 hour', s.local_end + interval '1 hour',
-                            s.starts_at + interval '1 hour', s.ends_at + interval '1 hour', 'ACTIVE', now()
-                     FROM installation_shift s JOIN source ON source.shift_id = s.id
-                     RETURNING id, project_id, starts_at, ends_at)
-            INSERT INTO installation_shift_assignment (id, shift_id, project_id, technician_user_id, starts_at, ends_at, status, created_at)
-            SELECT gen_random_uuid(), shift.id, shift.project_id, '{leader}', shift.starts_at, shift.ends_at, 'ACTIVE', now() FROM shift
-            """));
+            PendingAssignment(project.ProjectId, leader, "2030-01-07 08:00+07", "2030-01-07 12:00+07")
+            + PendingAssignment(project.ProjectId, leader, "2030-01-09 08:00+07", "2030-01-09 12:00+07")));
+        // Exclusion: one technician never holds two overlapping current installation assignments (unique index lifted
+        // inside the rolled-back transaction so only the exclusion constraint can reject the second row).
+        Assert.Equal(PostgresErrorCodes.ExclusionViolation, await TryInRolledBackTransactionAsync(database,
+            "DROP INDEX ux_installation_assignment_current;"
+            + PendingAssignment(project.ProjectId, leader, "2030-01-07 08:00+07", "2030-01-07 12:00+07")
+            + PendingAssignment(project.ProjectId, leader, "2030-01-07 11:00+07", "2030-01-07 15:00+07")));
     }
 
     [PostgresFact]
@@ -168,31 +200,27 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
         await using var database = await PostgresTestDatabase.CreateAsync(withPendingSchema: true);
         await using var ctx = InstallationWorkflowTestContext.CreateOn(database.NewContext());
         var paid = await InstallationTests.PaidContractAsync(ctx);
-        var leader = await ctx.Scheduling.SeedTechnicianAsync("Leader", District1);
-        var member = await ctx.Scheduling.SeedTechnicianAsync("Member", District7);
+        var leader = await ctx.Scheduling.SeedTechnicianAsync("Leader", BinhTan);
         var project = (await ctx.Installations().CreateProjectAsync(paid.ManagerId, paid.ContractId, None)).Value!;
-        // Simulate a crash after shifts and assignments are written but before the team is saved.
+        // Simulate a crash after the project row is updated but before the new assignment is saved.
         await using (var db = database.NewContext())
         {
             await db.Database.ExecuteSqlRawAsync("""
-                CREATE FUNCTION test_fail_team_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'simulated failure'; END $$;
-                CREATE TRIGGER test_fail_team_insert BEFORE INSERT ON installation_team_member FOR EACH ROW EXECUTE FUNCTION test_fail_team_insert();
+                CREATE FUNCTION test_fail_assignment_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'simulated failure'; END $$;
+                CREATE TRIGGER test_fail_assignment_insert BEFORE INSERT ON installation_assignment FOR EACH ROW EXECUTE FUNCTION test_fail_assignment_insert();
                 """);
         }
-        IReadOnlyList<ShiftInput> shifts = [new ShiftInput(Day.AddDays(1), new TimeOnly(8, 0), new TimeOnly(12, 0)), new ShiftInput(Day.AddDays(2), new TimeOnly(8, 0), new TimeOnly(12, 0))];
 
         await using (var db = database.NewContext())
-            await Assert.ThrowsAnyAsync<Exception>(() => ctx.Installations(db).ConfirmScheduleAsync(paid.ManagerId, project.ProjectId, project.Revision, [leader.Id, member.Id], leader.Id, shifts, None));
+            await Assert.ThrowsAnyAsync<Exception>(() => ctx.Installations(db).AssignAsync(paid.ManagerId, project.ProjectId,
+                new AssignTechnicianInput(leader.Id, At(8, 0, Day.AddDays(1)), At(12, 0, Day.AddDays(2)), null, project.Revision), None));
 
         await using var check = database.NewContext();
-        Assert.Equal(0, await check.InstallationShifts.CountAsync(s => s.ProjectId == project.ProjectId));
-        Assert.Equal(0, await check.InstallationShiftAssignments.CountAsync(a => a.ProjectId == project.ProjectId));
-        Assert.Equal(0, await check.InstallationTeamMembers.CountAsync(m => m.ProjectId == project.ProjectId));
-        Assert.Equal(0, await check.InstallationEvents.CountAsync(e => e.ProjectId == project.ProjectId && e.EventType == "SCHEDULE_CONFIRMED"));
+        Assert.Equal(0, await check.InstallationAssignments.CountAsync(a => a.ProjectId == project.ProjectId));
+        Assert.Equal(0, await check.InstallationEvents.CountAsync(e => e.ProjectId == project.ProjectId && e.EventType == InstallationEventTypes.TechnicianAssigned));
         var stored = await check.InstallationProjects.SingleAsync(p => p.Id == project.ProjectId);
-        Assert.Equal(InstallationStatuses.Planning, stored.Status);
+        Assert.Equal(InstallationStatuses.PendingAssignment, stored.Status);
         Assert.Equal(project.Revision, stored.Revision);
-        Assert.Equal(0, await check.TechnicianScheduleRecalculations.CountAsync(r => r.TechnicianUserId == leader.Id || r.TechnicianUserId == member.Id));
     }
 
     /// <summary>Drives the installation to handover (checklist, evidence, assets, acceptance) and asks the knowledge base one question.</summary>
@@ -208,12 +236,12 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
 
         ctx.Clock.Now = At(8, 30, Day.AddDays(1)).ToUniversalTime();
         Assert.True((await installs.StartProjectAsync(leader, projectId, None)).Succeeded);
-        await InstallationTests.CompleteAllMilestonesAsync(ctx, projectId, leader);
+        await InstallationTests.AddCompletionEvidenceAsync(ctx, projectId, leader);
         Assert.True((await InstallationTests.RegisterPanelAndInverterAsync(ctx, projectId, leader)).Succeeded);
         var catalogPanel = await ctx.ProductAsync("PG-ASSET-PNL", 2_000_000m);
         Assert.True((await installs.RegisterAssetsAsync(leader, projectId,
             [new AssetInput("PANEL", catalogPanel.Id, "Jinko", "Tiger Neo 550", "JK-CATALOG-001", "R2-C1", 144)], None)).Succeeded);
-        Assert.True((await installs.RequestAcceptanceAsync(leader, projectId, "All panels installed.", None)).Succeeded);
+        Assert.True((await installs.ReportCompletionAsync(leader, projectId, "All panels installed.", null, None)).Succeeded);
         var accepted = await installs.DecideAcceptanceAsync(paid.CustomerId, projectId, true, null, None);
         Assert.True(accepted.Succeeded, accepted.Message);
 

@@ -14,8 +14,9 @@ class ScriptedModel:
         self.text = text
         self.calls = 0
 
-    def complete(self, messages, max_tokens):
+    def complete(self, messages, max_tokens, options=None):
         self.calls += 1
+        self.options = options
         return Completion(self.text, 100, 10, self.model)
 
 

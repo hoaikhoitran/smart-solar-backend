@@ -15,16 +15,16 @@ public sealed class OnSiteSurveyTests
         "Garage wall", "Two rows facing south", 10.765300m, 106.603700m, "Ladder access from the back",
         obstacles ?? [new ObstacleInput("WATER_TANK", "Inox tank", 1.5m, 2m)]);
 
-    private static async Task<(InstallationWorkflowTestContext Ctx, AcknowledgedSurvey Survey)> ReadyAsync()
+    private static async Task<(InstallationWorkflowTestContext Ctx, ConfirmedSurvey Survey)> ReadyAsync()
     {
         var ctx = InstallationWorkflowTestContext.Create();
-        var survey = await ctx.AcknowledgedSurveyAsync();
+        var survey = await ctx.ConfirmedSurveyAsync();
         ctx.Clock.Now = At(10).ToUniversalTime();
         return (ctx, survey);
     }
 
     /// <summary>Start → save → roof photo → complete; returns the completed view.</summary>
-    public static async Task<OnSiteSurveyView> CompleteAsync(InstallationWorkflowTestContext ctx, AcknowledgedSurvey s)
+    public static async Task<OnSiteSurveyView> CompleteAsync(InstallationWorkflowTestContext ctx, ConfirmedSurvey s)
     {
         ctx.Clock.Now = At(10).ToUniversalTime();
         var started = await ctx.OnSite().StartAsync(s.Technician.Id, s.AppointmentId, CancellationToken.None);
@@ -63,11 +63,11 @@ public sealed class OnSiteSurveyTests
     }
 
     [Fact]
-    public async Task Only_the_assigned_technician_of_an_acknowledged_active_appointment_may_work()
+    public async Task Only_the_confirmed_technician_of_the_active_appointment_may_work()
     {
         var ctx = InstallationWorkflowTestContext.Create();
         await using var _ = ctx;
-        var s = await ctx.AcknowledgedSurveyAsync();
+        var s = await ctx.ConfirmedSurveyAsync();
         var stranger = await ctx.Scheduling.SeedTechnicianAsync("Stranger", District7);
         ctx.Clock.Now = At(10).ToUniversalTime();
 
@@ -79,20 +79,45 @@ public sealed class OnSiteSurveyTests
     }
 
     [Fact]
-    public async Task Unacknowledged_assignments_cannot_be_surveyed()
+    public async Task An_unaccepted_appointment_cannot_be_surveyed_even_by_its_capacity_holder()
     {
         var ctx = InstallationWorkflowTestContext.Create();
         await using var _ = ctx;
-        ctx.Scheduling.Travel.Minutes = _ => 20;
-        await ctx.Scheduling.SeedTechnicianAsync("Tech", District1);
+        var holder = await ctx.Scheduling.SeedTechnicianAsync("Holder", BinhTan);
         var request = await ctx.Scheduling.SeedSurveyRequestAsync(BinhTan);
-        Assert.True((await ctx.Scheduling.Book().HandleAsync(new Modules.Scheduling.PreSurveyAppointments.BookSurveyAppointmentCommand(request.Customer.Id, request.Request.Id, At(10), null), CancellationToken.None)).Succeeded);
-        var sales = await ctx.Scheduling.ClaimAsync(request);
-        var appointment = await ctx.Scheduling.ActiveAppointmentAsync(request.Request.Id);
-        await ctx.Scheduling.Assign().HandleAsync(new Modules.Scheduling.PreSurveyAppointments.AssignTechnicianCommand(sales.Id, request.Request.Id, appointment.ReservedTechnicianUserId), CancellationToken.None);
+        var appointment = await ctx.Scheduling.BookAsync(request, At(10));
+        Assert.Equal(holder.Id, appointment.ReservedTechnicianUserId);
         ctx.Clock.Now = At(10).ToUniversalTime();
 
-        Assert.Equal(OnSiteSurveyErrorCodes.NotAcknowledged, (await ctx.OnSite().StartAsync(appointment.ReservedTechnicianUserId, appointment.Id, CancellationToken.None)).ErrorCode);
+        // The holder is not the confirmed technician: the job is not theirs until accepted.
+        Assert.Equal(OnSiteSurveyErrorCodes.AppointmentNotFound, (await ctx.OnSite().StartAsync(holder.Id, appointment.Id, CancellationToken.None)).ErrorCode);
+    }
+
+    [Fact]
+    public async Task Staff_assigned_technician_may_survey_and_completion_completes_the_appointment()
+    {
+        var ctx = InstallationWorkflowTestContext.Create();
+        await using var _ = ctx;
+        var technician = await ctx.Scheduling.SeedTechnicianAsync("Assigned", BinhTan);
+        var request = await ctx.Scheduling.SeedSurveyRequestAsync(BinhTan);
+        var appointment = await ctx.Scheduling.BookAsync(request, At(10));
+        var sales = await ctx.Scheduling.ClaimAsync(request);
+        var assigned = await ctx.Scheduling.Assign().HandleAsync(new Modules.Scheduling.PreSurveyAppointments.AssignTechnicianCommand(sales.Id, request.Request.Id,
+            technician.Id, "Customer asked for this technician"), CancellationToken.None);
+        Assert.True(assigned.Succeeded, assigned.Message);
+
+        var survey = new ConfirmedSurvey(request, technician, sales, appointment.Id);
+        await CompleteAsync(ctx, survey);
+
+        var stored = await ctx.Db.TechnicianAppointments.AsNoTracking().SingleAsync(a => a.Id == appointment.Id);
+        Assert.Equal(Modules.Scheduling.Constants.AppointmentStatuses.Completed, stored.Status);
+        Assert.NotNull(stored.CompletedAt);
+        Assert.Equal(SurveyRequestStatus.Completed, (await ctx.Db.SurveyRequests.AsNoTracking().SingleAsync(r => r.Id == request.Request.Id)).Status);
+        // Amendments stay possible on the COMPLETED appointment.
+        var report = await ctx.Db.OnSiteSurveyReports.AsNoTracking().SingleAsync(r => r.SurveyRequestId == request.Request.Id);
+        var amended = await ctx.OnSite().AmendAsync(new AmendOnSiteSurveyCommand(technician.Id, appointment.Id, "Re-measured", FullData() with { RoofLengthM = 13m },
+            null, report.Revision), CancellationToken.None);
+        Assert.True(amended.Succeeded, amended.Message);
     }
 
     [Fact]
@@ -208,5 +233,64 @@ public sealed class OnSiteSurveyTests
         Assert.True((await ctx.OnSite().GetForStaffAsync(s.Request.Request.Id, Guid.NewGuid(), true, _ => false, CancellationToken.None)).Succeeded);
         Assert.Equal(OnSiteSurveyErrorCodes.ReportNotFound,
             (await ctx.OnSite().GetForStaffAsync(s.Request.Request.Id, Guid.NewGuid(), false, _ => false, CancellationToken.None)).ErrorCode);
+    }
+
+    [Fact]
+    public async Task Staff_cannot_reassign_the_appointment_once_its_technician_started_the_on_site_survey()
+    {
+        var ctx = InstallationWorkflowTestContext.Create();
+        await using var _ = ctx;
+        var s = await ctx.ConfirmedSurveyAsync();
+        var other = await ctx.Scheduling.SeedTechnicianAsync("Other", BinhTan);
+        var manager = await ctx.Scheduling.Inner.SeedUserAsync("Manager");
+        ctx.Clock.Now = At(8, 30).ToUniversalTime();                     // 90 minutes before the 10:00 appointment
+
+        // A draft does not block a reassignment-free view; starting the survey does block reassignment.
+        Assert.True((await ctx.OnSite().StartAsync(s.Technician.Id, s.AppointmentId, CancellationToken.None)).Succeeded);
+        var bySales = await ctx.Scheduling.Assign().HandleAsync(
+            new SmartSolar.Modules.Scheduling.PreSurveyAppointments.AssignTechnicianCommand(s.Sales.Id, s.Request.Request.Id, other.Id, "Swap"), CancellationToken.None);
+        var byManager = await ctx.Scheduling.Assign().OverrideAsync(
+            new SmartSolar.Modules.Scheduling.PreSurveyAppointments.OverrideTechnicianCommand(manager.Id, s.AppointmentId, other.Id, "Swap"), CancellationToken.None);
+
+        Assert.Equal(SmartSolar.Modules.Scheduling.Constants.SchedulingErrorCodes.OnSiteSurveyInProgress, bySales.ErrorCode);
+        Assert.Equal(409, SmartSolar.Api.Controllers.SchedulingControllerBase.StatusFor(bySales.ErrorCode!));
+        Assert.Equal(SmartSolar.Modules.Scheduling.Constants.SchedulingErrorCodes.OnSiteSurveyInProgress, byManager.ErrorCode);
+        Assert.Equal(s.Technician.Id, (await ctx.Db.TechnicianAppointments.AsNoTracking().SingleAsync(a => a.Id == s.AppointmentId)).AssignedTechnicianUserId);
+        // Re-confirming the same technician is still the idempotent no-op.
+        var same = await ctx.Scheduling.Assign().OverrideAsync(
+            new SmartSolar.Modules.Scheduling.PreSurveyAppointments.OverrideTechnicianCommand(manager.Id, s.AppointmentId, s.Technician.Id, "Same"), CancellationToken.None);
+        Assert.True(same.Succeeded, same.Message);
+        Assert.False(same.Value!.Changed);
+    }
+
+    [Fact]
+    public async Task Completion_does_not_complete_an_appointment_reassigned_after_the_authorization()
+    {
+        var (ctx, s) = await ReadyAsync();
+        await using var _ = ctx;
+        var other = await ctx.Scheduling.SeedTechnicianAsync("Other", BinhTan);
+        var started = await ctx.OnSite().StartAsync(s.Technician.Id, s.AppointmentId, CancellationToken.None);
+        var saved = await ctx.OnSite().SaveAsync(new SaveOnSiteSurveyCommand(s.Technician.Id, s.AppointmentId, started.Value!.Revision, FullData()), CancellationToken.None);
+        var photo = await ctx.VerifiedFileAsync(s.Technician.Id, FilePurposes.OnSiteSurveyEvidence);
+        var attached = await ctx.OnSite().AddAttachmentAsync(new AddOnSiteSurveyAttachmentCommand(s.Technician.Id, s.AppointmentId, photo, "ROOF", null), CancellationToken.None);
+        Assert.True(saved.Succeeded && attached.Succeeded);
+        // The appointment is handed to another technician after the handler authorized the caller, right before it completes it.
+        var unitOfWork = InterceptingProxy<IOnSiteSurveyUnitOfWork>.Create(new SmartSolar.Infrastructure.Persistence.InstallationWorkflow.OnSiteSurveyUnitOfWork(ctx.Db),
+            (method, _) =>
+            {
+                if (method.Name != nameof(IOnSiteSurveyUnitOfWork.TryCompleteAppointmentAsync)) return;
+                ctx.Db.TechnicianAppointments.Where(a => a.Id == s.AppointmentId).ExecuteUpdate(x => x
+                    .SetProperty(a => a.AssignedTechnicianUserId, other.Id).SetProperty(a => a.ReservedTechnicianUserId, other.Id));
+            });
+        var handlers = new OnSiteSurveyHandlers(unitOfWork, ctx.Files(), ctx.Scheduling.OnSiteOptions, ctx.Scheduling.Policies, ctx.Clock);
+
+        var completed = await handlers.CompleteAsync(new CompleteOnSiteSurveyCommand(s.Technician.Id, s.AppointmentId, attached.Value!.Revision), CancellationToken.None);
+
+        Assert.False(completed.Succeeded);
+        var appointment = await ctx.Db.TechnicianAppointments.AsNoTracking().SingleAsync(a => a.Id == s.AppointmentId);
+        Assert.NotEqual(SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.Completed, appointment.Status);
+        Assert.Null(appointment.CompletedAt);
+        Assert.Equal(OnSiteSurveyStatuses.InProgress, (await ctx.Db.OnSiteSurveyReports.AsNoTracking().SingleAsync()).Status);
+        Assert.Equal(SurveyRequestStatus.Scheduled, (await ctx.Db.SurveyRequests.AsNoTracking().SingleAsync(r => r.Id == s.Request.Request.Id)).Status);
     }
 }

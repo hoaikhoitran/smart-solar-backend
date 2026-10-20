@@ -1,134 +1,144 @@
 using Microsoft.EntityFrameworkCore;
 using SmartSolar.Modules.PreSurvey.Enums;
 using SmartSolar.Modules.Scheduling.Constants;
+using SmartSolar.Modules.Scheduling.Entities;
 using SmartSolar.Modules.Scheduling.PreSurveyAppointments;
-using SmartSolar.Modules.Scheduling.Travel;
 using SmartSolar.Tests.TestSupport;
 using static SmartSolar.Tests.TestSupport.SchedulingTestContext;
 
 namespace SmartSolar.Tests.Unit.Scheduling;
 
-/// <summary>Customer slots, booking, rescheduling and cancellation. Travel times are SYNTHETIC.</summary>
+/// <summary>Customer slots, booking (capacity hold), rescheduling and cancellation. Geography is SYNTHETIC.</summary>
 public sealed class CustomerBookingTests
 {
     private static BookSurveyAppointmentCommand Book(SeededSurveyRequest s, int hour, int minute = 0, string? note = null)
         => new(s.Customer.Id, s.Request.Id, At(hour, minute), note);
 
     [Fact]
-    public async Task Slots_list_only_times_with_verified_technician_capacity()
+    public async Task Slots_list_only_times_a_technician_of_the_zone_can_hold()
     {
         await using var ctx = Create();
-        await ctx.SeedTechnicianAsync("Tech A", District1);
+        await ctx.SeedTechnicianAsync("Binh Tan tech", BinhTan);
+        await ctx.SeedTechnicianAsync("District 1 tech", District1);   // other zone: never counted
         var request = await ctx.SeedSurveyRequestAsync(BinhTan);
 
         var result = await ctx.Slots().HandleAsync(new GetSurveySlotsQuery(request.Customer.Id, request.Site.Id, Day), CancellationToken.None);
 
-        Assert.True(result.Succeeded);
+        Assert.True(result.Succeeded, result.Message);
         var view = result.Value!;
         Assert.Equal("Asia/Ho_Chi_Minh", view.TimeZone);
-        Assert.Equal(90, view.AppointmentDurationMinutes);
-        // 08:00 is gone since the earliest-base-departure rule: District 1 → Binh Tan (synthetic ~40 min)
-        // + 30 min buffer means leaving at 06:50, before the default 07:00 limit.
-        Assert.Equal(11, view.Slots.Count);
-        Assert.Equal(At(8, 30), view.Slots[0].StartsAt);
-        Assert.Equal(TimeSpan.FromHours(7), view.Slots[0].StartsAt.Offset);
-        Assert.Equal(At(10), view.Slots[0].EndsAt);
-        Assert.All(view.Slots, s =>
-        {
-            Assert.True(s.CanBook);
-            Assert.Equal(1, s.KnownAvailableTechnicians);
-            Assert.Equal(CapacityStatuses.Exact, s.CapacityStatus);   // the only technician was fully checked
-        });
-        Assert.Equal("VERIFIED", view.RoutingStatus);
+        Assert.Equal("Z-BINH-TAN", view.Zone!.Code);
+        Assert.Equal(12, view.Slots.Count);                          // 08:00–10:30 and 13:00–15:30 every 30 min
+        Assert.Equal(At(8), view.Slots[0].StartsAt);
+        Assert.All(view.Slots, s => Assert.Equal(1, s.KnownAvailableTechnicians));
     }
 
     [Fact]
-    public async Task Slots_without_any_technician_are_empty_with_a_note()
+    public async Task Slots_and_booking_need_a_site_commune_in_an_active_serviceable_zone()
     {
         await using var ctx = Create();
+        await ctx.SeedTechnicianAsync("Tech", BinhTan);
+        var noCodes = await ctx.SeedSurveyRequestAsync(BinhTan, "No codes", withCodes: false);
+        var uncovered = await ctx.SeedSurveyRequestAsync(ThuDuc, "Uncovered");   // Phường Thủ Đức: no zone maps it
+
+        // Slots answer 200 with the coverage status; only uncovered areas offer a dispatch (a site without location must be fixed first).
+        var noLocationSlots = (await ctx.Slots().HandleAsync(new GetSurveySlotsQuery(noCodes.Customer.Id, noCodes.Site.Id, Day), CancellationToken.None)).Value!;
+        Assert.Equal((SchedulingErrorCodes.SiteLocationRequired, false, 0), (noLocationSlots.CoverageStatus, noLocationSlots.DispatchAvailable, noLocationSlots.Slots.Count));
+        var uncoveredSlots = (await ctx.Slots().HandleAsync(new GetSurveySlotsQuery(uncovered.Customer.Id, uncovered.Site.Id, Day), CancellationToken.None)).Value!;
+        Assert.Equal((SchedulingErrorCodes.NoZoneCoverage, true, 0), (uncoveredSlots.CoverageStatus, uncoveredSlots.DispatchAvailable, uncoveredSlots.Slots.Count));
+        var noLocationBooking = await ctx.Book().HandleAsync(Book(noCodes, 9), CancellationToken.None);
+        Assert.Equal(SchedulingErrorCodes.SiteLocationRequired, noLocationBooking.ErrorCode);
+        Assert.Equal(new CapacityFailures.CoverageDetails(SchedulingErrorCodes.SiteLocationRequired, false), noLocationBooking.Details);
+        var uncoveredBooking = await ctx.Book().HandleAsync(Book(uncovered, 9), CancellationToken.None);
+        Assert.Equal(SchedulingErrorCodes.NoZoneCoverage, uncoveredBooking.ErrorCode);
+        Assert.Equal(new CapacityFailures.CoverageDetails(SchedulingErrorCodes.NoZoneCoverage, true), uncoveredBooking.Details);
+
+        // An inactive zone covers nothing; an unserviceable zone is reported as such — temporarily uncovered, so dispatchable (409, not 422).
+        await ctx.EnsureZoneAsync("Z-THU-DUC", active: false);
+        Assert.Equal(SchedulingErrorCodes.NoZoneCoverage, (await ctx.Book().HandleAsync(Book(uncovered, 9), CancellationToken.None)).ErrorCode);
+        await ctx.Db.OperationalZones.Where(z => z.Code == "Z-THU-DUC")
+            .ExecuteUpdateAsync(x => x.SetProperty(z => z.IsActive, true).SetProperty(z => z.IsServiceable, false));
+        var unserviceable = (await ctx.Slots().HandleAsync(new GetSurveySlotsQuery(uncovered.Customer.Id, uncovered.Site.Id, Day), CancellationToken.None)).Value!;
+        Assert.Equal((SchedulingErrorCodes.ZoneNotServiceable, true), (unserviceable.CoverageStatus, unserviceable.DispatchAvailable));
+        Assert.Equal(SchedulingErrorCodes.ZoneNotServiceable, (await ctx.Book().HandleAsync(Book(uncovered, 9), CancellationToken.None)).ErrorCode);
+        // A commune closed by a newer dataset no longer counts as a location.
+        await ctx.Db.AdministrativeCommunes.Where(c => c.Code == CommuneCodeOf(BinhTan))
+            .ExecuteUpdateAsync(x => x.SetProperty(c => c.ValidTo, new DateOnly(2026, 1, 1)));
+        var closed = await ctx.SeedSurveyRequestAsync(BinhTan, "Closed commune");
+        Assert.Equal(SchedulingErrorCodes.SiteLocationRequired, (await ctx.Book().HandleAsync(Book(closed, 9), CancellationToken.None)).ErrorCode);
+        Assert.Equal(409, Api.Controllers.SchedulingControllerBase.StatusFor(SchedulingErrorCodes.ZoneNotServiceable));
+        Assert.Equal(409, Api.Controllers.SchedulingControllerBase.StatusFor(SchedulingErrorCodes.NoZoneCoverage));
+        Assert.Equal(422, Api.Controllers.SchedulingControllerBase.StatusFor(SchedulingErrorCodes.SiteLocationRequired));
+        Assert.Empty(await ctx.Db.TechnicianAppointments.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Slots_respect_ownership_and_horizon()
+    {
+        await using var ctx = Create();
+        await ctx.SeedTechnicianAsync("Tech", BinhTan);
         var request = await ctx.SeedSurveyRequestAsync(BinhTan);
+        var other = await ctx.SeedSurveyRequestAsync(BinhTan, "Other");
 
-        var view = (await ctx.Slots().HandleAsync(new GetSurveySlotsQuery(request.Customer.Id, request.Site.Id, Day), CancellationToken.None)).Value!;
-
-        Assert.Empty(view.Slots);
-        Assert.NotNull(view.Note);
-        Assert.Empty(ctx.Travel.Requests);
+        Assert.Equal(SchedulingErrorCodes.PropertySiteNotFound,
+            (await ctx.Slots().HandleAsync(new GetSurveySlotsQuery(other.Customer.Id, request.Site.Id, Day), CancellationToken.None)).ErrorCode);
+        Assert.Equal(SchedulingErrorCodes.InvalidBookingTime,
+            (await ctx.Slots().HandleAsync(new GetSurveySlotsQuery(request.Customer.Id, request.Site.Id, Day.AddDays(60)), CancellationToken.None)).ErrorCode);
+        Assert.Equal(SchedulingErrorCodes.InvalidBookingTime,
+            (await ctx.Slots().HandleAsync(new GetSurveySlotsQuery(request.Customer.Id, request.Site.Id, Day.AddDays(-5)), CancellationToken.None)).ErrorCode);
     }
 
     [Fact]
-    public async Task Slots_are_not_offered_when_travel_cannot_be_verified()
+    public async Task Booking_holds_one_technicians_capacity_and_waits_for_acceptance()
     {
         await using var ctx = Create();
-        await ctx.SeedTechnicianAsync("Tech A", District1);
-        var request = await ctx.SeedSurveyRequestAsync(BinhTan);
-        ctx.Travel.FailWith = RouteCalculationStatuses.Timeout;
-
-        var view = (await ctx.Slots().HandleAsync(new GetSurveySlotsQuery(request.Customer.Id, request.Site.Id, Day), CancellationToken.None)).Value!;
-
-        Assert.Empty(view.Slots);
-        Assert.Equal("UNAVAILABLE", view.RoutingStatus);
-        Assert.Equal(12, view.UnverifiedSlotCount);
-    }
-
-    [Fact]
-    public async Task Slots_respect_ownership_location_and_horizon()
-    {
-        await using var ctx = Create();
-        var request = await ctx.SeedSurveyRequestAsync(BinhTan);
-        var noGps = await ctx.SeedSurveyRequestAsync(null, "No GPS");
-
-        var stranger = await ctx.Slots().HandleAsync(new GetSurveySlotsQuery(noGps.Customer.Id, request.Site.Id, Day), CancellationToken.None);
-        var missingGps = await ctx.Slots().HandleAsync(new GetSurveySlotsQuery(noGps.Customer.Id, noGps.Site.Id, Day), CancellationToken.None);
-        var tooFar = await ctx.Slots().HandleAsync(new GetSurveySlotsQuery(request.Customer.Id, request.Site.Id, Day.AddDays(60)), CancellationToken.None);
-        var past = await ctx.Slots().HandleAsync(new GetSurveySlotsQuery(request.Customer.Id, request.Site.Id, Day.AddDays(-5)), CancellationToken.None);
-
-        Assert.Equal(SchedulingErrorCodes.PropertySiteNotFound, stranger.ErrorCode);
-        Assert.Equal(SchedulingErrorCodes.PropertySiteLocationRequired, missingGps.ErrorCode);
-        Assert.Equal(SchedulingErrorCodes.InvalidBookingTime, tooFar.ErrorCode);
-        Assert.Equal(SchedulingErrorCodes.InvalidBookingTime, past.ErrorCode);
-    }
-
-    [Fact]
-    public async Task Booking_reserves_capacity_immediately_and_leaves_the_request_pending()
-    {
-        await using var ctx = Create();
-        var tech = await ctx.SeedTechnicianAsync("Tech A", District1);
+        var tech = await ctx.SeedTechnicianAsync("Tech", BinhTan);
         var request = await ctx.SeedSurveyRequestAsync(BinhTan);
 
         var result = await ctx.Book().HandleAsync(Book(request, 9, 0, "Gate code 1234"), CancellationToken.None);
 
         Assert.True(result.Succeeded, result.Message);
-        var confirmation = result.Value!;
-        Assert.True(confirmation.Created);
-        Assert.Equal(AppointmentStatuses.Booked, confirmation.AppointmentStatus);
-        Assert.Equal(At(9), confirmation.StartsAt);
-        Assert.Equal(At(10, 30), confirmation.EndsAt);
+        Assert.True(result.Value!.Created);
+        Assert.Equal(AppointmentStatuses.PendingAcceptance, result.Value.AppointmentStatus);
+        Assert.Equal(AcceptanceStatuses.WaitingForTechnician, result.Value.AcceptanceStatus);
+        Assert.Equal(At(10, 30), result.Value.EndsAt);
 
         var stored = await ctx.ActiveAppointmentAsync(request.Request.Id);
-        Assert.Equal(tech.Id, stored.ReservedTechnicianUserId);
-        Assert.Null(stored.AssignedTechnicianUserId);
+        Assert.Equal(tech.Id, stored.ReservedTechnicianUserId);         // capacity holder
+        Assert.Null(stored.AssignedTechnicianUserId);                     // nobody accepted
+        Assert.Equal((await ctx.EnsureZoneAsync("Z-BINH-TAN")).Id, stored.OperationalZoneId);
+        // LEAST(booked + 240 min, start − 120 min) = LEAST(10:00 on the 19th, 07:00 on the 20th).
+        Assert.Equal(DefaultNow.AddMinutes(240).ToUniversalTime(), stored.AcceptanceDeadlineAt);
         Assert.Equal("Gate code 1234", stored.CustomerNote);
-        Assert.Equal(At(9).ToUniversalTime(), stored.StartsAt);
 
-        var surveyRequest = await ctx.Db.SurveyRequests.AsNoTracking().SingleAsync(r => r.Id == request.Request.Id);
+        var surveyRequest = await ctx.RequestAsync(request.Request.Id);
         Assert.Equal(SurveyRequestStatus.Pending, surveyRequest.Status);
         Assert.Null(surveyRequest.ScheduledAt);
 
-        var estimate = await ctx.Db.TechnicianTravelEstimates.AsNoTracking().SingleAsync();
-        Assert.Equal(stored.Id, estimate.AppointmentId);
-        Assert.Equal(TravelOriginKinds.Base, estimate.OriginKind);
-        Assert.Equal("VIETMAP", estimate.Provider);
-        Assert.Equal("v4", estimate.ProviderVersion);
-        Assert.Equal("motorcycle", estimate.Vehicle);
-        Assert.Equal(30, estimate.SafetyBufferMinutes);
-        Assert.Equal(At(9).ToUniversalTime().AddMinutes(-30), estimate.EstimatedArrivalAt);
+        var view = (await ctx.CustomerQueries().ListAsync(request.Customer.Id, CancellationToken.None)).Single().Appointment!;
+        Assert.False(view.TechnicianAssigned);
+        Assert.Null(view.AssignedTechnicianName);                         // the holder is never shown
+        Assert.Equal(AcceptanceStatuses.WaitingForTechnician, view.AcceptanceStatus);
+    }
+
+    [Fact]
+    public async Task The_deadline_is_capped_by_the_minimum_lead_before_the_start()
+    {
+        await using var ctx = Create();
+        await ctx.SeedTechnicianAsync("Tech", BinhTan);
+        var request = await ctx.SeedSurveyRequestAsync(BinhTan);
+        ctx.Clock.Now = At(6).ToUniversalTime();                          // 06:00 on the day itself
+
+        await ctx.Book().HandleAsync(Book(request, 9), CancellationToken.None);
+
+        Assert.Equal(At(7).ToUniversalTime(), (await ctx.ActiveAppointmentAsync(request.Request.Id)).AcceptanceDeadlineAt);   // 09:00 − 120 min
     }
 
     [Fact]
     public async Task Retrying_the_same_booking_is_idempotent_and_a_different_time_is_rejected()
     {
         await using var ctx = Create();
-        await ctx.SeedTechnicianAsync("Tech A", District1);
+        await ctx.SeedTechnicianAsync("Tech", BinhTan);
         var request = await ctx.SeedSurveyRequestAsync(BinhTan);
 
         var first = await ctx.Book().HandleAsync(Book(request, 9), CancellationToken.None);
@@ -139,256 +149,164 @@ public sealed class CustomerBookingTests
         Assert.False(retry.Value!.Created);
         Assert.Equal(first.Value.AppointmentId, retry.Value.AppointmentId);
         Assert.Equal(SchedulingErrorCodes.BookingAlreadyExists, other.ErrorCode);
-        Assert.Single(await ctx.Db.TechnicianAppointments.AsNoTracking().ToListAsync());
-    }
-
-    [Theory]
-    [InlineData(8, 15)]   // off grid
-    [InlineData(11, 0)]   // crosses lunch
-    [InlineData(16, 0)]   // past end of day
-    [InlineData(7, 0)]    // before work
-    public async Task Invalid_start_times_are_rejected(int hour, int minute)
-    {
-        await using var ctx = Create();
-        await ctx.SeedTechnicianAsync("Tech A", District1);
-        var request = await ctx.SeedSurveyRequestAsync(BinhTan);
-
-        var result = await ctx.Book().HandleAsync(Book(request, hour, minute), CancellationToken.None);
-
-        Assert.Equal(SchedulingErrorCodes.InvalidBookingTime, result.ErrorCode);
     }
 
     [Fact]
-    public async Task Past_start_time_is_rejected()
+    public async Task Holders_are_spread_by_fewest_commitments_and_pending_holds_consume_capacity()
     {
         await using var ctx = Create();
-        await ctx.SeedTechnicianAsync("Tech A", District1);
-        var request = await ctx.SeedSurveyRequestAsync(BinhTan);
-        ctx.Clock.Now = At(9, 10).ToUniversalTime();
+        var a = await ctx.SeedTechnicianAsync("A", BinhTan);
+        var b = await ctx.SeedTechnicianAsync("B", BinhTan);
+        var r1 = await ctx.SeedSurveyRequestAsync(BinhTan, "One");
+        var r2 = await ctx.SeedSurveyRequestAsync(BinhTan, "Two");
+        var r3 = await ctx.SeedSurveyRequestAsync(BinhTan, "Three");
 
-        Assert.Equal(SchedulingErrorCodes.InvalidBookingTime, (await ctx.Book().HandleAsync(Book(request, 9), CancellationToken.None)).ErrorCode);
-    }
+        var first = await ctx.BookAsync(r1, At(9));
+        var second = await ctx.BookAsync(r2, At(13));
+        Assert.Equal(new[] { a.Id, b.Id }.Order().First(), first.ReservedTechnicianUserId);
+        Assert.NotEqual(first.ReservedTechnicianUserId, second.ReservedTechnicianUserId);   // the other one had fewer commitments
 
-    [Theory]
-    [InlineData(RouteCalculationStatuses.QuotaExceeded, SchedulingErrorCodes.TravelProviderQuotaExceeded)]
-    [InlineData(RouteCalculationStatuses.Timeout, SchedulingErrorCodes.TravelProviderUnavailable)]
-    [InlineData(RouteCalculationStatuses.ProviderDisabled, SchedulingErrorCodes.TravelProviderUnavailable)]
-    [InlineData(RouteCalculationStatuses.RouteNotFound, SchedulingErrorCodes.TravelRouteUnavailable)]
-    public async Task Unverified_travel_never_confirms_an_appointment(string providerStatus, string expectedCode)
-    {
-        await using var ctx = Create();
-        await ctx.SeedTechnicianAsync("Tech A", District1);
-        var request = await ctx.SeedSurveyRequestAsync(BinhTan);
-        ctx.Travel.FailWith = providerStatus;
-
-        var result = await ctx.Book().HandleAsync(Book(request, 9), CancellationToken.None);
-
-        Assert.Equal(expectedCode, result.ErrorCode);
-        Assert.Empty(await ctx.Db.TechnicianAppointments.AsNoTracking().ToListAsync());
+        // 09:30 is too close to the 09:00 hold of one technician but the other is free; then nobody is.
+        var third = await ctx.BookAsync(r3, At(9, 30));
+        Assert.Equal(second.ReservedTechnicianUserId, third.ReservedTechnicianUserId);
+        var r4 = await ctx.SeedSurveyRequestAsync(BinhTan, "Four");
+        Assert.Equal(SchedulingErrorCodes.ScheduleConflict, (await ctx.Book().HandleAsync(Book(r4, 9, 30), CancellationToken.None)).ErrorCode);
+        var slots = (await ctx.Slots().HandleAsync(new GetSurveySlotsQuery(r4.Customer.Id, r4.Site.Id, Day), CancellationToken.None)).Value!;
+        Assert.DoesNotContain(slots.Slots, s => s.StartsAt == At(9, 30));
     }
 
     [Fact]
-    public async Task Spec_example_technician_A_cannot_reach_binh_tan_so_technician_B_is_reserved()
+    public async Task Invalid_start_times_are_rejected()
     {
         await using var ctx = Create();
-        var techA = await ctx.SeedTechnicianAsync("Tech A", ThuDuc);
-        var techB = await ctx.SeedTechnicianAsync("Tech B", District7);
-        // A has 08:00–09:30 in Thu Duc. Thu Duc → Binh Tan takes 75 minutes (synthetic).
-        var existing = await ctx.SeedSurveyRequestAsync(ThuDuc, "Existing");
-        ctx.Travel.Minutes = r => r.Destination == ThuDuc && r.Origin == ThuDuc ? 5 : null;
-        Assert.True((await ctx.Book().HandleAsync(Book(existing, 8), CancellationToken.None)).Succeeded);
-        Assert.Equal(techA.Id, (await ctx.ActiveAppointmentAsync(existing.Request.Id)).ReservedTechnicianUserId);
-
-        ctx.Travel.Minutes = r => r.Origin == ThuDuc && r.Destination == BinhTan ? 75 : null;
+        await ctx.SeedTechnicianAsync("Tech", BinhTan);
         var request = await ctx.SeedSurveyRequestAsync(BinhTan);
-        var result = await ctx.Book().HandleAsync(Book(request, 10, 30), CancellationToken.None);
+
+        Assert.Equal(SchedulingErrorCodes.InvalidBookingTime, (await ctx.Book().HandleAsync(Book(request, 11), CancellationToken.None)).ErrorCode);   // crosses lunch
+        Assert.Equal(SchedulingErrorCodes.InvalidBookingTime, (await ctx.Book().HandleAsync(Book(request, 9, 10), CancellationToken.None)).ErrorCode); // off grid
+        ctx.Clock.Now = At(12).ToUniversalTime();
+        Assert.Equal(SchedulingErrorCodes.InvalidBookingTime, (await ctx.Book().HandleAsync(Book(request, 9), CancellationToken.None)).ErrorCode);   // past
+    }
+
+    [Fact]
+    public async Task Customer_reschedules_while_waiting_for_a_technician()
+    {
+        await using var ctx = Create();
+        await ctx.SeedTechnicianAsync("Tech", BinhTan);
+        var request = await ctx.SeedSurveyRequestAsync(BinhTan);
+        var original = await ctx.BookAsync(request, At(9));
+
+        var result = await ctx.Reschedule().HandleAsync(new RescheduleSurveyAppointmentCommand(request.Customer.Id, request.Request.Id, At(13), null), CancellationToken.None);
 
         Assert.True(result.Succeeded, result.Message);
-        Assert.Equal(techB.Id, (await ctx.ActiveAppointmentAsync(request.Request.Id)).ReservedTechnicianUserId);
-    }
-
-    [Fact]
-    public async Task Only_technician_busy_or_late_means_the_slot_is_unavailable()
-    {
-        await using var ctx = Create();
-        await ctx.SeedTechnicianAsync("Tech A", ThuDuc);
-        var first = await ctx.SeedSurveyRequestAsync(ThuDuc, "First");
-        Assert.True((await ctx.Book().HandleAsync(Book(first, 8), CancellationToken.None)).Succeeded);
-
-        ctx.Travel.Minutes = r => r.Origin == ThuDuc && r.Destination == BinhTan || r.Origin == BinhTan && r.Destination == ThuDuc ? 75 : null;
-        var second = await ctx.SeedSurveyRequestAsync(BinhTan, "Second");
-        var overlapping = await ctx.Book().HandleAsync(Book(second, 9), CancellationToken.None);
-        var tooSoon = await ctx.Book().HandleAsync(Book(second, 10, 30), CancellationToken.None);
-        var reachable = await ctx.Book().HandleAsync(Book(second, 13), CancellationToken.None);
-
-        Assert.Equal(SchedulingErrorCodes.SlotUnavailable, overlapping.ErrorCode);
-        Assert.Equal(SchedulingErrorCodes.SlotUnavailable, tooSoon.ErrorCode);
-        Assert.True(reachable.Succeeded, reachable.Message);
-    }
-
-    [Fact]
-    public async Task A_new_booking_may_not_make_the_technician_late_for_a_later_job()
-    {
-        await using var ctx = Create();
-        await ctx.SeedTechnicianAsync("Tech A", ThuDuc);
-        var later = await ctx.SeedSurveyRequestAsync(ThuDuc, "Later");
-        Assert.True((await ctx.Book().HandleAsync(Book(later, 10, 30), CancellationToken.None)).Succeeded);
-
-        // New 08:30–10:00 in Binh Tan, then Binh Tan → Thu Duc 75 min: 10:00 + 75 + 30 = 11:45 > 10:30.
-        ctx.Travel.Minutes = r => r.Origin == BinhTan && r.Destination == ThuDuc ? 75 : null;
-        var request = await ctx.SeedSurveyRequestAsync(BinhTan);
-
-        Assert.Equal(SchedulingErrorCodes.SlotUnavailable, (await ctx.Book().HandleAsync(Book(request, 8, 30), CancellationToken.None)).ErrorCode);
-    }
-
-    [Fact]
-    public async Task Daily_limit_and_unavailable_periods_are_respected()
-    {
-        await using var ctx = Create();
-        var tech = await ctx.SeedTechnicianAsync("Tech A", District1, maxPerDay: 1);
-        var first = await ctx.SeedSurveyRequestAsync(District1, "First");
-        Assert.True((await ctx.Book().HandleAsync(Book(first, 8), CancellationToken.None)).Succeeded);
-
-        var second = await ctx.SeedSurveyRequestAsync(District1, "Second");
-        Assert.Equal(SchedulingErrorCodes.SlotUnavailable, (await ctx.Book().HandleAsync(Book(second, 14), CancellationToken.None)).ErrorCode);
-
-        await using var other = Create();
-        var onLeave = await other.SeedTechnicianAsync("On leave", District1);
-        Assert.True((await other.Admin().AddUnavailablePeriodAsync(
-            new AddUnavailablePeriodCommand(Guid.NewGuid(), onLeave.Id, At(7), At(18), "Leave"), CancellationToken.None)).Succeeded);
-        var request = await other.SeedSurveyRequestAsync(District1);
-        Assert.Equal(SchedulingErrorCodes.SlotUnavailable, (await other.Book().HandleAsync(Book(request, 9), CancellationToken.None)).ErrorCode);
-        _ = tech;
-    }
-
-    [Fact]
-    public async Task Technicians_without_role_profile_base_or_active_status_are_never_used()
-    {
-        await using var ctx = Create();
-        await ctx.SeedTechnicianAsync("No role", District1, withRole: false);
-        await ctx.SeedTechnicianAsync("Inactive profile", District1, active: false);
-        await ctx.SeedTechnicianAsync("No base", null, active: true);
-        var request = await ctx.SeedSurveyRequestAsync(BinhTan);
-
-        Assert.Equal(SchedulingErrorCodes.SlotUnavailable, (await ctx.Book().HandleAsync(Book(request, 9), CancellationToken.None)).ErrorCode);
-        Assert.Empty(ctx.Travel.Requests);
-    }
-
-    [Fact]
-    public async Task Booking_requires_ownership_location_and_an_open_request()
-    {
-        await using var ctx = Create();
-        await ctx.SeedTechnicianAsync("Tech A", District1);
-        var request = await ctx.SeedSurveyRequestAsync(BinhTan);
-        var noGps = await ctx.SeedSurveyRequestAsync(null, "No GPS");
-
-        var stranger = await ctx.Book().HandleAsync(Book(request, 9) with { CustomerUserId = noGps.Customer.Id }, CancellationToken.None);
-        var missingGps = await ctx.Book().HandleAsync(Book(noGps, 9), CancellationToken.None);
-        await ctx.Db.SurveyRequests.Where(r => r.Id == request.Request.Id).ExecuteUpdateAsync(s => s.SetProperty(r => r.Status, SurveyRequestStatus.Cancelled));
-        var closed = await ctx.Book().HandleAsync(Book(request, 9), CancellationToken.None);
-
-        Assert.Equal(SchedulingErrorCodes.SurveyRequestNotFound, stranger.ErrorCode);
-        Assert.Equal(SchedulingErrorCodes.PropertySiteLocationRequired, missingGps.ErrorCode);
-        Assert.Equal(SchedulingErrorCodes.InvalidBookingState, closed.ErrorCode);
-    }
-
-    [Fact]
-    public async Task Rescheduling_replaces_the_appointment_and_keeps_history()
-    {
-        await using var ctx = Create();
-        await ctx.SeedTechnicianAsync("Tech A", District1);
-        var request = await ctx.SeedSurveyRequestAsync(BinhTan);
-        var original = (await ctx.Book().HandleAsync(Book(request, 9, 0, "first note"), CancellationToken.None)).Value!;
-
-        var moved = await ctx.Reschedule().HandleAsync(new RescheduleSurveyAppointmentCommand(request.Customer.Id, request.Request.Id, At(14), null), CancellationToken.None);
-
-        Assert.True(moved.Succeeded, moved.Message);
-        Assert.NotEqual(original.AppointmentId, moved.Value!.AppointmentId);
-        Assert.Equal(At(14), moved.Value.StartsAt);
-        var all = await ctx.Db.TechnicianAppointments.AsNoTracking().OrderBy(a => a.BookedAt).ToListAsync();
-        Assert.Equal(2, all.Count);
-        var old = all.Single(a => a.Id == original.AppointmentId);
+        Assert.Equal(AppointmentStatuses.PendingAcceptance, result.Value!.AppointmentStatus);
+        var old = await ctx.AppointmentAsync(original.Id);
         Assert.Equal(AppointmentStatuses.Cancelled, old.Status);
-        Assert.Equal("RESCHEDULED", old.CancellationReason);
-        Assert.Equal(moved.Value.AppointmentId, old.ReplacedByAppointmentId);
-        Assert.Equal("first note", all.Single(a => a.Id == moved.Value.AppointmentId).CustomerNote);
-
-        var detail = (await ctx.CustomerQueries().GetAsync(request.Customer.Id, request.Request.Id, CancellationToken.None)).Value!;
-        Assert.Equal(2, detail.History.Count);
-        Assert.Equal(moved.Value.AppointmentId, detail.Request.Appointment!.AppointmentId);
+        Assert.Equal(CancellationReasons.Rescheduled, old.CancellationReason);
+        Assert.Equal(result.Value.AppointmentId, old.ReplacedByAppointmentId);
+        Assert.Equal(At(13).ToUniversalTime(), (await ctx.ActiveAppointmentAsync(request.Request.Id)).StartsAt);
+        Assert.Contains(await ctx.Db.TechnicianAppointmentEvents.Select(e => e.EventType).ToListAsync(), t => t == AppointmentEventTypes.Rescheduled);
     }
 
     [Fact]
-    public async Task Rescheduling_to_an_unavailable_time_keeps_the_original_booking()
+    public async Task Rescheduling_an_accepted_appointment_keeps_the_technician_when_still_eligible()
     {
         await using var ctx = Create();
-        await ctx.SeedTechnicianAsync("Tech A", District1);
+        var tech = await ctx.SeedTechnicianAsync("Tech", BinhTan);
         var request = await ctx.SeedSurveyRequestAsync(BinhTan);
-        var original = (await ctx.Book().HandleAsync(Book(request, 9), CancellationToken.None)).Value!;
-        ctx.Travel.FailWith = RouteCalculationStatuses.ProviderUnavailable;
+        var original = await ctx.BookAsync(request, At(9));
+        Assert.True((await ctx.AcceptAsync(tech.Id, original.Id)).Succeeded);
 
-        var moved = await ctx.Reschedule().HandleAsync(new RescheduleSurveyAppointmentCommand(request.Customer.Id, request.Request.Id, At(14), null), CancellationToken.None);
+        var result = await ctx.Reschedule().HandleAsync(new RescheduleSurveyAppointmentCommand(request.Customer.Id, request.Request.Id, At(14), null), CancellationToken.None);
 
-        Assert.Equal(SchedulingErrorCodes.TravelProviderUnavailable, moved.ErrorCode);
-        var active = await ctx.ActiveAppointmentAsync(request.Request.Id);
-        Assert.Equal(original.AppointmentId, active.Id);
-        Assert.Equal(AppointmentStatuses.Booked, active.Status);
+        Assert.True(result.Succeeded, result.Message);
+        var moved = await ctx.ActiveAppointmentAsync(request.Request.Id);
+        Assert.Equal(AppointmentStatuses.Accepted, moved.Status);
+        Assert.Equal(AssignmentSources.SelfAccepted, moved.AssignmentSource);
+        Assert.Equal(tech.Id, moved.AssignedTechnicianUserId);
+        var surveyRequest = await ctx.RequestAsync(request.Request.Id);
+        Assert.Equal(SurveyRequestStatus.Scheduled, surveyRequest.Status);
+        Assert.Equal(At(14).ToUniversalTime(), surveyRequest.ScheduledAt);
+        Assert.Equal(AcceptanceStatuses.Confirmed, result.Value!.AcceptanceStatus);
     }
 
     [Fact]
-    public async Task Cancellation_releases_the_capacity_for_others()
+    public async Task Rescheduling_an_accepted_appointment_needs_re_acceptance_when_the_technician_cannot_attend()
     {
         await using var ctx = Create();
-        await ctx.SeedTechnicianAsync("Only tech", District1, maxPerDay: 1);
+        var tech = await ctx.SeedTechnicianAsync("Tech", BinhTan);
+        var other = await ctx.SeedTechnicianAsync("Other", BinhTan);
+        var request = await ctx.SeedSurveyRequestAsync(BinhTan);
+        var original = await ctx.BookAsync(request, At(9));
+        Assert.True((await ctx.AcceptAsync(tech.Id, original.Id)).Succeeded);
+        var leave = await ctx.Admin().AddUnavailablePeriodAsync(new AddUnavailablePeriodCommand(Guid.NewGuid(), tech.Id, At(14), At(17), "Dentist"), CancellationToken.None);
+        Assert.True(leave.Succeeded, leave.Message);
+
+        var result = await ctx.Reschedule().HandleAsync(new RescheduleSurveyAppointmentCommand(request.Customer.Id, request.Request.Id, At(14), null), CancellationToken.None);
+
+        Assert.True(result.Succeeded, result.Message);
+        var moved = await ctx.ActiveAppointmentAsync(request.Request.Id);
+        Assert.Equal(AppointmentStatuses.PendingAcceptance, moved.Status);
+        Assert.Null(moved.AssignedTechnicianUserId);
+        Assert.Equal(other.Id, moved.ReservedTechnicianUserId);
+        var surveyRequest = await ctx.RequestAsync(request.Request.Id);
+        Assert.Equal(SurveyRequestStatus.Pending, surveyRequest.Status);
+        Assert.Null(surveyRequest.ScheduledAt);
+        Assert.Equal(AcceptanceStatuses.WaitingForTechnician, result.Value!.AcceptanceStatus);
+    }
+
+    [Fact]
+    public async Task Rescheduling_to_an_unavailable_time_keeps_the_original()
+    {
+        await using var ctx = Create();
+        await ctx.SeedTechnicianAsync("Tech", BinhTan);
+        var request = await ctx.SeedSurveyRequestAsync(BinhTan);
+        var blocker = await ctx.SeedSurveyRequestAsync(BinhTan, "Blocker");
+        var original = await ctx.BookAsync(request, At(9));
+        await ctx.BookAsync(blocker, At(13));
+
+        var result = await ctx.Reschedule().HandleAsync(new RescheduleSurveyAppointmentCommand(request.Customer.Id, request.Request.Id, At(13, 30), null), CancellationToken.None);
+
+        Assert.Equal(SchedulingErrorCodes.ScheduleConflict, result.ErrorCode);
+        Assert.Equal(new CapacityFailures.CoverageDetails(SchedulingErrorCodes.ScheduleConflict, true), result.Details);
+        Assert.Equal(original.Id, (await ctx.ActiveAppointmentAsync(request.Request.Id)).Id);
+    }
+
+    [Fact]
+    public async Task Cancellation_releases_capacity_and_returns_a_confirmed_request_to_pending()
+    {
+        await using var ctx = Create();
+        var tech = await ctx.SeedTechnicianAsync("Only tech", BinhTan);
         var first = await ctx.SeedSurveyRequestAsync(BinhTan, "First");
         var second = await ctx.SeedSurveyRequestAsync(BinhTan, "Second");
-        Assert.True((await ctx.Book().HandleAsync(Book(first, 9), CancellationToken.None)).Succeeded);
-        Assert.Equal(SchedulingErrorCodes.SlotUnavailable, (await ctx.Book().HandleAsync(Book(second, 9), CancellationToken.None)).ErrorCode);
+        var appointment = await ctx.BookAsync(first, At(9));
+        Assert.True((await ctx.AcceptAsync(tech.Id, appointment.Id)).Succeeded);
+        Assert.Equal(SchedulingErrorCodes.ScheduleConflict, (await ctx.Book().HandleAsync(Book(second, 9), CancellationToken.None)).ErrorCode);
 
         var cancelled = await ctx.Cancel().HandleAsync(new CancelSurveyAppointmentCommand(first.Customer.Id, first.Request.Id, "Changed plans"), CancellationToken.None);
 
-        Assert.Equal(AppointmentStatuses.Cancelled, cancelled.Value!.Status);
+        Assert.True(cancelled.Succeeded, cancelled.Message);
+        Assert.Equal(AcceptanceStatuses.Cancelled, cancelled.Value!.AcceptanceStatus);
+        Assert.Equal(SurveyRequestStatus.Pending, (await ctx.RequestAsync(first.Request.Id)).Status);
         Assert.True((await ctx.Book().HandleAsync(Book(second, 9), CancellationToken.None)).Succeeded);
-        var history = await ctx.Db.TechnicianAppointments.AsNoTracking().Where(a => a.SurveyRequestId == first.Request.Id).SingleAsync();
-        Assert.Equal("Changed plans", history.CancellationReason);
-        // The first customer can book again.
-        Assert.Equal(SchedulingErrorCodes.SlotUnavailable, (await ctx.Book().HandleAsync(Book(first, 13), CancellationToken.None)).ErrorCode);
+        Assert.Contains(await ctx.Db.SchedulingNotifications.ToListAsync(), n => n.RecipientUserId == tech.Id && n.Type == AppointmentEventTypes.Cancelled);
     }
 
     [Fact]
-    public async Task Customer_changes_are_refused_after_sales_assignment()
+    public async Task Customers_cannot_change_within_the_lead_time()
     {
         await using var ctx = Create();
-        var tech = await ctx.SeedTechnicianAsync("Tech A", District1);
+        await ctx.SeedTechnicianAsync("Tech", BinhTan);
         var request = await ctx.SeedSurveyRequestAsync(BinhTan);
-        Assert.True((await ctx.Book().HandleAsync(Book(request, 9), CancellationToken.None)).Succeeded);
-        var sales = await ctx.ClaimAsync(request);
-        Assert.True((await ctx.Assign().HandleAsync(new AssignTechnicianCommand(sales.Id, request.Request.Id, tech.Id), CancellationToken.None)).Succeeded);
+        await ctx.BookAsync(request, At(9));
+        ctx.Clock.Now = At(7, 30).ToUniversalTime();                       // 90 min before, lead is 120
 
-        var reschedule = await ctx.Reschedule().HandleAsync(new RescheduleSurveyAppointmentCommand(request.Customer.Id, request.Request.Id, At(14), null), CancellationToken.None);
-        var cancel = await ctx.Cancel().HandleAsync(new CancelSurveyAppointmentCommand(request.Customer.Id, request.Request.Id, null), CancellationToken.None);
-
-        Assert.Equal(SchedulingErrorCodes.InvalidBookingState, reschedule.ErrorCode);
-        Assert.Equal(SchedulingErrorCodes.InvalidBookingState, cancel.ErrorCode);
-        Assert.Equal(AppointmentStatuses.Assigned, (await ctx.ActiveAppointmentAsync(request.Request.Id)).Status);
-    }
-
-    [Fact]
-    public async Task Customer_views_never_expose_the_internal_reservation()
-    {
-        await using var ctx = Create();
-        var tech = await ctx.SeedTechnicianAsync("Tech A", District1);
-        var request = await ctx.SeedSurveyRequestAsync(BinhTan);
-        await ctx.Book().HandleAsync(Book(request, 9), CancellationToken.None);
-
-        var list = await ctx.CustomerQueries().ListAsync(request.Customer.Id, CancellationToken.None);
-
-        var item = Assert.Single(list);
-        Assert.Equal("PENDING", item.Status);
-        Assert.False(item.Appointment!.TechnicianAssigned);
-        Assert.Null(item.Appointment.AssignedTechnicianName);
-        Assert.True(item.Appointment.CanCustomerChange);
-        Assert.DoesNotContain(tech.Id.ToString(), System.Text.Json.JsonSerializer.Serialize(list));
-        Assert.Empty(await ctx.CustomerQueries().ListAsync(Guid.NewGuid(), CancellationToken.None));
+        Assert.Equal(SchedulingErrorCodes.InvalidBookingState,
+            (await ctx.Cancel().HandleAsync(new CancelSurveyAppointmentCommand(request.Customer.Id, request.Request.Id, null), CancellationToken.None)).ErrorCode);
+        Assert.Equal(SchedulingErrorCodes.InvalidBookingState,
+            (await ctx.Reschedule().HandleAsync(new RescheduleSurveyAppointmentCommand(request.Customer.Id, request.Request.Id, At(13), null), CancellationToken.None)).ErrorCode);
+        var view = (await ctx.CustomerQueries().ListAsync(request.Customer.Id, CancellationToken.None)).Single().Appointment!;
+        Assert.False(view.CanCustomerChange);
+        Assert.Equal(AcceptanceStatuses.NeedsStaff, view.AcceptanceStatus);   // the acceptance deadline passed
     }
 }

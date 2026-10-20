@@ -4,7 +4,7 @@ using SmartSolar.Modules.SolarSimulation.Models;
 namespace SmartSolar.Modules.SolarSimulation.CreateSimulation;
 
 /// <summary>
-/// Request to calculate and store a simulation. <see cref="ExpectedGeometryVersion"/> is the
+/// Request to calculate and cache a simulation. <see cref="ExpectedGeometryVersion"/> is the
 /// version the client is looking at; a mismatch is rejected so the snapshot matches the
 /// customer's view. Panel angles are absolute (compass azimuth) and only used for RACK;
 /// FLUSH panels always follow the surface. Installation values are millimetres.
@@ -30,7 +30,8 @@ public enum CreateSimulationOutcome
     SourceChanged,
     SurfaceNotDefined,
     ProductNotFound,
-    Rejected
+    Rejected,
+    CacheUnavailable
 }
 
 public sealed record SimulationProblem(string Code, string? Parameter, string Message);

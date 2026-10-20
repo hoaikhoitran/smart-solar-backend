@@ -73,4 +73,17 @@ public static class FileErrorCodes
     public const string AlreadyLinked = "FILE_ALREADY_LINKED";
     public const string ContentChanged = "FILE_CONTENT_CHANGED";
     public const string StorageUnavailable = "FILE_STORAGE_UNAVAILABLE";
+
+    /// <summary>The stored reference cannot be served (wrong purpose, bucket not allowed, key outside its purpose prefix). 409.</summary>
+    public const string NotSignable = "FILE_NOT_SIGNABLE";
+
+    /// <summary>The verified object (or its pinned version) no longer exists in storage. 410.</summary>
+    public const string ObjectMissing = "FILE_OBJECT_MISSING";
+}
+
+/// <summary>Presigned URL outcomes that are not file-specific (both 503).</summary>
+public static class StorageErrorCodes
+{
+    public const string NotConfigured = "STORAGE_NOT_CONFIGURED";
+    public const string Unavailable = "STORAGE_UNAVAILABLE";
 }

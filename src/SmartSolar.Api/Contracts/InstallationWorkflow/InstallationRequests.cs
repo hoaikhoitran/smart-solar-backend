@@ -1,19 +1,25 @@
 namespace SmartSolar.Api.Contracts.InstallationWorkflow;
 
-/// <summary>A shared team shift: local date (yyyy-MM-dd) and local times (HH:mm) in Asia/Ho_Chi_Minh.</summary>
-public sealed record ShiftRequest(string? Date, string? Start, string? End);
+/// <summary>
+/// Assign / reassign / reschedule the responsible technician. Times are ISO-8601 instants with offset (UTC+7 in practice).
+/// <c>reason</c> is required when the project already has a technician or has started. <c>expectedRevision</c> is the project revision.
+/// A technician outside the site's operational zone (candidates flagged <c>crossZone</c>) needs <c>crossZoneAuthorized</c> = true and a
+/// <c>reason</c> (recorded as a cross-zone authorization); otherwise 409 CROSS_ZONE_AUTHORIZATION_REQUIRED.
+/// </summary>
+public sealed record AssignTechnicianRequest(Guid TechnicianUserId, DateTimeOffset? ScheduledStartsAt, DateTimeOffset? ScheduledEndsAt, string? Reason, int? ExpectedRevision,
+    bool? CrossZoneAuthorized = null);
 
-public sealed record SchedulePlanRequest(int? Revision, IReadOnlyList<Guid>? Members, Guid LeaderUserId, IReadOnlyList<ShiftRequest>? Shifts);
+public sealed record CancelInstallationRequest(string? Reason, int? ExpectedRevision);
 
-public sealed record LeaderRequest(int Revision, Guid LeaderUserId);
-
-public sealed record MilestoneRequest(Guid? MilestoneId, string? Name, string? Description, int WeightPercent);
-
-public sealed record MilestonePlanRequest(int Revision, IReadOnlyList<MilestoneRequest>? Milestones, string? Reason);
+/// <summary>Manager/Admin returns a completion report waiting for the customer to rework: <c>reason</c> required (≤500).</summary>
+public sealed record ReturnToReworkRequest(string? Reason, int? ExpectedRevision);
 
 public sealed record ChecklistRequest(int Revision, bool IsRequired, string? Status, Guid? EvidenceFileId, string? Note);
 
-public sealed record ProgressRequest(int Revision, int ProgressPercent, string? Notes);
+/// <summary>Technician accept: <c>expectedRevision</c> is optional.</summary>
+public sealed record AcceptAssignmentRequest(int? ExpectedRevision);
+
+public sealed record DeclineAssignmentRequest(string? Reason, int? ExpectedRevision);
 
 public sealed record EvidenceRequest(Guid FileId, string? Caption);
 
@@ -21,7 +27,7 @@ public sealed record AssetRequest(string? AssetType, Guid? ProductId, string? Ma
 
 public sealed record AssetsRequest(IReadOnlyList<AssetRequest>? Assets);
 
-public sealed record AcceptanceRequest(string? CompletionReport);
+public sealed record CompletionReportRequest(string? CompletionReport, int? ExpectedRevision);
 
 /// <summary>decision: ACCEPT or REQUEST_REWORK (reason required).</summary>
 public sealed record AcceptanceDecisionRequest(string? Decision, string? Reason);

@@ -27,7 +27,7 @@ public sealed class ClaimSurveyRequestHandlerTests
 
         var request = await ctx.Db.SurveyRequests.AsNoTracking().SingleAsync();
         Assert.Equal(sale.Id, request.AssignedSaleId);
-        Assert.Equal(SurveyRequestStatus.Assigned, request.Status);
+        Assert.Equal(SurveyRequestStatus.Pending, request.Status);
         Assert.NotNull(request.AssignedAt);
         Assert.True(request.AssignedAt >= before);
         Assert.Equal(pending.SubmittedAt, request.SubmittedAt);
@@ -44,7 +44,7 @@ public sealed class ClaimSurveyRequestHandlerTests
         var assignedAt = DateTimeOffset.UtcNow.AddMinutes(-10);
         var claimed = await ctx.SeedSurveyRequestAsync(
             preSurvey.Id,
-            SurveyRequestStatus.Assigned,
+            SurveyRequestStatus.Pending,
             saleA.Id,
             assignedAt: assignedAt);
 
@@ -58,7 +58,7 @@ public sealed class ClaimSurveyRequestHandlerTests
 
         var request = await ctx.Db.SurveyRequests.AsNoTracking().SingleAsync();
         Assert.Equal(saleA.Id, request.AssignedSaleId);
-        Assert.Equal(SurveyRequestStatus.Assigned, request.Status);
+        Assert.Equal(SurveyRequestStatus.Pending, request.Status);
         Assert.Equal(assignedAt, request.AssignedAt);
     }
 
@@ -142,7 +142,39 @@ public sealed class ClaimSurveyRequestHandlerTests
         ctx.Db.ChangeTracker.Clear();
         var request = await ctx.Db.SurveyRequests.AsNoTracking().SingleAsync();
         Assert.Equal(winner.SaleId, request.AssignedSaleId);
-        Assert.Equal(SurveyRequestStatus.Assigned, request.Status);
+        Assert.Equal(SurveyRequestStatus.Pending, request.Status);
         Assert.NotNull(request.AssignedAt);
+    }
+
+    [Theory]
+    [InlineData(SurveyRequestStatus.Scheduled)]
+    [InlineData(SurveyRequestStatus.Completed)]
+    public async Task Claiming_is_decoupled_from_scheduling_and_keeps_the_status(SurveyRequestStatus status)
+    {
+        await using var ctx = new PreSurveyTestContext();
+        var sale = await ctx.SeedSalesUserAsync();
+        var preSurvey = await ctx.SeedSubmittedPreSurveyAsync();
+        var request = await ctx.SeedSurveyRequestAsync(preSurvey.Id, status);
+
+        var result = await ctx.ClaimSurveyRequestHandler().HandleAsync(new ClaimSurveyRequestCommand(request.Id, sale.Id), CancellationToken.None);
+
+        Assert.Equal(ClaimSurveyRequestOutcome.Claimed, result.Outcome);
+        var stored = await ctx.Db.SurveyRequests.AsNoTracking().SingleAsync();
+        Assert.Equal(sale.Id, stored.AssignedSaleId);
+        Assert.Equal(status, stored.Status);
+    }
+
+    [Fact]
+    public async Task Cancelled_requests_cannot_be_claimed()
+    {
+        await using var ctx = new PreSurveyTestContext();
+        var sale = await ctx.SeedSalesUserAsync();
+        var preSurvey = await ctx.SeedSubmittedPreSurveyAsync();
+        var request = await ctx.SeedSurveyRequestAsync(preSurvey.Id, SurveyRequestStatus.Cancelled);
+
+        var result = await ctx.ClaimSurveyRequestHandler().HandleAsync(new ClaimSurveyRequestCommand(request.Id, sale.Id), CancellationToken.None);
+
+        Assert.Equal(ClaimSurveyRequestOutcome.Unavailable, result.Outcome);
+        Assert.Null((await ctx.Db.SurveyRequests.AsNoTracking().SingleAsync()).AssignedSaleId);
     }
 }

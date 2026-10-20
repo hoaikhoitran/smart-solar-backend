@@ -17,6 +17,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Official administrative catalog datasets, shipped with the host for the `admin-catalog import` CLI (never loaded at startup). -->
+    <None Include="..\SmartSolar.Infrastructure\Persistence\ReferenceData\AdministrativeCatalog\**\*" LinkBase="ReferenceData\AdministrativeCatalog"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\SmartSolar.Modules\SmartSolar.Modules.csproj" />
     <ProjectReference Include="..\SmartSolar.Infrastructure\SmartSolar.Infrastructure.csproj" />
   </ItemGroup>
