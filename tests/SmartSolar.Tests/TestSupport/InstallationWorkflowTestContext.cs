@@ -112,6 +112,22 @@ public sealed class InstallationWorkflowTestContext : IAsyncDisposable
         return new ConfirmedSurvey(request, technician, sales, booked.Value.AppointmentId);
     }
 
+    /// <summary>
+    /// The Admin setup every new contract needs: an active default INSTALLATION warranty option (120 months), unless a test already
+    /// configured its own options.
+    /// </summary>
+    public async Task EnsureInstallationWarrantyOptionAsync()
+    {
+        if (await Db.WarrantyOptions.AnyAsync(o => o.Kind == SmartSolar.Modules.AfterSales.WarrantyOptionKinds.Installation && o.IsActive)) return;
+        Db.WarrantyOptions.Add(new SmartSolar.Modules.AfterSales.WarrantyOption
+        {
+            Id = Guid.NewGuid(), Kind = SmartSolar.Modules.AfterSales.WarrantyOptionKinds.Installation, Months = 120, IsActive = true, IsDefault = true,
+            CreatedAt = Clock.GetUtcNow(), UpdatedAt = Clock.GetUtcNow(),
+        });
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+    }
+
     /// <summary>Registers a file while storage is unreachable, so it stays PENDING_VERIFICATION.</summary>
     public async Task<Guid> UnverifiedFileAsync(Guid uploader, string purpose)
     {

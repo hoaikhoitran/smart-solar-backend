@@ -1,4 +1,6 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Npgsql;
 using SmartSolar.Infrastructure.Persistence;
 
@@ -37,7 +39,8 @@ public sealed class PostgresTestDatabase : IAsyncDisposable
     public string Name { get; }
 
     /// <param name="withPendingSchema">Asserts the Installation Flow + knowledge base tables exist (they are created by the migrations).</param>
-    public static async Task<PostgresTestDatabase> CreateAsync(bool withPendingSchema = false)
+    /// <param name="upToMigration">Stops after this migration (for migration Down tests); null applies every migration.</param>
+    public static async Task<PostgresTestDatabase> CreateAsync(bool withPendingSchema = false, string? upToMigration = null)
     {
         var raw = Environment.GetEnvironmentVariable(PostgresFactAttribute.Variable)
                   ?? throw new InvalidOperationException($"{PostgresFactAttribute.Variable} is not set.");
@@ -60,7 +63,8 @@ public sealed class PostgresTestDatabase : IAsyncDisposable
         await using var db = database.NewContext();
         // Every EF migration, including InstallationWorkflowAndKnowledgeBase (the Installation Flow and
         // knowledge-base tables with their manual exclusion constraint), applied only to this throwaway database.
-        await db.Database.MigrateAsync();
+        if (upToMigration is null) await db.Database.MigrateAsync();
+        else await db.GetService<IMigrator>().MigrateAsync(upToMigration);
         if (withPendingSchema)
         {
             // Kept for callers written before the migration existed: the schema now comes from the migration.

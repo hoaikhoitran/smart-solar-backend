@@ -60,12 +60,13 @@ public sealed class FakePayOsServer : HttpMessageHandler
     }
 
     /// <summary>Builds a webhook body signed exactly like PayOS does (sorted data keys, HMAC-SHA256 hex).</summary>
-    public string Webhook(long orderCode, long amount, string reference, string code = "00", bool success = true, string? signatureOverride = null)
+    public string Webhook(long orderCode, long amount, string reference, string code = "00", bool success = true, string? signatureOverride = null,
+        DateTimeOffset? transactionAt = null)
     {
         var data = new Dictionary<string, object?>
         {
             ["orderCode"] = orderCode, ["amount"] = amount, ["description"] = $"SS{orderCode % 10_000_000:D7}", ["accountNumber"] = "12345678",
-            ["reference"] = reference, ["transactionDateTime"] = "2026-10-20 09:00:00", ["currency"] = "VND", ["paymentLinkId"] = $"link-{orderCode}",
+            ["reference"] = reference, ["transactionDateTime"] = (transactionAt?.ToOffset(TimeSpan.FromHours(7)).ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture) ?? "2026-10-20 09:00:00"), ["currency"] = "VND", ["paymentLinkId"] = $"link-{orderCode}",
             ["code"] = code, ["desc"] = "success", ["counterAccountBankId"] = "", ["counterAccountBankName"] = "", ["counterAccountName"] = null,
             ["counterAccountNumber"] = null, ["virtualAccountName"] = null, ["virtualAccountNumber"] = "",
         };

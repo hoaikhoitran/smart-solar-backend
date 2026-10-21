@@ -53,9 +53,11 @@ public static class FilePurposes
     public const string KnowledgeDocument = "KNOWLEDGE_DOCUMENT";
     /// <summary>Permits and approvals backing installation checklist items (grid connection, fire safety…).</summary>
     public const string ProjectDocument = "PROJECT_DOCUMENT";
+    /// <summary>After-sales photos: technician visit evidence and customer fault / rejection photos.</summary>
+    public const string ServiceEvidence = "SERVICE_EVIDENCE";
 
     public static readonly IReadOnlyList<string> All =
-        [OnSiteSurveyEvidence, QuotationDocument, ContractDocument, SignedContract, InstallationEvidence, KnowledgeDocument, ProjectDocument];
+        [OnSiteSurveyEvidence, QuotationDocument, ContractDocument, SignedContract, InstallationEvidence, KnowledgeDocument, ProjectDocument, ServiceEvidence];
 }
 
 public static class FileErrorCodes

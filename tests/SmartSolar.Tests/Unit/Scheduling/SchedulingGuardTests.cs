@@ -21,11 +21,11 @@ using static SmartSolar.Tests.TestSupport.SchedulingTestContext;
 namespace SmartSolar.Tests.Unit.Scheduling;
 
 /// <summary>
-/// Regression tests for the review rulings on Flow 1 scheduling (area deactivation guard, background-change retries,
+/// Scheduling guards under concurrency and background changes (area deactivation guard, background-change retries,
 /// re-homing on the reschedule keep-technician path, out-of-area acceptance, admin hold re-reads and daily cap, locked
 /// Sales owner change, release deadline) plus restored coverage. Geography is SYNTHETIC.
 /// </summary>
-public sealed class ReviewRulingTests
+public sealed class SchedulingGuardTests
 {
     private static readonly CancellationToken None = CancellationToken.None;
 

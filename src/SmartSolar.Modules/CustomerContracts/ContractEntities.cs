@@ -25,6 +25,13 @@ public sealed class CustomerContract
     public string PricingSnapshot { get; set; } = null!;
     public string CustomerSnapshot { get; set; } = null!;
     public string? Terms { get; set; }
+
+    /// <summary>
+    /// Installation warranty chosen by Sales from the Admin's options (Flow 3). Part of the issued snapshot and the canonical hash,
+    /// so later option changes never apply retroactively. Null for contracts created before the option existed.
+    /// </summary>
+    public int? WarrantyMonths { get; set; }
+
     public string? CanonicalHash { get; set; }
     public Guid? OfficialDocumentFileId { get; set; }
     public string? OfficialDocumentSha256 { get; set; }
@@ -108,4 +115,6 @@ public static class ContractErrorCodes
     public const string DocumentMissing = "CONTRACT_DOCUMENT_MISSING";
     public const string WrongDocumentVersion = "CONTRACT_WRONG_DOCUMENT_VERSION";
     public const string ReasonRequired = "CONTRACT_REJECTION_REASON_REQUIRED";
+    public const string InvalidWarranty = "CONTRACT_WARRANTY_VALIDATION_FAILED";
+    public const string WarrantyRequired = "CONTRACT_WARRANTY_REQUIRED";
 }

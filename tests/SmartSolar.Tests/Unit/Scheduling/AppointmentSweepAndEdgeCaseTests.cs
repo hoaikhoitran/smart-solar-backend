@@ -24,13 +24,13 @@ using static SmartSolar.Tests.TestSupport.SchedulingTestContext;
 namespace SmartSolar.Tests.Unit.Scheduling;
 
 /// <summary>
-/// Regression tests for the Flow 1 scheduling audit fixes: open appointments nobody accepted before their start are
-/// auto-cancelled (H1), the escalation/cancel sweep survives per-appointment failures and never escalates started
-/// appointments (L4), legacy bookings without a service area (M1), the Sales ownership re-check inside the assignment
-/// transaction (L2), and the escalated queue / open-appointment list rate limit and constant query count (L3).
+/// The appointment sweep and scheduling edge cases: open appointments nobody accepted before their start are auto-cancelled,
+/// the escalation/cancel sweep survives per-appointment failures and never escalates started appointments, legacy bookings
+/// without a zone, the Sales ownership re-check inside the assignment transaction, and the escalated queue / open-appointment
+/// list rate limit and constant query count.
 /// Geography is SYNTHETIC.
 /// </summary>
-public sealed class SchedulingAuditFixTests
+public sealed class AppointmentSweepAndEdgeCaseTests
 {
     private static readonly CancellationToken None = CancellationToken.None;
 

@@ -19,7 +19,7 @@ public sealed record ContractView(
     string Status, string Currency, decimal TotalAmount, JsonElement PricingSnapshot, JsonElement CustomerSnapshot, string? Terms, string? CanonicalHash,
     ContractDocumentView? OfficialDocument, ContractDocumentView? SignedDocument, string? RejectionReason, DateTimeOffset? IssuedAt,
     DateTimeOffset? PublishedAt, DateTimeOffset? SignedAt, DateTimeOffset? PaidAt, int Revision,
-    IReadOnlyList<SignatureSubmissionView>? Submissions, IReadOnlyList<ContractEventView>? Events);
+    IReadOnlyList<SignatureSubmissionView>? Submissions, IReadOnlyList<ContractEventView>? Events, int? WarrantyMonths = null);
 
 public enum ReviewDecision { Approve = 1, Reject = 2 }
 
@@ -37,7 +37,9 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
 
     // ------------------------------------------------------------------ Sales
 
-    public async Task<OperationResult<ContractView>> CreateAsync(Guid salesUserId, Guid quotationId, string? terms, CancellationToken cancellationToken)
+    /// <param name="warrantyMonths">Installation warranty from the Admin's active options; omitted = the default option. A draft without months cannot be issued.</param>
+    public async Task<OperationResult<ContractView>> CreateAsync(Guid salesUserId, Guid quotationId, string? terms, CancellationToken cancellationToken,
+        int? warrantyMonths = null)
     {
         var quotation = await unitOfWork.GetQuotationAsync(quotationId, cancellationToken);
         if (quotation is null || quotation.AssignedSaleId != salesUserId)
@@ -46,6 +48,8 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
             return OperationResult<ContractView>.Fail(ContractErrorCodes.QuotationNotAccepted, "Contracts are created only from a quotation the customer accepted.");
         if ((await unitOfWork.ListByQuotationAsync(quotationId, cancellationToken)).Any(c => c.Status != ContractStatuses.Superseded))
             return OperationResult<ContractView>.Fail(ContractErrorCodes.AlreadyExists, "A contract already exists for this quotation; amend it instead.");
+        var warranty = await WarrantyMonthsAsync(warrantyMonths, null, cancellationToken);
+        if (!warranty.Succeeded) return warranty.As<ContractView>();
 
         var now = time.GetUtcNow();
         var contract = new CustomerContract
@@ -53,18 +57,27 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
             Id = Guid.NewGuid(), ContractNumber = NewNumber(now), Version = 1, QuotationId = quotation.QuotationId, QuotationVersion = quotation.QuotationVersion,
             SurveyRequestId = quotation.SurveyRequestId, CustomerUserId = quotation.CustomerUserId, SalesUserId = salesUserId, Status = ContractStatuses.Draft,
             Currency = quotation.Currency, TotalAmount = quotation.TotalAmount, PricingSnapshot = quotation.PricingSnapshotJson,
-            CustomerSnapshot = quotation.CustomerSnapshotJson ?? "{}", Terms = Trim(terms, 8000) ?? quotation.Terms, CreatedAt = now, UpdatedAt = now,
+            CustomerSnapshot = quotation.CustomerSnapshotJson ?? "{}", Terms = Trim(terms, 8000) ?? quotation.Terms, WarrantyMonths = warranty.Value,
+            CreatedAt = now, UpdatedAt = now,
         };
         return await AddNewAsync(contract, salesUserId, "CREATED", $"from quotation {quotation.QuoteNumber} v{quotation.QuotationVersion}", cancellationToken);
     }
 
-    public Task<OperationResult<ContractView>> UpdateTermsAsync(Guid salesUserId, Guid contractId, int revision, string? terms, CancellationToken cancellationToken)
-        => RunAsSalesAsync(salesUserId, contractId, revision, allowManager: false, (c, now, _) =>
+    /// <param name="warrantyMonths">When given, changes the draft's installation warranty (one of the Admin's active options).</param>
+    public Task<OperationResult<ContractView>> UpdateTermsAsync(Guid salesUserId, Guid contractId, int revision, string? terms, CancellationToken cancellationToken,
+        int? warrantyMonths = null)
+        => RunAsSalesAsync(salesUserId, contractId, revision, allowManager: false, async (c, now, token) =>
         {
-            if (c.Status != ContractStatuses.Draft) return Task.FromResult(Fail(ContractErrorCodes.InvalidState, "Issued contracts are immutable; create an amendment."));
+            if (c.Status != ContractStatuses.Draft) return Fail(ContractErrorCodes.InvalidState, "Issued contracts are immutable; create an amendment.");
+            if (warrantyMonths is not null)
+            {
+                var warranty = await WarrantyMonthsAsync(warrantyMonths, c.WarrantyMonths, token);
+                if (!warranty.Succeeded) return warranty.As<bool>();
+                c.WarrantyMonths = warranty.Value;
+            }
             c.Terms = Trim(terms, 8000);
             Event(c, "UPDATED", null, null, salesUserId, null, now);
-            return Task.FromResult(OperationResult<bool>.Ok(true));
+            return OperationResult<bool>.Ok(true);
         }, cancellationToken);
 
     /// <summary>DRAFT → ISSUED: content is frozen and its canonical hash computed. An amendment supersedes its predecessor here.</summary>
@@ -72,6 +85,10 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
         => RunAsSalesAsync(salesUserId, contractId, revision, allowManager: false, async (c, now, token) =>
         {
             if (c.Status != ContractStatuses.Draft) return Fail(ContractErrorCodes.InvalidState, "Only drafts can be issued.");
+            // Every new contract states its installation warranty (contracts issued before warranty options existed keep theirs as signed).
+            if (c.WarrantyMonths is null)
+                return Fail(ContractErrorCodes.WarrantyRequired,
+                    "Choose the installation warranty duration before issuing. If none can be chosen, an Admin must first configure the warranty options.");
             if (c.PreviousContractId is { } previousId)
             {
                 var previous = await unitOfWork.FindAsync(previousId, false, token);
@@ -171,7 +188,8 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
     }
 
     /// <summary>New DRAFT version with changed terms; pricing stays the accepted quotation's. Not possible once PAID.</summary>
-    public async Task<OperationResult<ContractView>> CreateAmendmentAsync(Guid salesUserId, Guid contractId, string? terms, CancellationToken cancellationToken)
+    public async Task<OperationResult<ContractView>> CreateAmendmentAsync(Guid salesUserId, Guid contractId, string? terms, CancellationToken cancellationToken,
+        int? warrantyMonths = null)
     {
         var current = await unitOfWork.FindAsync(contractId, false, cancellationToken);
         if (current is null || await unitOfWork.GetAssignedSaleAsync(current.SurveyRequestId, cancellationToken) != salesUserId) return NotFound();
@@ -180,6 +198,8 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
         var versions = await unitOfWork.ListByQuotationAsync(current.QuotationId, cancellationToken);
         if (versions.Any(c => c.Status == ContractStatuses.Draft))
             return OperationResult<ContractView>.Fail(ContractErrorCodes.AlreadyExists, "An amendment draft already exists.");
+        var warranty = await WarrantyMonthsAsync(warrantyMonths, current.WarrantyMonths, cancellationToken);
+        if (!warranty.Succeeded) return warranty.As<ContractView>();
 
         var now = time.GetUtcNow();
         var amendment = new CustomerContract
@@ -188,7 +208,7 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
             QuotationId = current.QuotationId, QuotationVersion = current.QuotationVersion, SurveyRequestId = current.SurveyRequestId,
             CustomerUserId = current.CustomerUserId, SalesUserId = salesUserId, Status = ContractStatuses.Draft, Currency = current.Currency,
             TotalAmount = current.TotalAmount, PricingSnapshot = current.PricingSnapshot, CustomerSnapshot = current.CustomerSnapshot,
-            Terms = Trim(terms, 8000) ?? current.Terms, CreatedAt = now, UpdatedAt = now,
+            Terms = Trim(terms, 8000) ?? current.Terms, WarrantyMonths = warranty.Value, CreatedAt = now, UpdatedAt = now,
         };
         return await AddNewAsync(amendment, salesUserId, "AMENDMENT_CREATED", $"amends version {current.Version}", cancellationToken);
     }
@@ -270,7 +290,9 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
             c.ContractNumber, c.Version, c.QuotationId, c.QuotationVersion, c.Currency, totalAmount = c.TotalAmount.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture),
             pricing = JsonDocument.Parse(c.PricingSnapshot).RootElement, customer = JsonDocument.Parse(c.CustomerSnapshot).RootElement, terms = c.Terms ?? "",
             issuedAt = c.IssuedAt?.UtcDateTime.ToString("O"),
-        });
+            // Only present for contracts with a warranty snapshot, so hashes of contracts issued before Flow 3 stay unchanged.
+            warrantyMonths = c.WarrantyMonths,
+        }, CanonicalJson);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }
 
@@ -352,7 +374,21 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
             c.Terms, c.CanonicalHash,
             c.OfficialDocumentFileId is { } official ? new ContractDocumentView(official, c.OfficialDocumentSha256, c.OfficialDocumentConfirmedAt) : null,
             c.SignedDocumentFileId is { } signed ? new ContractDocumentView(signed, c.SignedDocumentSha256, c.SignedSubmittedAt) : null,
-            c.RejectionReason, c.IssuedAt, c.PublishedAt, c.SignedAt, c.PaidAt, c.Revision, submissions, events);
+            c.RejectionReason, c.IssuedAt, c.PublishedAt, c.SignedAt, c.PaidAt, c.Revision, submissions, events, c.WarrantyMonths);
+    }
+
+    private static readonly JsonSerializerOptions CanonicalJson = new() { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull };
+
+    /// <summary>Requested months must be an active Admin option; omitted = <paramref name="keep"/> (amendment) or the default option.</summary>
+    private async Task<OperationResult<int?>> WarrantyMonthsAsync(int? requested, int? keep, CancellationToken cancellationToken)
+    {
+        var (active, defaultMonths) = await unitOfWork.GetInstallationWarrantyOptionsAsync(cancellationToken);
+        if (requested is null) return OperationResult<int?>.Ok(keep ?? defaultMonths);
+        if (active.Count == 0)
+            return OperationResult<int?>.Fail(ContractErrorCodes.InvalidWarranty, "No installation warranty durations are configured yet; an Admin must add them first.");
+        return active.Contains(requested.Value)
+            ? OperationResult<int?>.Ok(requested)
+            : OperationResult<int?>.Fail(ContractErrorCodes.InvalidWarranty, $"Choose one of the active warranty durations: {string.Join(", ", active)} months.");
     }
 
     private static string NewNumber(DateTimeOffset now)

@@ -92,6 +92,11 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
         Assert.Equal(PendingSchemaScript.RetainedLegacyForeignKeyColumns.Order(),
             actual.Where(k => k.Principal == "service_area").Select(k => $"{k.Table}.{k.Columns}").Order());
         actual = actual.Where(k => k.Principal != "service_area").ToList();
+        // AfterSalesServices manual SQL: a CONTRACT payment line names its own checkout's contract (a composite key EF cannot model
+        // over the nullable contract_id), backed by the unique constraint ux_payment_attempt_id_contract.
+        var manualKey = new ModelForeignKey("payment_attempt_item", "payment_attempt_id,contract_id", "payment_attempt", 'r');
+        Assert.Contains(manualKey, actual);
+        actual = actual.Where(k => k != manualKey).ToList();
         var expected = ModelForeignKeys();
         Assert.True(expected.Count >= 100, $"Expected the model's foreign keys to be enumerated, got {expected.Count}.");
         Assert.Equal(expected.OrderBy(k => k.ToString()), actual.OrderBy(k => k.ToString()));
@@ -112,11 +117,13 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
             return e.GetIndexes().Where(i => i.IsUnique).Select(i => i.GetDatabaseName(store)!)
                 .Concat(e.GetKeys().Where(k => !k.IsPrimaryKey()).Select(k => k.GetName(store)!));
         }).ToList();
-        Assert.Equal(modelUniques.Order(), uniques.Order());
+        Assert.Equal(modelUniques.Append("ux_payment_attempt_id_contract").Order(), uniques.Order());
 
         // Survey appointments and current installation assignments (plus the retained, no longer written shift table).
         var exclusion = await QueryAsync(database, "SELECT conname FROM pg_constraint WHERE contype = 'x' ORDER BY conname", r => r.GetString(0));
-        Assert.Equal(["ex_installation_assignment_no_overlap", "ex_installation_shift_assignment_no_overlap", "ex_technician_appointment_no_overlap"], exclusion);
+        // ... and (Flow 3) overlapping terms of one package kind for one installation contract.
+        Assert.Equal(["ex_installation_assignment_no_overlap", "ex_installation_shift_assignment_no_overlap", "ex_service_subscription_no_overlap",
+            "ex_technician_appointment_no_overlap"], exclusion);
         // Obsolete tables are retained by the non-destructive migration until the approved cleanup.
         var retained = await QueryAsync(database, "SELECT to_regclass(t) IS NOT NULL FROM unnest($1::text[]) t", r => r.GetBoolean(0), (object)PendingSchemaScript.RetainedObsoleteTables.ToArray());
         Assert.All(retained, Assert.True);
@@ -244,6 +251,25 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
         Assert.True((await installs.ReportCompletionAsync(leader, projectId, "All panels installed.", null, None)).Succeeded);
         var accepted = await installs.DecideAcceptanceAsync(paid.CustomerId, projectId, true, null, None);
         Assert.True(accepted.Succeeded, accepted.Message);
+
+        // Flow 3: an after-sales repair that replaced an asset (replacement lineage + source request on installed_asset).
+        var handedOver = await ctx.Db.InstallationProjects.AsNoTracking().SingleAsync(p => p.Id == projectId);
+        var repair = new SmartSolar.Modules.AfterSales.ServiceRequest
+        {
+            Id = Guid.NewGuid(), RequestNumber = "AS-PG-0001", Kind = SmartSolar.Modules.AfterSales.ServiceRequestKinds.Fault,
+            Status = SmartSolar.Modules.AfterSales.ServiceRequestStatuses.Submitted, CustomerUserId = paid.CustomerId, ProjectId = projectId,
+            PropertySiteId = handedOver.PropertySiteId, Description = "Inverter fault", CreatedAt = ctx.Clock.GetUtcNow(), UpdatedAt = ctx.Clock.GetUtcNow(),
+        };
+        ctx.Db.ServiceRequests.Add(repair);
+        var replaced = await ctx.Db.InstalledAssets.FirstAsync(a => a.ProjectId == projectId && a.AssetType == "INVERTER");
+        ctx.Db.InstalledAssets.Add(new InstalledAsset
+        {
+            Id = Guid.NewGuid(), ProjectId = projectId, AssetType = replaced.AssetType, Manufacturer = replaced.Manufacturer, Model = replaced.Model,
+            SerialNumber = replaced.SerialNumber + "-R", Status = InstalledAssetStatuses.PendingAcceptance, ReplacesAssetId = replaced.Id,
+            ServiceRequestId = repair.Id, Specifications = "5 kW", RegisteredByUserId = leader, RegisteredAt = ctx.Clock.GetUtcNow(),
+        });
+        await ctx.Db.SaveChangesAsync();
+        ctx.Db.ChangeTracker.Clear();
 
         var rag = new FakeRagServiceClient();
         var options = new SmartSolar.Modules.KnowledgeBase.RagOptions { Enabled = true, ServiceSharedSecret = new string('x', 32) };

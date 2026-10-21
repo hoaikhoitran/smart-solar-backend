@@ -1,6 +1,6 @@
 # System settings — admin timing policy
 
-Admins can change the business durations of scheduling, uncovered-zone dispatch, on-site survey and installation without a
+Admins can change the business durations of scheduling, uncovered-zone dispatch, on-site survey, installation and after-sales without a
 redeploy. Managers can read them. Module: `src/SmartSolar.Modules/SystemSettings/`. API: `api/admin/system-settings/scheduling`.
 
 **Settings apply to new timing events only; existing deadlines are snapshots.**
@@ -26,6 +26,16 @@ defaults are fixed in code. The defaults are checked at startup, and an invalid 
 | `scheduling.bufferBetweenAppointmentsMinutes` | MINUTES | 30 (`Scheduling:BufferBetweenAppointmentsMinutes`) | 0–240 | Fixed gap between two commitments of one technician (not a travel-time estimate). |
 | `onsiteSurvey.earlyStartMinutes` | MINUTES | 120 (`OnSiteSurvey:EarlyStartMinutes`) | 0–1440 | How early the technician may start the on-site survey. This is also the release cut-off. |
 | `installation.maxAssignmentDays` | DAYS | 14 (`Installation:MaxAssignmentDays`) | 1–365 | Longest installation assignment, in local calendar days. |
+| `afterSales.inspectionDurationMinutes` | MINUTES | 60 | 15–480 | Default length of an after-sales inspection visit (other visits default to 120 minutes). |
+| `afterSales.quotationValidityDays` | DAYS | 7 | 1–60 | A repair / one-time maintenance quotation expires this long after it is issued (snapshot `expires_at`). |
+| `afterSales.checkoutExpiryMinutes` | MINUTES | 30 | 5–1440 | Lifetime of an after-sales PayOS checkout (never past the quotation expiry). |
+| `afterSales.maintenanceBookingLeadDays` | DAYS | 7 | 0–60 | A maintenance booking must start at least this far ahead. |
+| `afterSales.maintenanceNoticeLeadDays` | DAYS | 14 | 1–90 | Customer notice before a maintenance period opens, and the package-expiry reminder lead. |
+| `afterSales.customerResponseHours` | HOURS | 24 | 1–336 | Wait after a notice before Sales follows up; also the completion-acceptance reminder interval. |
+| `afterSales.followUpMaxDays` | DAYS | 7 | 1–60 | An unanswered maintenance follow-up closes as UNREACHABLE after this long. |
+| `afterSales.delayedMaintenanceExtensionDays` | DAYS | 30 | 0–180 | Extension after the term end when SmartSolar delayed a valid booking. |
+| `afterSales.appointmentChangeLeadHours` | HOURS | 24 | 0–336 | Customers may change or cancel a maintenance appointment until this long before it starts. |
+| `afterSales.disasterWaitingDays` | DAYS | 7 | 0–60 | Waiting period before a new disaster-protection term covers incidents (none for a continuous renewal). |
 
 Cross-field rules are checked on the merged values (stored values plus the submitted changes):
 
@@ -82,6 +92,7 @@ OnSiteSurveyEarlyStartMinutes` mirror was removed).
 | `scheduling.bufferBetweenAppointmentsMinutes` | `TechnicianEligibility.Buffer` (every eligibility check, hold re-homing, installation planning) and the technician schedule dashboard |
 | `onsiteSurvey.earlyStartMinutes` | on-site survey start (`OnSiteSurveyHandlers.StartAsync`) and the technician release cut-off |
 | `installation.maxAssignmentDays` | `InstallationSchedulePlanner.ValidateIntervalAsync` |
+| `afterSales.*` | Flow 3 handlers and `AfterSalesSweepService`; deadlines (quotation `expires_at`, checkout `expires_at`, term `coverage_starts_at`, entitlement `extended_until`) are stored when created. See [after-sales-services.md](after-sales-services.md). |
 
 ## Freshness
 

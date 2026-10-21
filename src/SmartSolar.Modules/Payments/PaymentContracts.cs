@@ -30,6 +30,19 @@ public interface IPaymentGateway
 public sealed record PayableContract(Guid ContractId, string ContractNumber, Guid CustomerUserId, string Status, decimal TotalAmount, string Currency,
     string CustomerName, string? CustomerEmail, string? CustomerPhone);
 
+/// <summary>
+/// Applies the after-sales items of a verified checkout (packages, repair quotations). Implemented by the AfterSales module and
+/// called by <see cref="PaymentService"/> INSIDE the confirmation transaction, so the attempt and every item are settled together
+/// exactly once. The implementation sets each item's Status (SETTLED or REVIEW_REQUIRED with a Note) and may add its own rows.
+/// </summary>
+public interface IPaymentItemSettlement
+{
+    Task SettleAsync(PaymentAttempt attempt, IReadOnlyList<PaymentAttemptItem> items, DateTimeOffset providerPaidAt, DateTimeOffset now, CancellationToken cancellationToken);
+}
+
+/// <summary>One after-sales line of a checkout (the contract line is added by the payment service itself).</summary>
+public sealed record CheckoutItem(string ItemType, Guid? SubscriptionId, Guid? QuotationId, decimal Amount);
+
 public interface IPaymentUnitOfWork : ITransactionalUnitOfWork
 {
     Task<PayableContract?> GetContractAsync(Guid contractId, CancellationToken cancellationToken);
@@ -44,6 +57,9 @@ public interface IPaymentUnitOfWork : ITransactionalUnitOfWork
     /// <summary>Contract SIGNED → PAID (conditional); false when it was not SIGNED.</summary>
     Task<bool> TryMarkContractPaidAsync(Guid contractId, DateTimeOffset now, CancellationToken cancellationToken);
     Task<bool> IsContractPaidAsync(Guid contractId, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<PaymentAttemptItem>> GetItemsAsync(Guid attemptId, bool track, CancellationToken cancellationToken);
+    void AddItem(PaymentAttemptItem item);
 
     void AddAttempt(PaymentAttempt attempt);
     void AddEvent(PaymentEvent paymentEvent);

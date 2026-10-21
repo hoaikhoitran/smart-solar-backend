@@ -66,7 +66,7 @@ public sealed class SystemSettingsEndpointsTests
         var data = await DataOf(await CatalogEndpointsTests.ClientFor(factory, RoleCodes.Admin).GetAsync(Route));
 
         Assert.Equal((0, true, 15), (data.GetProperty("version").GetInt32(), data.GetProperty("bootstrap").GetBoolean(), data.GetProperty("cacheTtlSeconds").GetInt32()));
-        Assert.Equal(13, data.GetProperty("settings").GetArrayLength());
+        Assert.Equal(SmartSolar.Modules.SystemSettings.SchedulingPolicyDefinitions.Default.All.Count, data.GetProperty("settings").GetArrayLength());
         Assert.NotEmpty(data.GetProperty("rules").EnumerateArray());
         var expected = new Dictionary<string, int>
         {

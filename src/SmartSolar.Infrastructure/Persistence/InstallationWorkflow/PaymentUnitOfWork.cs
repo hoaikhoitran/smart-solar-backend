@@ -52,6 +52,11 @@ public sealed class PaymentUnitOfWork(AppDbContext db) : TransactionalUnitOfWork
     public Task<bool> IsContractPaidAsync(Guid contractId, CancellationToken cancellationToken)
         => Db.CustomerContracts.AsNoTracking().AnyAsync(c => c.Id == contractId && c.Status == ContractStatuses.Paid, cancellationToken);
 
+    public async Task<IReadOnlyList<PaymentAttemptItem>> GetItemsAsync(Guid attemptId, bool track, CancellationToken cancellationToken)
+        => await (track ? Db.PaymentAttemptItems : Db.PaymentAttemptItems.AsNoTracking()).Where(i => i.PaymentAttemptId == attemptId).ToListAsync(cancellationToken);
+
+    public void AddItem(PaymentAttemptItem item) => Db.PaymentAttemptItems.Add(item);
+
     public void AddAttempt(PaymentAttempt attempt) => Db.PaymentAttempts.Add(attempt);
     public void AddEvent(PaymentEvent paymentEvent) => Db.PaymentEvents.Add(paymentEvent);
     public void AddWebhookEvent(PaymentWebhookEvent webhookEvent) => Db.PaymentWebhookEvents.Add(webhookEvent);

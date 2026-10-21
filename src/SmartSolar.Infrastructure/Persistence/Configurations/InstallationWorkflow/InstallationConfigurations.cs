@@ -109,9 +109,18 @@ public sealed class InstallationAssignmentConfiguration : IEntityTypeConfigurati
         builder.Property(x => x.RespondedAt).HasColumnName("responded_at");
         builder.Property(x => x.ResponseReason).HasColumnName("response_reason").HasMaxLength(500);
         builder.Property(x => x.ClosedAt).HasColumnName("closed_at");
-        // One current (PENDING or ACCEPTED) assignment per project.
-        builder.HasIndex(x => x.ProjectId).IsUnique().HasFilter($"status IN ('{AssignmentStatuses.Pending}', '{AssignmentStatuses.Accepted}')")
+        // Flow 3: an after-sales visit's technician interval lives here too (same overlap exclusion and locks).
+        builder.Property(x => x.ServiceVisitId).HasColumnName("service_visit_id");
+        // One current (PENDING or ACCEPTED) installation assignment per project — after-sales visits are counted separately.
+        builder.HasIndex(x => x.ProjectId).IsUnique()
+            .HasFilter($"status IN ('{AssignmentStatuses.Pending}', '{AssignmentStatuses.Accepted}') AND service_visit_id IS NULL")
             .HasDatabaseName("ux_installation_assignment_current");
+        // One current assignment per after-sales visit.
+        builder.HasIndex(x => x.ServiceVisitId).IsUnique()
+            .HasFilter($"status IN ('{AssignmentStatuses.Pending}', '{AssignmentStatuses.Accepted}') AND service_visit_id IS NOT NULL")
+            .HasDatabaseName("ux_installation_assignment_current_visit");
+        builder.HasOne<SmartSolar.Modules.AfterSales.ServiceVisit>().WithMany().HasForeignKey(x => x.ServiceVisitId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_assignment_service_visit");
         builder.HasIndex(x => new { x.TechnicianUserId, x.StartsAt }).HasDatabaseName("ix_installation_assignment_technician_starts_at");
         builder.HasIndex(x => new { x.ProjectId, x.AssignedAt }).HasDatabaseName("ix_installation_assignment_project_assigned_at");
         builder.HasOne<InstallationProject>().WithMany().HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Restrict)
@@ -184,6 +193,7 @@ public sealed class InstalledAssetConfiguration : IEntityTypeConfiguration<Insta
         {
             t.HasCheckConstraint("ck_installed_asset_type", $"asset_type IN ({string.Join(", ", AssetTypes.All.Select(s => $"'{s}'"))})");
             t.HasCheckConstraint("ck_installed_asset_warranty", "warranty_months IS NULL OR warranty_months BETWEEN 0 AND 600");
+            t.HasCheckConstraint("ck_installed_asset_status", $"status IN ({string.Join(", ", InstalledAssetStatuses.All.Select(s => $"'{s}'"))})");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -197,7 +207,17 @@ public sealed class InstalledAssetConfiguration : IEntityTypeConfiguration<Insta
         builder.Property(x => x.WarrantyMonths).HasColumnName("warranty_months");
         builder.Property(x => x.RegisteredByUserId).HasColumnName("registered_by_user_id").IsRequired();
         builder.Property(x => x.RegisteredAt).HasColumnName("registered_at").IsRequired();
+        // Existing rows become ACTIVE through the column default.
+        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(20).HasDefaultValue(InstalledAssetStatuses.Active).IsRequired();
+        builder.Property(x => x.ReplacesAssetId).HasColumnName("replaces_asset_id");
+        builder.Property(x => x.ServiceRequestId).HasColumnName("service_request_id");
+        builder.Property(x => x.Specifications).HasColumnName("specifications").HasMaxLength(500);
+        // A serial number is unique for its manufacturer across all assets, replaced ones included (history is kept).
         builder.HasIndex(x => new { x.Manufacturer, x.SerialNumber }).IsUnique().HasDatabaseName("ux_installed_asset_manufacturer_serial");
+        builder.HasOne<InstalledAsset>().WithMany().HasForeignKey(x => x.ReplacesAssetId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installed_asset_replaces");
+        builder.HasOne<SmartSolar.Modules.AfterSales.ServiceRequest>().WithMany().HasForeignKey(x => x.ServiceRequestId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installed_asset_service_request");
         builder.HasIndex(x => x.ProjectId).HasDatabaseName("ix_installed_asset_project");
         builder.HasOne<InstallationProject>().WithMany().HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<Product>().WithMany().HasForeignKey(x => x.ProductId).OnDelete(DeleteBehavior.Restrict);

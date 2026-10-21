@@ -20,6 +20,9 @@ public interface IContractUnitOfWork : ITransactionalUnitOfWork
     /// <summary>Single conditional UPDATE of status (and revision); false when another request changed it first.</summary>
     Task<bool> TryTransitionAsync(Guid contractId, string from, string to, DateTimeOffset now, CancellationToken cancellationToken);
 
+    /// <summary>Active installation warranty durations (months) offered by the Admin, and the default one (null when none is set).</summary>
+    Task<(IReadOnlyList<int> Active, int? Default)> GetInstallationWarrantyOptionsAsync(CancellationToken cancellationToken);
+
     void AddContract(CustomerContract contract);
     void AddSubmission(ContractSignatureSubmission submission);
     void AddEvent(ContractEvent contractEvent);

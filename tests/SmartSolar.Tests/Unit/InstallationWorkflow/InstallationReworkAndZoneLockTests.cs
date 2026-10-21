@@ -16,11 +16,11 @@ using static SmartSolar.Tests.Unit.InstallationWorkflow.InstallationTests;
 namespace SmartSolar.Tests.Unit.InstallationWorkflow;
 
 /// <summary>
-/// Final-review fixes of the Installation Flow: Manager return-to-rework, start after the scheduled interval, started work pinning
+/// Installation Flow rework and locking rules: Manager return-to-rework, start after the scheduled interval, started work pinning
 /// the technician's configuration, site area codes frozen by a project, coverage re-read under the area locks, and the outgoing
 /// technician absorbing survey holds on a reassignment.
 /// </summary>
-public sealed class InstallationReviewFixTests
+public sealed class InstallationReworkAndZoneLockTests
 {
     private static readonly CancellationToken None = CancellationToken.None;
     private static readonly DateOnly Wed = Day.AddDays(1);

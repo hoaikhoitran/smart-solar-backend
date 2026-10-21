@@ -2,6 +2,7 @@ using SmartSolar.Infrastructure.Email;
 
 namespace SmartSolar.Tests.Unit.Email;
 
+/// <summary>Startup validation of the Email section: nothing is needed while disabled; an enabled setup must be complete and failures never echo secrets.</summary>
 public class EmailOptionsValidatorTests
 {
     private const string Secret = "sup3r-secret-smtp-password";
@@ -11,102 +12,52 @@ public class EmailOptionsValidatorTests
         Enabled = true,
         Smtp = new SmtpOptions
         {
-            Host = "smtp.example.com",
-            Port = 587,
-            UseSsl = true,
-            Username = "mailer@example.com",
-            Password = Secret,
-            FromAddress = "no-reply@example.com",
-            FromName = "Smart Solar"
-        }
+            Host = "smtp.example.com", Port = 587, UseSsl = true, Username = "mailer@example.com", Password = Secret,
+            FromAddress = "no-reply@example.com", FromName = "Smart Solar",
+        },
     };
 
-    private static EmailOptionsValidator Validator() => new();
+    private static Microsoft.Extensions.Options.ValidateOptionsResult Validate(EmailOptions options) => new EmailOptionsValidator().Validate(null, options);
 
-    [Fact]
-    public void Disabled_configuration_needs_no_credentials()
-    {
-        var options = new EmailOptions { Enabled = false, Smtp = new SmtpOptions() };
-
-        Assert.True(Validator().Validate(null, options).Succeeded);
-    }
-
-    [Fact]
-    public void Enabled_configuration_accepts_a_complete_setup()
-    {
-        Assert.True(Validator().Validate(null, Valid()).Succeeded);
-    }
-
-    [Fact]
-    public void Enabled_configuration_rejects_a_missing_host()
+    [Theory]
+    [InlineData("complete")]
+    [InlineData("disabled without credentials")]
+    [InlineData("server without authentication")]
+    public void Valid_configurations_pass(string setup)
     {
         var options = Valid();
-        options.Smtp.Host = "";
+        switch (setup)
+        {
+            case "disabled without credentials": options = new EmailOptions { Enabled = false, Smtp = new SmtpOptions() }; break;
+            case "server without authentication": options.Smtp.Username = ""; options.Smtp.Password = ""; break;
+        }
 
-        var result = Validator().Validate(null, options);
-
-        Assert.True(result.Failed);
-        Assert.Contains("Host", string.Join(" ", result.Failures!));
+        Assert.True(Validate(options).Succeeded);
     }
 
     [Theory]
-    [InlineData(0)]
-    [InlineData(-1)]
-    [InlineData(70000)]
-    public void Enabled_configuration_rejects_an_invalid_port(int port)
+    [InlineData("Host", "")]
+    [InlineData("Port", "0")]
+    [InlineData("Port", "-1")]
+    [InlineData("Port", "70000")]
+    [InlineData("FromAddress", "")]
+    [InlineData("FromAddress", "not-an-address")]
+    [InlineData("Password", "")]   // a username needs a password
+    public void An_enabled_configuration_with_a_bad_value_fails_naming_the_setting(string setting, string value)
     {
         var options = Valid();
-        options.Smtp.Port = port;
+        switch (setting)
+        {
+            case "Host": options.Smtp.Host = value; break;
+            case "Port": options.Smtp.Port = int.Parse(value); break;
+            case "FromAddress": options.Smtp.FromAddress = value; break;
+            case "Password": options.Smtp.Password = value; break;
+        }
 
-        var result = Validator().Validate(null, options);
+        var result = Validate(options);
 
         Assert.True(result.Failed);
-        Assert.Contains("Port", string.Join(" ", result.Failures!));
-    }
-
-    [Fact]
-    public void Enabled_configuration_rejects_a_missing_from_address()
-    {
-        var options = Valid();
-        options.Smtp.FromAddress = "";
-
-        var result = Validator().Validate(null, options);
-
-        Assert.True(result.Failed);
-        Assert.Contains("FromAddress", string.Join(" ", result.Failures!));
-    }
-
-    [Fact]
-    public void Enabled_configuration_rejects_a_malformed_from_address()
-    {
-        var options = Valid();
-        options.Smtp.FromAddress = "not-an-address";
-
-        var result = Validator().Validate(null, options);
-
-        Assert.True(result.Failed);
-    }
-
-    [Fact]
-    public void Enabled_configuration_requires_a_password_when_a_username_is_set()
-    {
-        var options = Valid();
-        options.Smtp.Password = "";
-
-        var result = Validator().Validate(null, options);
-
-        Assert.True(result.Failed);
-        Assert.Contains("Password", string.Join(" ", result.Failures!));
-    }
-
-    [Fact]
-    public void Enabled_configuration_allows_a_server_without_authentication()
-    {
-        var options = Valid();
-        options.Smtp.Username = "";
-        options.Smtp.Password = "";
-
-        Assert.True(Validator().Validate(null, options).Succeeded);
+        if (value != "not-an-address") Assert.Contains(setting, string.Join(" ", result.Failures!));
     }
 
     [Fact]
@@ -116,8 +67,7 @@ public class EmailOptionsValidatorTests
         options.Smtp.Host = "";
         options.Smtp.FromAddress = "";
 
-        var result = Validator().Validate(null, options);
-        var message = string.Join(" ", result.Failures!);
+        var message = string.Join(" ", Validate(options).Failures!);
 
         Assert.DoesNotContain(Secret, message);
         Assert.DoesNotContain("mailer@example.com", message);

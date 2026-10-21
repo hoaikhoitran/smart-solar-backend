@@ -1,13 +1,12 @@
-using MassTransit;
 using Microsoft.Extensions.Logging.Abstractions;
 using SmartSolar.Infrastructure.Email;
-using SmartSolar.Infrastructure.Messaging.RabbitMQ.Consumers;
 using SmartSolar.Modules.Identity.Events;
 using SmartSolar.Modules.Identity.Options;
 using SmartSolar.Tests.TestSupport;
 
 namespace SmartSolar.Tests.Unit.Email;
 
+/// <summary>Content of the password reset email and failure propagation for retries (the consumer is in EmailConsumerTests).</summary>
 public class PasswordResetEmailServiceTests
 {
     private const string Url = "https://app.test/reset-password?token=RAW-RESET-TOKEN";
@@ -72,74 +71,5 @@ public class PasswordResetEmailServiceTests
 
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => service.SendPasswordResetEmailAsync(Event(), CancellationToken.None));
-    }
-}
-
-public class PasswordResetConsumerTests
-{
-    private static (PasswordResetRequestedConsumer Consumer, FakeEmailSender Sender) Create()
-    {
-        var sender = new FakeEmailSender();
-        var service = new PasswordResetEmailService(
-            sender,
-            new PasswordResetOptions { LifetimeMinutes = 60 },
-            NullLogger<PasswordResetEmailService>.Instance);
-
-        return (new PasswordResetRequestedConsumer(service), sender);
-    }
-
-    private static PasswordResetRequestedEvent Event()
-        => new(Guid.NewGuid(), "person@example.com", "Test Person", "https://app.test/reset-password?token=RAW");
-
-    [Fact]
-    public async Task Consuming_the_event_sends_the_reset_email()
-    {
-        var (consumer, sender) = Create();
-
-        await consumer.Consume(new StubConsumeContext<PasswordResetRequestedEvent>(
-            Event(), CancellationToken.None));
-
-        Assert.Single(sender.Sent);
-    }
-
-    [Fact]
-    public async Task Smtp_failures_escape_the_consumer_so_masstransit_can_retry()
-    {
-        var (consumer, sender) = Create();
-        sender.ThrowOnSend = new InvalidOperationException("smtp down");
-
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            consumer.Consume(new StubConsumeContext<PasswordResetRequestedEvent>(
-                Event(), CancellationToken.None)));
-    }
-
-    [Fact]
-    public async Task Passes_the_cancellation_token_to_the_sender()
-    {
-        var (consumer, sender) = Create();
-        using var cts = new CancellationTokenSource();
-
-        await consumer.Consume(new StubConsumeContext<PasswordResetRequestedEvent>(Event(), cts.Token));
-
-        Assert.Equal(cts.Token, sender.LastCancellationToken);
-    }
-
-    [Fact]
-    public void Consumer_consumes_the_password_reset_event()
-    {
-        Assert.Contains(
-            typeof(PasswordResetRequestedConsumer).GetInterfaces(),
-            i => i.IsGenericType
-                 && i.GetGenericTypeDefinition() == typeof(IConsumer<>)
-                 && i.GenericTypeArguments[0] == typeof(PasswordResetRequestedEvent));
-    }
-
-    [Fact]
-    public void Endpoint_uses_its_own_durable_queue_with_the_same_retry_contract()
-    {
-        Assert.Equal("password-reset", PasswordResetEndpoint.QueueName);
-        Assert.NotEqual(EmailVerificationEndpoint.QueueName, PasswordResetEndpoint.QueueName);
-        Assert.Equal(3, PasswordResetEndpoint.RetryLimit);
-        Assert.Equal(TimeSpan.FromSeconds(5), PasswordResetEndpoint.RetryInterval);
     }
 }

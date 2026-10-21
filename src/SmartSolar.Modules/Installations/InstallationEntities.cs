@@ -81,6 +81,12 @@ public sealed class InstallationAssignment
 
     /// <summary>When the assignment stopped being current (REPLACED, COMPLETED, CANCELLED).</summary>
     public DateTimeOffset? ClosedAt { get; set; }
+
+    /// <summary>
+    /// Set for an after-sales visit (Flow 3) of the handed-over project; null for the installation itself. Sharing this table
+    /// gives after-sales visits the same overlap constraint, technician locks and busy-interval checks as installation work.
+    /// </summary>
+    public Guid? ServiceVisitId { get; set; }
 }
 
 /// <summary>A verified INSTALLATION_EVIDENCE photo uploaded by the responsible technician for one round. Never deleted; each file is used once.</summary>
@@ -124,6 +130,26 @@ public sealed class InstalledAsset
     public int? WarrantyMonths { get; set; }
     public Guid RegisteredByUserId { get; set; }
     public DateTimeOffset RegisteredAt { get; set; }
+
+    /// <summary>ACTIVE, PENDING_ACCEPTANCE (a replacement waiting for the customer's acceptance) or REPLACED (kept as history).</summary>
+    public string Status { get; set; } = InstalledAssetStatuses.Active;
+
+    /// <summary>The asset this one replaced (replacement lineage, e.g. INV001 → INV002).</summary>
+    public Guid? ReplacesAssetId { get; set; }
+
+    /// <summary>The after-sales request whose repair installed this asset.</summary>
+    public Guid? ServiceRequestId { get; set; }
+
+    /// <summary>Essential technical specification of a replacement (rating, capacity…).</summary>
+    public string? Specifications { get; set; }
+}
+
+public static class InstalledAssetStatuses
+{
+    public const string Active = "ACTIVE";
+    public const string PendingAcceptance = "PENDING_ACCEPTANCE";
+    public const string Replaced = "REPLACED";
+    public static readonly IReadOnlyList<string> All = [Active, PendingAcceptance, Replaced];
 }
 
 /// <summary>Configurable pre-start condition (grid connection, fire safety…): applicability and evidence are explicit.</summary>

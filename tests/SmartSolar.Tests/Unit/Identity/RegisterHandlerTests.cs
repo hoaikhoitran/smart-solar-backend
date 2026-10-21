@@ -6,6 +6,7 @@ using SmartSolar.Tests.TestSupport;
 
 namespace SmartSolar.Tests.Unit.Identity;
 
+/// <summary>Local registration: the created account, its hashed secrets and verification email, duplicates and failure handling.</summary>
 public class RegisterHandlerTests
 {
     private static RegisterCommand Command(
@@ -16,122 +17,38 @@ public class RegisterHandlerTests
         => new(email, password, fullName, phone);
 
     [Fact]
-    public async Task Creates_account_for_a_valid_local_registration()
+    public async Task A_valid_registration_creates_a_pending_customer_with_hashed_secrets_and_publishes_the_verification_email()
     {
         await using var ctx = new IdentityTestContext();
-        await ctx.SeedCustomerRoleAsync();
+        var customer = await ctx.SeedCustomerRoleAsync();
+        ctx.VerificationOptions.LifetimeMinutes = 1440;
+        var before = DateTimeOffset.UtcNow;
 
-        var result = await ctx.CreateRegisterHandler().HandleAsync(Command(), CancellationToken.None);
+        var result = await ctx.CreateRegisterHandler()
+            .HandleAsync(Command(email: "  New.User@EXAMPLE.com  ", password: "super secret pw", phone: "0901234567"), CancellationToken.None);
 
         Assert.Equal(RegisterOutcome.Created, result.Outcome);
         var user = await ctx.Db.UserAccounts.SingleAsync();
         Assert.Equal(user.Id, result.UserId);
-        Assert.Equal("New User", user.FullName);
-    }
-
-    [Fact]
-    public async Task Normalizes_email_before_persisting()
-    {
-        await using var ctx = new IdentityTestContext();
-        await ctx.SeedCustomerRoleAsync();
-
-        var result = await ctx.CreateRegisterHandler()
-            .HandleAsync(Command(email: "  New.User@EXAMPLE.com  "), CancellationToken.None);
-
-        var user = await ctx.Db.UserAccounts.SingleAsync();
-        Assert.Equal("new.user@example.com", user.Email);
-        Assert.Equal("new.user@example.com", result.Email);
-    }
-
-    [Fact]
-    public async Task Stores_password_as_a_hash_not_plaintext()
-    {
-        await using var ctx = new IdentityTestContext();
-        await ctx.SeedCustomerRoleAsync();
-
-        await ctx.CreateRegisterHandler()
-            .HandleAsync(Command(password: "super secret pw"), CancellationToken.None);
-
-        var user = await ctx.Db.UserAccounts.SingleAsync();
-        Assert.NotNull(user.PasswordHash);
-        Assert.NotEqual("super secret pw", user.PasswordHash);
-        Assert.DoesNotContain("super secret pw", user.PasswordHash);
-    }
-
-    [Fact]
-    public async Task Sets_status_to_pending_verification()
-    {
-        await using var ctx = new IdentityTestContext();
-        await ctx.SeedCustomerRoleAsync();
-
-        await ctx.CreateRegisterHandler().HandleAsync(Command(), CancellationToken.None);
-
-        var user = await ctx.Db.UserAccounts.SingleAsync();
+        Assert.Equal(("new.user@example.com", "new.user@example.com"), (user.Email, result.Email));   // normalized
+        Assert.Equal(("New User", "0901234567"), (user.FullName, user.Phone));
         Assert.Equal(UserStatus.PendingVerification, user.Status);
         Assert.Null(user.EmailVerifiedAt);
-    }
-
-    [Fact]
-    public async Task Assigns_the_customer_role()
-    {
-        await using var ctx = new IdentityTestContext();
-        var customer = await ctx.SeedCustomerRoleAsync();
-
-        await ctx.CreateRegisterHandler().HandleAsync(Command(), CancellationToken.None);
-
+        Assert.NotNull(user.PasswordHash);
+        Assert.DoesNotContain("super secret pw", user.PasswordHash);
         var userRole = await ctx.Db.UserRoles.SingleAsync();
-        var user = await ctx.Db.UserAccounts.SingleAsync();
-        Assert.Equal(customer.Id, userRole.RoleId);
-        Assert.Equal(user.Id, userRole.UserId);
-    }
+        Assert.Equal((customer.Id, user.Id), (userRole.RoleId, userRole.UserId));
 
-    [Fact]
-    public async Task Creates_an_email_verification_token_storing_only_the_hash()
-    {
-        await using var ctx = new IdentityTestContext();
-        await ctx.SeedCustomerRoleAsync();
-
-        await ctx.CreateRegisterHandler().HandleAsync(Command(), CancellationToken.None);
-
+        // Only the hash of the emailed token is stored; it expires after the configured lifetime.
         var token = await ctx.Db.AuthActionTokens.SingleAsync();
-        var published = Assert.Single(ctx.Publisher.PublishedOf<EmailVerificationRequestedEvent>());
-        var rawToken = published.VerificationUrl.Split("token=")[1];
-
-        Assert.Equal(AuthActionTokenType.EmailVerification, token.Type);
-        Assert.Null(token.UsedAt);
-        Assert.NotEqual(rawToken, token.TokenHash);
-        Assert.Equal(64, token.TokenHash.Length);
-    }
-
-    [Fact]
-    public async Task Token_expires_after_the_configured_lifetime()
-    {
-        await using var ctx = new IdentityTestContext();
-        await ctx.SeedCustomerRoleAsync();
-        ctx.VerificationOptions.LifetimeMinutes = 1440;
-
-        var before = DateTimeOffset.UtcNow;
-        await ctx.CreateRegisterHandler().HandleAsync(Command(), CancellationToken.None);
-
-        var token = await ctx.Db.AuthActionTokens.SingleAsync();
-        Assert.InRange(
-            token.ExpiresAt,
-            before.AddMinutes(1439),
-            DateTimeOffset.UtcNow.AddMinutes(1441));
-    }
-
-    [Fact]
-    public async Task Publishes_verification_event_with_url_from_configuration()
-    {
-        await using var ctx = new IdentityTestContext();
-        await ctx.SeedCustomerRoleAsync();
-
-        await ctx.CreateRegisterHandler().HandleAsync(Command(), CancellationToken.None);
-
         var published = Assert.Single(ctx.Publisher.PublishedOf<EmailVerificationRequestedEvent>());
         Assert.StartsWith("https://app.test/verify-email?token=", published.VerificationUrl);
-        Assert.Equal("new.user@example.com", published.Email);
-        Assert.Equal("New User", published.FullName);
+        Assert.Equal(("new.user@example.com", "New User"), (published.Email, published.FullName));
+        Assert.Equal(AuthActionTokenType.EmailVerification, token.Type);
+        Assert.Null(token.UsedAt);
+        Assert.NotEqual(published.VerificationUrl.Split("token=")[1], token.TokenHash);
+        Assert.Equal(64, token.TokenHash.Length);
+        Assert.InRange(token.ExpiresAt, before.AddMinutes(1439), DateTimeOffset.UtcNow.AddMinutes(1441));
     }
 
     [Fact]
@@ -192,17 +109,5 @@ public class RegisterHandlerTests
         Assert.Equal(1, await ctx.Db.UserAccounts.CountAsync());
         Assert.Equal(1, await ctx.Db.AuthActionTokens.CountAsync());
         Assert.Equal(1, await ctx.Db.UserRoles.CountAsync());
-    }
-
-    [Fact]
-    public async Task Persists_optional_phone_when_supplied()
-    {
-        await using var ctx = new IdentityTestContext();
-        await ctx.SeedCustomerRoleAsync();
-
-        await ctx.CreateRegisterHandler().HandleAsync(Command(phone: "0901234567"), CancellationToken.None);
-
-        var user = await ctx.Db.UserAccounts.SingleAsync();
-        Assert.Equal("0901234567", user.Phone);
     }
 }

@@ -40,6 +40,7 @@ public sealed class CustomerContractConfiguration : IEntityTypeConfiguration<Cus
         builder.Property(x => x.PricingSnapshot).HasColumnName("pricing_snapshot").HasColumnType("jsonb").IsRequired();
         builder.Property(x => x.CustomerSnapshot).HasColumnName("customer_snapshot").HasColumnType("jsonb").IsRequired();
         builder.Property(x => x.Terms).HasColumnName("terms").HasMaxLength(8000);
+        builder.Property(x => x.WarrantyMonths).HasColumnName("warranty_months");
         builder.Property(x => x.CanonicalHash).HasColumnName("canonical_hash").HasMaxLength(64);
         builder.Property(x => x.OfficialDocumentFileId).HasColumnName("official_document_file_id");
         builder.Property(x => x.OfficialDocumentSha256).HasColumnName("official_document_sha256").HasMaxLength(64);

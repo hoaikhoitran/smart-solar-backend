@@ -1,6 +1,7 @@
 namespace SmartSolar.Api.Contracts.InstallationWorkflow;
 
-public sealed record ContractTermsRequest(int? Revision, string? Terms);
+/// <summary><paramref name="WarrantyMonths"/>: installation warranty chosen from the Admin options (omitted = the default option).</summary>
+public sealed record ContractTermsRequest(int? Revision, string? Terms, int? WarrantyMonths = null);
 
 /// <summary>canonicalHash must equal the contract's current canonicalHash (proves the PDF was rendered from this version).</summary>
 public sealed record OfficialDocumentRequest(int Revision, Guid FileId, string? CanonicalHash);

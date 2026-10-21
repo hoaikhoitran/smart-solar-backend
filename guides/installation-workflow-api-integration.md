@@ -79,10 +79,14 @@ Customer: `GET /api/customers/me/quotations[/{id}]`, `POST …/{id}/accept`, `PO
 
 ## Contracts
 
-Sales: `POST /api/quotations/{quotationId}/contracts` `{ terms }` · `GET /api/survey-requests/{id}/contracts` ·
-`GET /api/contracts/{id}` · `PUT /api/contracts/{id}` `{ revision, terms }` · `POST …/issue` `{ revision }` →
+Sales: `POST /api/quotations/{quotationId}/contracts` `{ terms, warrantyMonths? }` · `GET /api/survey-requests/{id}/contracts` ·
+`GET /api/contracts/{id}` · `PUT /api/contracts/{id}` `{ revision, terms, warrantyMonths? }` · `POST …/issue` `{ revision }` →
 response has `canonicalHash` · `PUT …/official-document` `{ revision, fileId, canonicalHash }` ·
-`POST …/publish` `{ revision }` · `POST …/amendments` `{ terms }`.
+`POST …/publish` `{ revision }` · `POST …/amendments` `{ terms, warrantyMonths? }`.
+
+`warrantyMonths` is one of the Admin's active installation warranty options (`GET /api/sales/after-sales/warranty-options?kind=INSTALLATION`);
+omitted = the default option. A draft without months cannot be issued: **400 `CONTRACT_WARRANTY_REQUIRED`** (an Admin must configure
+the options first; see [after-sales-services.md](after-sales-services.md)). An unknown duration → 400 `CONTRACT_WARRANTY_VALIDATION_FAILED`.
 Sales owner or Manager: `POST /api/contracts/{id}/review` `{ revision, decision: APPROVE|REJECT, reason }`.
 
 Customer: `GET /api/customers/me/contracts[/{id}]` (includes the official document file id and its

@@ -12,11 +12,11 @@ using static SmartSolar.Tests.TestSupport.SchedulingTestContext;
 namespace SmartSolar.Tests.Unit.Scheduling;
 
 /// <summary>
-/// Final approved business rules over SQLite: Admin-only zone structure and Manager-scoped technician memberships (enforced in the
+/// Zone governance and released jobs over SQLite: Admin-only zone structure and Manager-scoped technician memberships (enforced in the
 /// handlers against the actor's current roles), released dispatch-assigned jobs returning to the dispatch queue, temporarily
 /// unserviceable zones accepting requests through dispatch, and out-of-scope locations being refused.
 /// </summary>
-public sealed class FinalBusinessRuleTests
+public sealed class ZoneGovernanceAndDispatchReleaseTests
 {
     private static readonly CancellationToken None = CancellationToken.None;
 

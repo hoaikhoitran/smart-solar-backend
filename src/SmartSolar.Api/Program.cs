@@ -44,6 +44,7 @@ builder.Services.AddAdminUsersRateLimiting(builder.Configuration);
 builder.Services.AddFeatureFlagsAndFileStorage(builder.Configuration);
 builder.Services.AddInstallationWorkflow(builder.Configuration);
 builder.Services.AddInstallationWorkflowRateLimiting(builder.Configuration);
+builder.Services.AddAfterSales(builder.Configuration);
 builder.Services.AddKnowledgeBase(builder.Configuration);
 builder.Services.AddKnowledgeBaseRateLimiting(builder.Configuration);
 builder.Services.AddSystemSettingsModule(builder.Configuration);
@@ -55,6 +56,10 @@ builder.Services.AddEnvelopedModelValidation();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
+     options.CustomSchemaIds(
+        type => type.FullName?.Replace('+', '.') ?? type.Name
+    );
+
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
         Name = "Authorization",

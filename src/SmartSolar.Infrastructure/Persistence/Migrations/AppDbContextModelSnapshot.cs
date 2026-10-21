@@ -367,6 +367,1412 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.AfterSalesEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("ActorUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Detail")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("detail");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("event_type");
+
+                    b.Property<Guid>("SubjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("subject_id");
+
+                    b.Property<string>("SubjectType")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("subject_type");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ActorUserId");
+
+                    b.HasIndex("SubjectType", "SubjectId", "CreatedAt")
+                        .HasDatabaseName("ix_after_sales_event_subject");
+
+                    b.ToTable("after_sales_event", (string)null);
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.AfterSalesNotification", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("message");
+
+                    b.Property<DateTimeOffset?>("ReadAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("read_at");
+
+                    b.Property<Guid>("RecipientUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("recipient_user_id");
+
+                    b.Property<Guid?>("RequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_id");
+
+                    b.Property<Guid?>("SubscriptionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("subscription_id");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("type");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RequestId");
+
+                    b.HasIndex("SubscriptionId");
+
+                    b.HasIndex("RecipientUserId", "CreatedAt")
+                        .HasDatabaseName("ix_after_sales_notification_recipient");
+
+                    b.ToTable("after_sales_notification", (string)null);
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.DisasterClaim", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("CoveragePercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("coverage_percent");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset?>("DecidedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("decided_at");
+
+                    b.Property<Guid?>("DecidedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("decided_by_user_id");
+
+                    b.Property<string>("DecisionReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("decision_reason");
+
+                    b.Property<string>("DisasterType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("disaster_type");
+
+                    b.Property<string>("FirstDecisionReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("first_decision_reason");
+
+                    b.Property<DateTimeOffset>("IncidentOccurredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("incident_occurred_at");
+
+                    b.Property<decimal>("PerIncidentLimit")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("per_incident_limit");
+
+                    b.Property<string>("ReconsiderationNote")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("reconsideration_note");
+
+                    b.Property<DateTimeOffset?>("ReconsiderationRequestedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("reconsideration_requested_at");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_id");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid?>("SubscriptionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("subscription_id");
+
+                    b.Property<decimal>("SupportConsumed")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("support_consumed");
+
+                    b.Property<decimal>("SupportReserved")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("support_reserved");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DecidedByUserId");
+
+                    b.HasIndex("RequestId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_disaster_claim_request");
+
+                    b.HasIndex("SubscriptionId")
+                        .HasDatabaseName("ix_disaster_claim_subscription");
+
+                    b.ToTable("disaster_claim", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_disaster_claim_status", "status IN ('NOT_ELIGIBLE', 'SUBMITTED', 'APPROVED', 'REJECTED', 'RECONSIDERATION_REQUESTED')");
+
+                            t.HasCheckConstraint("ck_disaster_claim_support", "coverage_percent BETWEEN 0 AND 100 AND support_reserved >= 0 AND support_consumed >= 0 AND support_reserved + support_consumed <= per_incident_limit");
+
+                            t.HasCheckConstraint("ck_disaster_claim_type", "disaster_type IN ('STORM', 'FLOOD', 'LIGHTNING')");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.MaintenanceEntitlement", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset?>("ConsumedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("consumed_at");
+
+                    b.Property<Guid?>("CurrentRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("current_request_id");
+
+                    b.Property<DateTimeOffset?>("ExtendedUntil")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("extended_until");
+
+                    b.Property<DateTimeOffset?>("FollowUpCreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("follow_up_created_at");
+
+                    b.Property<DateTimeOffset?>("NotifiedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("notified_at");
+
+                    b.Property<DateTimeOffset>("PeriodEndsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("period_ends_at");
+
+                    b.Property<DateTimeOffset>("PeriodStartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("period_starts_at");
+
+                    b.Property<int>("PlanMonth")
+                        .HasColumnType("integer")
+                        .HasColumnName("plan_month");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("SubscriptionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("subscription_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CurrentRequestId");
+
+                    b.HasIndex("Status", "PeriodStartsAt")
+                        .HasDatabaseName("ix_maintenance_entitlement_status_period");
+
+                    b.HasIndex("SubscriptionId", "PlanMonth")
+                        .IsUnique()
+                        .HasDatabaseName("ux_maintenance_entitlement_subscription_month");
+
+                    b.ToTable("maintenance_entitlement", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_maintenance_entitlement_consumed", "(status = 'CONSUMED') = (consumed_at IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_maintenance_entitlement_period", "plan_month >= 1 AND period_ends_at > period_starts_at");
+
+                            t.HasCheckConstraint("ck_maintenance_entitlement_status", "status IN ('AVAILABLE', 'BOOKED', 'CONSUMED', 'NOT_COMPLETED', 'EXPIRED', 'EXPIRED_UNFULFILLED')");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.RefundRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal?>("ApprovedAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("approved_amount");
+
+                    b.Property<DateTimeOffset?>("ApprovedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("approved_at");
+
+                    b.Property<Guid?>("ApprovedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("approved_by_user_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CustomerUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("customer_user_id");
+
+                    b.Property<string>("DecisionNote")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("decision_note");
+
+                    b.Property<decimal>("OriginalAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("original_amount");
+
+                    b.Property<Guid?>("PaymentAttemptId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("payment_attempt_id");
+
+                    b.Property<Guid?>("QuotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("quotation_id");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("reason");
+
+                    b.Property<Guid?>("RecordedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("recorded_by_user_id");
+
+                    b.Property<string>("RefundReference")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("refund_reference");
+
+                    b.Property<DateTimeOffset?>("RefundedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("refunded_at");
+
+                    b.Property<Guid?>("RequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_id");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid?>("SubscriptionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("subscription_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ApprovedByUserId");
+
+                    b.HasIndex("CustomerUserId");
+
+                    b.HasIndex("PaymentAttemptId");
+
+                    b.HasIndex("QuotationId");
+
+                    b.HasIndex("RecordedByUserId");
+
+                    b.HasIndex("RefundedAt")
+                        .HasDatabaseName("ix_refund_record_refunded_at");
+
+                    b.HasIndex("RequestId");
+
+                    b.HasIndex("SubscriptionId");
+
+                    b.HasIndex("Status", "CreatedAt")
+                        .HasDatabaseName("ix_refund_record_status_created_at");
+
+                    b.ToTable("refund_record", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_refund_record_amounts", "original_amount >= 0 AND (approved_amount IS NULL OR approved_amount BETWEEN 0 AND original_amount)");
+
+                            t.HasCheckConstraint("ck_refund_record_refunded", "status <> 'REFUNDED' OR (refunded_at IS NOT NULL AND recorded_by_user_id IS NOT NULL AND approved_amount IS NOT NULL AND approved_by_user_id IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_refund_record_status", "status IN ('PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'REFUNDED')");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.SalesTask", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("AssignedSalesUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("assigned_sales_user_id");
+
+                    b.Property<DateTimeOffset?>("ClaimedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("claimed_at");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CustomerUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("customer_user_id");
+
+                    b.Property<Guid?>("EntitlementId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("entitlement_id");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("note");
+
+                    b.Property<string>("Outcome")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("outcome");
+
+                    b.Property<Guid?>("RequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_id");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<DateTimeOffset?>("StartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("TaskType")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("task_type");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CustomerUserId");
+
+                    b.HasIndex("AssignedSalesUserId", "Status")
+                        .HasDatabaseName("ix_sales_task_assignee_status");
+
+                    b.HasIndex("EntitlementId", "TaskType")
+                        .IsUnique()
+                        .HasDatabaseName("ux_sales_task_open_entitlement")
+                        .HasFilter("entitlement_id IS NOT NULL AND status IN ('OPEN', 'CLAIMED', 'IN_PROGRESS')");
+
+                    b.HasIndex("RequestId", "TaskType")
+                        .IsUnique()
+                        .HasDatabaseName("ux_sales_task_open_request")
+                        .HasFilter("request_id IS NOT NULL AND status IN ('OPEN', 'CLAIMED', 'IN_PROGRESS')");
+
+                    b.HasIndex("Status", "CreatedAt")
+                        .HasDatabaseName("ix_sales_task_status_created_at");
+
+                    b.ToTable("sales_task", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_sales_task_owner", "status = 'OPEN' OR status = 'CANCELLED' OR assigned_sales_user_id IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_sales_task_status", "status IN ('OPEN', 'CLAIMED', 'IN_PROGRESS', 'DONE', 'CANCELLED')");
+
+                            t.HasCheckConstraint("ck_sales_task_type", "task_type IN ('REPAIR_QUOTATION', 'MAINTENANCE_QUOTATION', 'MAINTENANCE_FOLLOW_UP', 'ACCEPTANCE_FOLLOW_UP')");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.ServiceEvidence", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("AddedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("added_at");
+
+                    b.Property<Guid>("AddedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("added_by_user_id");
+
+                    b.Property<string>("Caption")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("caption");
+
+                    b.Property<Guid>("FileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("file_id");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_id");
+
+                    b.Property<Guid?>("VisitId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("visit_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AddedByUserId");
+
+                    b.HasIndex("FileId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_service_evidence_file");
+
+                    b.HasIndex("RequestId")
+                        .HasDatabaseName("ix_service_evidence_request");
+
+                    b.HasIndex("VisitId");
+
+                    b.ToTable("service_evidence", (string)null);
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.ServiceItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("AssetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("asset_id");
+
+                    b.Property<string>("Coverage")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("coverage");
+
+                    b.Property<string>("CoverageReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("coverage_reason");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("description");
+
+                    b.Property<string>("Diagnosis")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("diagnosis");
+
+                    b.Property<bool>("IsSupplementary")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_supplementary");
+
+                    b.Property<string>("PartsUsed")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("parts_used");
+
+                    b.Property<Guid?>("QuotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("quotation_id");
+
+                    b.Property<Guid>("ReportedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reported_by_user_id");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_id");
+
+                    b.Property<string>("RequiredParts")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("required_parts");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("WorkResult")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("work_result");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AssetId");
+
+                    b.HasIndex("QuotationId");
+
+                    b.HasIndex("ReportedByUserId");
+
+                    b.HasIndex("RequestId")
+                        .HasDatabaseName("ix_service_item_request");
+
+                    b.ToTable("service_item", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_service_item_coverage", "coverage IN ('PENDING', 'INSTALLATION_WARRANTY', 'REPAIR_WARRANTY', 'DISASTER_PROTECTION', 'CHARGEABLE')");
+
+                            t.HasCheckConstraint("ck_service_item_status", "status IN ('OPEN', 'QUOTED', 'AUTHORIZED', 'DECLINED', 'DONE')");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.ServicePackage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal?>("CoveragePercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("coverage_percent");
+
+                    b.Property<string>("CoveredDisasterTypes")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("covered_disaster_types");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("description");
+
+                    b.Property<int>("DurationMonths")
+                        .HasColumnType("integer")
+                        .HasColumnName("duration_months");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_active");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)")
+                        .HasColumnName("name");
+
+                    b.Property<decimal?>("PerIncidentLimit")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("per_incident_limit");
+
+                    b.Property<decimal>("Price")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("price");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<decimal?>("TermLimit")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("term_limit");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("VisitMonths")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("visit_months");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Kind", "IsActive")
+                        .HasDatabaseName("ix_service_package_kind_active");
+
+                    b.ToTable("service_package", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_service_package_disaster", "kind <> 'DISASTER_PROTECTION' OR (covered_disaster_types IS NOT NULL AND coverage_percent BETWEEN 0 AND 100 AND per_incident_limit >= 0 AND term_limit >= per_incident_limit)");
+
+                            t.HasCheckConstraint("ck_service_package_kind", "kind IN ('MAINTENANCE', 'DISASTER_PROTECTION')");
+
+                            t.HasCheckConstraint("ck_service_package_maintenance", "kind <> 'MAINTENANCE' OR visit_months IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_service_package_price", "price > 0 AND duration_months BETWEEN 1 AND 120");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.ServiceQuotation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset?>("AcceptedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("accepted_at");
+
+                    b.Property<Guid?>("CurrentPaymentAttemptId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("current_payment_attempt_id");
+
+                    b.Property<decimal>("CustomerAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("customer_amount");
+
+                    b.Property<Guid?>("DisasterClaimId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("disaster_claim_id");
+
+                    b.Property<decimal>("DisasterSupportAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("disaster_support_amount");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<bool>("IsSupplementary")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_supplementary");
+
+                    b.Property<DateTimeOffset>("IssuedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("issued_at");
+
+                    b.Property<decimal>("LaborAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("labor_amount");
+
+                    b.Property<string>("LinesJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("lines");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("note");
+
+                    b.Property<DateTimeOffset?>("PaidAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("paid_at");
+
+                    b.Property<decimal>("PartsAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("parts_amount");
+
+                    b.Property<DateTimeOffset?>("RejectedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("rejected_at");
+
+                    b.Property<int?>("RepairWarrantyMonths")
+                        .HasColumnType("integer")
+                        .HasColumnName("repair_warranty_months");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_id");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<Guid>("SalesUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("sales_user_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid?>("SupersedesQuotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("supersedes_quotation_id");
+
+                    b.Property<decimal>("TotalAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("total_amount");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CurrentPaymentAttemptId");
+
+                    b.HasIndex("DisasterClaimId");
+
+                    b.HasIndex("RequestId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_service_quotation_one_open")
+                        .HasFilter("status IN ('ISSUED', 'ACCEPTED')");
+
+                    b.HasIndex("SalesUserId");
+
+                    b.HasIndex("SupersedesQuotationId");
+
+                    b.HasIndex("RequestId", "Version")
+                        .IsUnique()
+                        .HasDatabaseName("ux_service_quotation_request_version");
+
+                    b.HasIndex("Status", "ExpiresAt")
+                        .HasDatabaseName("ix_service_quotation_status_expires_at");
+
+                    b.ToTable("service_quotation", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_service_quotation_amounts", "parts_amount >= 0 AND labor_amount >= 0 AND total_amount = parts_amount + labor_amount AND total_amount > 0 AND disaster_support_amount >= 0 AND disaster_support_amount <= total_amount AND customer_amount = total_amount - disaster_support_amount");
+
+                            t.HasCheckConstraint("ck_service_quotation_expiry", "expires_at > issued_at");
+
+                            t.HasCheckConstraint("ck_service_quotation_paid", "status <> 'PAID' OR paid_at IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_service_quotation_status", "status IN ('ISSUED', 'ACCEPTED', 'PAID', 'REJECTED', 'SUPERSEDED', 'EXPIRED', 'CANCELLED')");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.ServiceRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset?>("AcceptanceRequestedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("acceptance_requested_at");
+
+                    b.Property<string>("CancellationReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("cancellation_reason");
+
+                    b.Property<DateTimeOffset?>("CancellationRequestedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cancellation_requested_at");
+
+                    b.Property<DateTimeOffset?>("CancelledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cancelled_at");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("CustomerDecisionReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("customer_decision_reason");
+
+                    b.Property<Guid>("CustomerUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("customer_user_id");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("description");
+
+                    b.Property<Guid?>("DuplicateOfRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("duplicate_of_request_id");
+
+                    b.Property<DateTimeOffset?>("InstallationWarrantyEndsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("installation_warranty_ends_at");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("kind");
+
+                    b.Property<DateTimeOffset?>("LastAcceptanceReminderAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_acceptance_reminder_at");
+
+                    b.Property<Guid?>("MaintenanceEntitlementId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("maintenance_entitlement_id");
+
+                    b.Property<Guid?>("OriginRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("origin_request_id");
+
+                    b.Property<string>("Outcome")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("outcome");
+
+                    b.Property<DateTimeOffset?>("PreferredStartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("preferred_starts_at");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("project_id");
+
+                    b.Property<Guid>("PropertySiteId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("property_site_id");
+
+                    b.Property<DateTimeOffset?>("RepairWarrantyEndsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("repair_warranty_ends_at");
+
+                    b.Property<int?>("RepairWarrantyMonths")
+                        .HasColumnType("integer")
+                        .HasColumnName("repair_warranty_months");
+
+                    b.Property<DateTimeOffset?>("RepairWarrantyStartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("repair_warranty_starts_at");
+
+                    b.Property<string>("RequestNumber")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("request_number");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid?>("SuspectedAssetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("suspected_asset_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid?>("WarrantySourceRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("warranty_source_request_id");
+
+                    b.Property<bool>("WithinInstallationWarranty")
+                        .HasColumnType("boolean")
+                        .HasColumnName("within_installation_warranty");
+
+                    b.Property<bool>("WithinRepairWarranty")
+                        .HasColumnType("boolean")
+                        .HasColumnName("within_repair_warranty");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DuplicateOfRequestId");
+
+                    b.HasIndex("MaintenanceEntitlementId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_service_request_live_entitlement")
+                        .HasFilter("maintenance_entitlement_id IS NOT NULL AND status NOT IN ('COMPLETED', 'NOT_COMPLETED', 'CANCELLED', 'CLOSED_DUPLICATE')");
+
+                    b.HasIndex("OriginRequestId");
+
+                    b.HasIndex("PropertySiteId");
+
+                    b.HasIndex("RequestNumber")
+                        .IsUnique()
+                        .HasDatabaseName("ux_service_request_number");
+
+                    b.HasIndex("SuspectedAssetId");
+
+                    b.HasIndex("WarrantySourceRequestId");
+
+                    b.HasIndex("CustomerUserId", "CreatedAt")
+                        .HasDatabaseName("ix_service_request_customer_created_at");
+
+                    b.HasIndex("ProjectId", "Status")
+                        .HasDatabaseName("ix_service_request_project_status");
+
+                    b.HasIndex("Status", "UpdatedAt")
+                        .HasDatabaseName("ix_service_request_status_updated_at");
+
+                    b.ToTable("service_request", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_service_request_cancelled", "status <> 'CANCELLED' OR cancelled_at IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_service_request_kind", "kind IN ('FAULT', 'MAINTENANCE', 'ONE_TIME_MAINTENANCE')");
+
+                            t.HasCheckConstraint("ck_service_request_maintenance_link", "(kind = 'MAINTENANCE') = (maintenance_entitlement_id IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_service_request_repair_warranty", "(repair_warranty_starts_at IS NULL) = (repair_warranty_ends_at IS NULL) AND (repair_warranty_ends_at IS NULL OR repair_warranty_ends_at > repair_warranty_starts_at)");
+
+                            t.HasCheckConstraint("ck_service_request_status", "status IN ('SUBMITTED', 'SCHEDULED', 'IN_PROGRESS', 'AWAITING_DECISION', 'AWAITING_QUOTATION', 'AWAITING_CUSTOMER', 'READY_FOR_WORK', 'PENDING_CUSTOMER_ACCEPTANCE', 'DISPUTED', 'REWORK_REQUIRED', 'COMPLETED', 'NOT_COMPLETED', 'CANCELLED', 'CLOSED_DUPLICATE')");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.ServiceSubscription", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset?>("ActivatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("activated_at");
+
+                    b.Property<string>("CancellationReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("cancellation_reason");
+
+                    b.Property<DateTimeOffset?>("CancellationRequestedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cancellation_requested_at");
+
+                    b.Property<DateTimeOffset?>("CancelledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cancelled_at");
+
+                    b.Property<DateTimeOffset?>("CheckoutExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("checkout_expires_at");
+
+                    b.Property<Guid>("ContractId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("contract_id");
+
+                    b.Property<decimal?>("CoveragePercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("coverage_percent");
+
+                    b.Property<DateTimeOffset?>("CoverageStartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("coverage_starts_at");
+
+                    b.Property<string>("CoveredDisasterTypes")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("covered_disaster_types");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid?>("CurrentPaymentAttemptId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("current_payment_attempt_id");
+
+                    b.Property<Guid>("CustomerUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("customer_user_id");
+
+                    b.Property<int>("DurationMonths")
+                        .HasColumnType("integer")
+                        .HasColumnName("duration_months");
+
+                    b.Property<DateTimeOffset?>("EndsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ends_at");
+
+                    b.Property<DateTimeOffset?>("ExpiryReminderSentAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expiry_reminder_sent_at");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("kind");
+
+                    b.Property<Guid>("PackageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("package_id");
+
+                    b.Property<string>("PackageName")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)")
+                        .HasColumnName("package_name");
+
+                    b.Property<DateTimeOffset?>("PaidAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("paid_at");
+
+                    b.Property<decimal?>("PerIncidentLimit")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("per_incident_limit");
+
+                    b.Property<decimal>("Price")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("price");
+
+                    b.Property<Guid?>("ProjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("project_id");
+
+                    b.Property<Guid?>("RenewsSubscriptionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("renews_subscription_id");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<DateTimeOffset?>("StartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("starts_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("status");
+
+                    b.Property<decimal>("SupportConsumed")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("support_consumed");
+
+                    b.Property<decimal>("SupportReserved")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("support_reserved");
+
+                    b.Property<decimal?>("TermLimit")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("term_limit");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("VisitMonths")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("visit_months");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CurrentPaymentAttemptId");
+
+                    b.HasIndex("PackageId");
+
+                    b.HasIndex("ProjectId");
+
+                    b.HasIndex("RenewsSubscriptionId");
+
+                    b.HasIndex("CustomerUserId", "CreatedAt")
+                        .HasDatabaseName("ix_service_subscription_customer_created_at");
+
+                    b.HasIndex("Status", "StartsAt")
+                        .HasDatabaseName("ix_service_subscription_status_starts_at");
+
+                    b.HasIndex("ContractId", "Kind", "Status")
+                        .HasDatabaseName("ix_service_subscription_contract_kind_status");
+
+                    b.ToTable("service_subscription", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_service_subscription_active", "status <> 'ACTIVE' OR (starts_at IS NOT NULL AND paid_at IS NOT NULL AND project_id IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_service_subscription_kind", "kind IN ('MAINTENANCE', 'DISASTER_PROTECTION')");
+
+                            t.HasCheckConstraint("ck_service_subscription_price", "price > 0 AND duration_months BETWEEN 1 AND 120");
+
+                            t.HasCheckConstraint("ck_service_subscription_status", "status IN ('AWAITING_PAYMENT', 'CHECKOUT_EXPIRED', 'PAID', 'ACTIVE', 'EXPIRED', 'CANCELLATION_REQUESTED', 'CANCELLED')");
+
+                            t.HasCheckConstraint("ck_service_subscription_support", "support_reserved >= 0 AND support_consumed >= 0 AND (term_limit IS NULL OR support_reserved + support_consumed <= term_limit)");
+
+                            t.HasCheckConstraint("ck_service_subscription_term", "(starts_at IS NULL) = (ends_at IS NULL) AND (ends_at IS NULL OR ends_at > starts_at)");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.ServiceVisit", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AssignedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("assigned_by_user_id");
+
+                    b.Property<string>("CompanyRescheduleReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("company_reschedule_reason");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<bool>("CustomerConfirmationRequired")
+                        .HasColumnType("boolean")
+                        .HasColumnName("customer_confirmation_required");
+
+                    b.Property<DateTimeOffset?>("CustomerConfirmedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("customer_confirmed_at");
+
+                    b.Property<DateTimeOffset>("EndsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ends_at");
+
+                    b.Property<string>("FindingNote")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("finding_note");
+
+                    b.Property<string>("Purpose")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("purpose");
+
+                    b.Property<string>("Report")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)")
+                        .HasColumnName("report");
+
+                    b.Property<DateTimeOffset?>("ReportedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("reported_at");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_id");
+
+                    b.Property<DateTimeOffset?>("StartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at");
+
+                    b.Property<DateTimeOffset>("StartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("starts_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid?>("TechnicianUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("technician_user_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AssignedByUserId");
+
+                    b.HasIndex("RequestId")
+                        .HasDatabaseName("ix_service_visit_request");
+
+                    b.HasIndex("TechnicianUserId", "StartsAt")
+                        .HasDatabaseName("ix_service_visit_technician_starts_at");
+
+                    b.ToTable("service_visit", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_service_visit_purpose", "purpose IN ('INSPECTION', 'REPAIR', 'MAINTENANCE', 'REWORK')");
+
+                            t.HasCheckConstraint("ck_service_visit_range", "ends_at > starts_at");
+
+                            t.HasCheckConstraint("ck_service_visit_reported", "status <> 'REPORTED' OR (reported_at IS NOT NULL AND report IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_service_visit_status", "status IN ('SCHEDULED', 'IN_PROGRESS', 'REPORTED', 'CUSTOMER_ABSENT', 'DECLINED', 'CANCELLED')");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.WarrantyOption", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_active");
+
+                    b.Property<bool>("IsDefault")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_default");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("kind");
+
+                    b.Property<int>("Months")
+                        .HasColumnType("integer")
+                        .HasColumnName("months");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Kind")
+                        .IsUnique()
+                        .HasDatabaseName("ux_warranty_option_one_default")
+                        .HasFilter("is_default");
+
+                    b.HasIndex("Kind", "Months")
+                        .IsUnique()
+                        .HasDatabaseName("ux_warranty_option_kind_months");
+
+                    b.ToTable("warranty_option", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_warranty_option_kind", "kind IN ('INSTALLATION', 'REPAIR')");
+
+                            t.HasCheckConstraint("ck_warranty_option_months", "months BETWEEN 1 AND 240");
+                        });
+                });
+
             modelBuilder.Entity("SmartSolar.Modules.Catalog.Entities.Product", b =>
                 {
                     b.Property<Guid>("Id")
@@ -810,6 +2216,10 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("version");
 
+                    b.Property<int?>("WarrantyMonths")
+                        .HasColumnType("integer")
+                        .HasColumnName("warranty_months");
+
                     b.HasKey("Id");
 
                     b.HasIndex("OfficialDocumentConfirmedByUserId");
@@ -985,7 +2395,7 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         {
                             t.HasCheckConstraint("ck_file_reference_checksum_format", "(verified_checksum_sha256 IS NULL OR (length(verified_checksum_sha256) = 64 AND verified_checksum_sha256 = lower(verified_checksum_sha256))) AND (declared_checksum_sha256 IS NULL OR (length(declared_checksum_sha256) = 64 AND declared_checksum_sha256 = lower(declared_checksum_sha256)))");
 
-                            t.HasCheckConstraint("ck_file_reference_purpose", "purpose IN ('ONSITE_SURVEY_EVIDENCE', 'QUOTATION_DOCUMENT', 'CONTRACT_DOCUMENT', 'SIGNED_CONTRACT', 'INSTALLATION_EVIDENCE', 'KNOWLEDGE_DOCUMENT', 'PROJECT_DOCUMENT')");
+                            t.HasCheckConstraint("ck_file_reference_purpose", "purpose IN ('ONSITE_SURVEY_EVIDENCE', 'QUOTATION_DOCUMENT', 'CONTRACT_DOCUMENT', 'SIGNED_CONTRACT', 'INSTALLATION_EVIDENCE', 'KNOWLEDGE_DOCUMENT', 'PROJECT_DOCUMENT', 'SERVICE_EVIDENCE')");
 
                             t.HasCheckConstraint("ck_file_reference_sizes", "declared_size_bytes > 0 AND (verified_size_bytes IS NULL OR verified_size_bytes > 0)");
 
@@ -1380,6 +2790,10 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(500)")
                         .HasColumnName("response_reason");
 
+                    b.Property<Guid?>("ServiceVisitId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("service_visit_id");
+
                     b.Property<DateTimeOffset>("StartsAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("starts_at");
@@ -1401,7 +2815,12 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.HasIndex("ProjectId")
                         .IsUnique()
                         .HasDatabaseName("ux_installation_assignment_current")
-                        .HasFilter("status IN ('PENDING', 'ACCEPTED')");
+                        .HasFilter("status IN ('PENDING', 'ACCEPTED') AND service_visit_id IS NULL");
+
+                    b.HasIndex("ServiceVisitId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_installation_assignment_current_visit")
+                        .HasFilter("status IN ('PENDING', 'ACCEPTED') AND service_visit_id IS NOT NULL");
 
                     b.HasIndex("ProjectId", "AssignedAt")
                         .HasDatabaseName("ix_installation_assignment_project_assigned_at");
@@ -1783,11 +3202,32 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("registered_by_user_id");
 
+                    b.Property<Guid?>("ReplacesAssetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("replaces_asset_id");
+
                     b.Property<string>("SerialNumber")
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)")
                         .HasColumnName("serial_number");
+
+                    b.Property<Guid?>("ServiceRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("service_request_id");
+
+                    b.Property<string>("Specifications")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("specifications");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("ACTIVE")
+                        .HasColumnName("status");
 
                     b.Property<int?>("WarrantyMonths")
                         .HasColumnType("integer")
@@ -1802,12 +3242,18 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("RegisteredByUserId");
 
+                    b.HasIndex("ReplacesAssetId");
+
+                    b.HasIndex("ServiceRequestId");
+
                     b.HasIndex("Manufacturer", "SerialNumber")
                         .IsUnique()
                         .HasDatabaseName("ux_installed_asset_manufacturer_serial");
 
                     b.ToTable("installed_asset", null, t =>
                         {
+                            t.HasCheckConstraint("ck_installed_asset_status", "status IN ('ACTIVE', 'PENDING_ACCEPTANCE', 'REPLACED')");
+
                             t.HasCheckConstraint("ck_installed_asset_type", "asset_type IN ('PANEL', 'INVERTER', 'BATTERY', 'METER', 'OTHER')");
 
                             t.HasCheckConstraint("ck_installed_asset_warranty", "warranty_months IS NULL OR warranty_months BETWEEN 0 AND 600");
@@ -2851,7 +4297,7 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(500)")
                         .HasColumnName("checkout_url");
 
-                    b.Property<Guid>("ContractId")
+                    b.Property<Guid?>("ContractId")
                         .HasColumnType("uuid")
                         .HasColumnName("contract_id");
 
@@ -2974,6 +4420,96 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("SmartSolar.Modules.Payments.PaymentAttemptItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<Guid?>("ContractId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("contract_id");
+
+                    b.Property<string>("ItemType")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("item_type");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("note");
+
+                    b.Property<Guid>("PaymentAttemptId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("payment_attempt_id");
+
+                    b.Property<Guid?>("QuotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("quotation_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid?>("SubscriptionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("subscription_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ContractId");
+
+                    b.HasIndex("PaymentAttemptId")
+                        .HasDatabaseName("ix_payment_attempt_item_attempt");
+
+                    b.HasIndex("QuotationId")
+                        .HasDatabaseName("ix_payment_attempt_item_quotation");
+
+                    b.HasIndex("SubscriptionId")
+                        .HasDatabaseName("ix_payment_attempt_item_subscription");
+
+                    b.HasIndex(new[] { "PaymentAttemptId", "ContractId" }, "ux_payment_attempt_item_attempt_contract")
+                        .IsUnique()
+                        .HasFilter("contract_id IS NOT NULL");
+
+                    b.HasIndex(new[] { "PaymentAttemptId", "QuotationId" }, "ux_payment_attempt_item_attempt_quotation")
+                        .IsUnique()
+                        .HasFilter("quotation_id IS NOT NULL");
+
+                    b.HasIndex(new[] { "PaymentAttemptId", "SubscriptionId" }, "ux_payment_attempt_item_attempt_subscription")
+                        .IsUnique()
+                        .HasFilter("subscription_id IS NOT NULL");
+
+                    b.HasIndex(new[] { "QuotationId" }, "ux_payment_attempt_item_settled_quotation")
+                        .IsUnique()
+                        .HasFilter("quotation_id IS NOT NULL AND status = 'SETTLED'");
+
+                    b.HasIndex(new[] { "SubscriptionId" }, "ux_payment_attempt_item_settled_subscription")
+                        .IsUnique()
+                        .HasFilter("subscription_id IS NOT NULL AND status = 'SETTLED'");
+
+                    b.ToTable("payment_attempt_item", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_payment_attempt_item_amount", "amount > 0");
+
+                            t.HasCheckConstraint("ck_payment_attempt_item_status", "status IN ('PENDING', 'SETTLED', 'REVIEW_REQUIRED')");
+
+                            t.HasCheckConstraint("ck_payment_attempt_item_target", "(CASE WHEN contract_id IS NULL THEN 0 ELSE 1 END) + (CASE WHEN subscription_id IS NULL THEN 0 ELSE 1 END) + (CASE WHEN quotation_id IS NULL THEN 0 ELSE 1 END) = 1");
+
+                            t.HasCheckConstraint("ck_payment_attempt_item_type", "item_type IN ('CONTRACT', 'MAINTENANCE_PACKAGE', 'DISASTER_PACKAGE', 'REPAIR_QUOTATION', 'MAINTENANCE_QUOTATION')");
+                        });
+                });
+
             modelBuilder.Entity("SmartSolar.Modules.Payments.PaymentEvent", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2981,7 +4517,7 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    b.Property<Guid>("ContractId")
+                    b.Property<Guid?>("ContractId")
                         .HasColumnType("uuid")
                         .HasColumnName("contract_id");
 
@@ -5091,6 +6627,362 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasConstraintName("fk_administrative_legacy_commune_map_commune");
                 });
 
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.AfterSalesEvent", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("ActorUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_after_sales_event_actor");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.AfterSalesNotification", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("RecipientUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_after_sales_notification_recipient");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceRequest", null)
+                        .WithMany()
+                        .HasForeignKey("RequestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_after_sales_notification_request");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceSubscription", null)
+                        .WithMany()
+                        .HasForeignKey("SubscriptionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_after_sales_notification_subscription");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.DisasterClaim", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("DecidedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_disaster_claim_decided_by");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceRequest", null)
+                        .WithMany()
+                        .HasForeignKey("RequestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_disaster_claim_request");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceSubscription", null)
+                        .WithMany()
+                        .HasForeignKey("SubscriptionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_disaster_claim_subscription");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.MaintenanceEntitlement", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceRequest", null)
+                        .WithMany()
+                        .HasForeignKey("CurrentRequestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_maintenance_entitlement_current_request");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceSubscription", null)
+                        .WithMany()
+                        .HasForeignKey("SubscriptionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_maintenance_entitlement_subscription");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.RefundRecord", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("ApprovedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_refund_record_approved_by");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CustomerUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_refund_record_customer");
+
+                    b.HasOne("SmartSolar.Modules.Payments.PaymentAttempt", null)
+                        .WithMany()
+                        .HasForeignKey("PaymentAttemptId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_refund_record_payment_attempt");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceQuotation", null)
+                        .WithMany()
+                        .HasForeignKey("QuotationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_refund_record_quotation");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("RecordedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_refund_record_recorded_by");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceRequest", null)
+                        .WithMany()
+                        .HasForeignKey("RequestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_refund_record_request");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceSubscription", null)
+                        .WithMany()
+                        .HasForeignKey("SubscriptionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_refund_record_subscription");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.SalesTask", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("AssignedSalesUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_sales_task_assignee");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CustomerUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_sales_task_customer");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.MaintenanceEntitlement", null)
+                        .WithMany()
+                        .HasForeignKey("EntitlementId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_sales_task_entitlement");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceRequest", null)
+                        .WithMany()
+                        .HasForeignKey("RequestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_sales_task_request");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.ServiceEvidence", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("AddedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_evidence_added_by");
+
+                    b.HasOne("SmartSolar.Modules.Files.StoredFile", null)
+                        .WithMany()
+                        .HasForeignKey("FileId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_evidence_file");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceRequest", null)
+                        .WithMany()
+                        .HasForeignKey("RequestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_evidence_request");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceVisit", null)
+                        .WithMany()
+                        .HasForeignKey("VisitId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_service_evidence_visit");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.ServiceItem", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Installations.InstalledAsset", null)
+                        .WithMany()
+                        .HasForeignKey("AssetId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_service_item_asset");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceQuotation", null)
+                        .WithMany()
+                        .HasForeignKey("QuotationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_service_item_quotation");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("ReportedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_item_reported_by");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceRequest", null)
+                        .WithMany()
+                        .HasForeignKey("RequestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_item_request");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.ServiceQuotation", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Payments.PaymentAttempt", null)
+                        .WithMany()
+                        .HasForeignKey("CurrentPaymentAttemptId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_service_quotation_current_payment_attempt");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.DisasterClaim", null)
+                        .WithMany()
+                        .HasForeignKey("DisasterClaimId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_service_quotation_claim");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceRequest", null)
+                        .WithMany()
+                        .HasForeignKey("RequestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_quotation_request");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("SalesUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_quotation_sales");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceQuotation", null)
+                        .WithMany()
+                        .HasForeignKey("SupersedesQuotationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_service_quotation_supersedes");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.ServiceRequest", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CustomerUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_request_customer");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceRequest", null)
+                        .WithMany()
+                        .HasForeignKey("DuplicateOfRequestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_service_request_duplicate_of");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.MaintenanceEntitlement", null)
+                        .WithMany()
+                        .HasForeignKey("MaintenanceEntitlementId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_service_request_entitlement");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceRequest", null)
+                        .WithMany()
+                        .HasForeignKey("OriginRequestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_service_request_origin");
+
+                    b.HasOne("SmartSolar.Modules.Installations.InstallationProject", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_request_project");
+
+                    b.HasOne("SmartSolar.Modules.PreSurvey.Entities.PropertySite", null)
+                        .WithMany()
+                        .HasForeignKey("PropertySiteId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_request_property_site");
+
+                    b.HasOne("SmartSolar.Modules.Installations.InstalledAsset", null)
+                        .WithMany()
+                        .HasForeignKey("SuspectedAssetId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_service_request_suspected_asset");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceRequest", null)
+                        .WithMany()
+                        .HasForeignKey("WarrantySourceRequestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_service_request_warranty_source");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.ServiceSubscription", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.CustomerContracts.CustomerContract", null)
+                        .WithMany()
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_subscription_contract");
+
+                    b.HasOne("SmartSolar.Modules.Payments.PaymentAttempt", null)
+                        .WithMany()
+                        .HasForeignKey("CurrentPaymentAttemptId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_service_subscription_current_payment_attempt");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CustomerUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_subscription_customer");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServicePackage", null)
+                        .WithMany()
+                        .HasForeignKey("PackageId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_subscription_package");
+
+                    b.HasOne("SmartSolar.Modules.Installations.InstallationProject", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_service_subscription_project");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceSubscription", null)
+                        .WithMany()
+                        .HasForeignKey("RenewsSubscriptionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_service_subscription_renews");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.ServiceVisit", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("AssignedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_visit_assigned_by");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceRequest", null)
+                        .WithMany()
+                        .HasForeignKey("RequestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_visit_request");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("TechnicianUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_service_visit_technician");
+                });
+
             modelBuilder.Entity("SmartSolar.Modules.Catalog.Entities.ProductImage", b =>
                 {
                     b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
@@ -5319,6 +7211,12 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasConstraintName("fk_installation_assignment_project");
 
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceVisit", null)
+                        .WithMany()
+                        .HasForeignKey("ServiceVisitId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_installation_assignment_service_visit");
+
                     b.HasOne("SmartSolar.Modules.Scheduling.Entities.TechnicianProfile", null)
                         .WithMany()
                         .HasForeignKey("TechnicianUserId")
@@ -5448,6 +7346,18 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasForeignKey("RegisteredByUserId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("SmartSolar.Modules.Installations.InstalledAsset", null)
+                        .WithMany()
+                        .HasForeignKey("ReplacesAssetId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_installed_asset_replaces");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceRequest", null)
+                        .WithMany()
+                        .HasForeignKey("ServiceRequestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_installed_asset_service_request");
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.KnowledgeBase.ChatCitation", b =>
@@ -5648,8 +7558,7 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.HasOne("SmartSolar.Modules.CustomerContracts.CustomerContract", null)
                         .WithMany()
                         .HasForeignKey("ContractId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
                         .WithMany()
@@ -5658,13 +7567,40 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
-            modelBuilder.Entity("SmartSolar.Modules.Payments.PaymentEvent", b =>
+            modelBuilder.Entity("SmartSolar.Modules.Payments.PaymentAttemptItem", b =>
                 {
                     b.HasOne("SmartSolar.Modules.CustomerContracts.CustomerContract", null)
                         .WithMany()
                         .HasForeignKey("ContractId")
                         .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .HasConstraintName("fk_payment_attempt_item_contract");
+
+                    b.HasOne("SmartSolar.Modules.Payments.PaymentAttempt", null)
+                        .WithMany()
+                        .HasForeignKey("PaymentAttemptId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_payment_attempt_item_attempt");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceQuotation", null)
+                        .WithMany()
+                        .HasForeignKey("QuotationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_payment_attempt_item_quotation");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceSubscription", null)
+                        .WithMany()
+                        .HasForeignKey("SubscriptionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_payment_attempt_item_subscription");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Payments.PaymentEvent", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.CustomerContracts.CustomerContract", null)
+                        .WithMany()
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("SmartSolar.Modules.Payments.PaymentAttempt", null)
                         .WithMany()

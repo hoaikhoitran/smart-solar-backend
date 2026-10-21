@@ -73,6 +73,17 @@ public sealed class SystemSettingsTests : IAsyncDisposable
             (K.BufferBetweenAppointmentsMinutes, SystemSettingUnits.Minutes, 30, 0, 240),
             (K.OnSiteSurveyEarlyStartMinutes, SystemSettingUnits.Minutes, 120, 0, 1440),
             (K.InstallationMaxAssignmentDays, SystemSettingUnits.Days, 14, 1, 365),
+            // Flow 3 (after-sales) timings with the agreed defaults.
+            (AfterSalesSettingKeys.InspectionDurationMinutes, SystemSettingUnits.Minutes, 60, 15, 480),
+            (AfterSalesSettingKeys.QuotationValidityDays, SystemSettingUnits.Days, 7, 1, 60),
+            (AfterSalesSettingKeys.CheckoutExpiryMinutes, SystemSettingUnits.Minutes, 30, 5, 1440),
+            (AfterSalesSettingKeys.MaintenanceBookingLeadDays, SystemSettingUnits.Days, 7, 0, 60),
+            (AfterSalesSettingKeys.MaintenanceNoticeLeadDays, SystemSettingUnits.Days, 14, 1, 90),
+            (AfterSalesSettingKeys.CustomerResponseHours, SystemSettingUnits.Hours, 24, 1, 336),
+            (AfterSalesSettingKeys.FollowUpMaxDays, SystemSettingUnits.Days, 7, 1, 60),
+            (AfterSalesSettingKeys.DelayedMaintenanceExtensionDays, SystemSettingUnits.Days, 30, 0, 180),
+            (AfterSalesSettingKeys.AppointmentChangeLeadHours, SystemSettingUnits.Hours, 24, 0, 336),
+            (AfterSalesSettingKeys.DisasterWaitingDays, SystemSettingUnits.Days, 7, 0, 60),
         };
         Assert.Equal(expected, d.All.Select(x => (x.Key, x.Unit, x.Default, x.Min, x.Max)));
         Assert.All(d.All, x => Assert.Equal(SystemSettingTypes.Int, x.Type));
@@ -232,7 +243,7 @@ public sealed class SystemSettingsTests : IAsyncDisposable
     {
         var admin = await AdminAsync();
         var initial = await Service().GetSchedulingAsync(None);
-        Assert.Equal((0, true, 13), (initial.Version, initial.Bootstrap, initial.Settings.Count));
+        Assert.Equal((0, true, SchedulingPolicyDefinitions.Default.All.Count), (initial.Version, initial.Bootstrap, initial.Settings.Count));
         Assert.All(initial.Settings, s => Assert.Equal(SystemSettingSources.Default, s.Source));
         Assert.Equal(15, initial.CacheTtlSeconds);
 

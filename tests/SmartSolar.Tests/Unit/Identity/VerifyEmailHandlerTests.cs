@@ -5,10 +5,11 @@ using SmartSolar.Tests.TestSupport;
 
 namespace SmartSolar.Tests.Unit.Identity;
 
+/// <summary>Email verification by the emailed token: hash lookup, expiry, single use, idempotent repeats, and suspended accounts.</summary>
 public class VerifyEmailHandlerTests
 {
     [Fact]
-    public async Task Verifies_account_for_a_valid_token()
+    public async Task A_valid_token_verifies_and_activates_the_account_and_is_marked_used()
     {
         await using var ctx = new IdentityTestContext();
         var user = await ctx.SeedUserAsync("user@example.com", passwordHash: "hash");
@@ -22,38 +23,8 @@ public class VerifyEmailHandlerTests
         Assert.Equal(VerifyEmailOutcome.Verified, result.Outcome);
         var stored = await ctx.Db.UserAccounts.SingleAsync();
         Assert.NotNull(stored.EmailVerifiedAt);
-    }
-
-    [Fact]
-    public async Task Marks_the_token_as_used()
-    {
-        await using var ctx = new IdentityTestContext();
-        var user = await ctx.SeedUserAsync("user@example.com", passwordHash: "hash");
-        var token = ctx.TokenFactory.Create();
-        await ctx.SeedTokenAsync(
-            user.Id, token.TokenHash, AuthActionTokenType.EmailVerification, DateTimeOffset.UtcNow.AddHours(1));
-
-        await ctx.CreateVerifyEmailHandler()
-            .HandleAsync(new VerifyEmailCommand(token.RawToken), CancellationToken.None);
-
-        var stored = await ctx.Db.AuthActionTokens.SingleAsync();
-        Assert.NotNull(stored.UsedAt);
-    }
-
-    [Fact]
-    public async Task Activates_the_pending_account()
-    {
-        await using var ctx = new IdentityTestContext();
-        var user = await ctx.SeedUserAsync("user@example.com", passwordHash: "hash");
-        var token = ctx.TokenFactory.Create();
-        await ctx.SeedTokenAsync(
-            user.Id, token.TokenHash, AuthActionTokenType.EmailVerification, DateTimeOffset.UtcNow.AddHours(1));
-
-        await ctx.CreateVerifyEmailHandler()
-            .HandleAsync(new VerifyEmailCommand(token.RawToken), CancellationToken.None);
-
-        var stored = await ctx.Db.UserAccounts.SingleAsync();
         Assert.Equal(UserStatus.Active, stored.Status);
+        Assert.NotNull((await ctx.Db.AuthActionTokens.SingleAsync()).UsedAt);
     }
 
     [Fact]

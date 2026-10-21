@@ -13,6 +13,7 @@ public sealed class ContractTests
     {
         var (s, issued) = await QuotationTests.IssuedAsync(ctx, customer);
         Assert.True((await ctx.Quotations().AcceptAsync(s.Request.Customer.Id, issued.QuotationId, CancellationToken.None)).Succeeded);
+        await ctx.EnsureInstallationWarrantyOptionAsync();
         return new Ready(s, issued.QuotationId, issued.TotalAmount);
     }
 

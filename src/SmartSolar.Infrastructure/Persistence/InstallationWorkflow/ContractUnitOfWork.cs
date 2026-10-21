@@ -50,6 +50,13 @@ public sealed class ContractUnitOfWork(AppDbContext db) : TransactionalUnitOfWor
         => await Db.CustomerContracts.Where(c => c.Id == contractId && c.Status == from)
             .ExecuteUpdateAsync(s => s.SetProperty(c => c.Status, to).SetProperty(c => c.UpdatedAt, now).SetProperty(c => c.Revision, c => c.Revision + 1), cancellationToken) == 1;
 
+    public async Task<(IReadOnlyList<int> Active, int? Default)> GetInstallationWarrantyOptionsAsync(CancellationToken cancellationToken)
+    {
+        var options = await Db.WarrantyOptions.AsNoTracking()
+            .Where(o => o.Kind == SmartSolar.Modules.AfterSales.WarrantyOptionKinds.Installation && o.IsActive).ToListAsync(cancellationToken);
+        return (options.Select(o => o.Months).Order().ToList(), options.FirstOrDefault(o => o.IsDefault)?.Months);
+    }
+
     public void AddContract(CustomerContract contract) => Db.CustomerContracts.Add(contract);
     public void AddSubmission(ContractSignatureSubmission submission) => Db.ContractSignatureSubmissions.Add(submission);
     public void AddEvent(ContractEvent contractEvent) => Db.ContractEvents.Add(contractEvent);

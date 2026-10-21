@@ -36,6 +36,24 @@ public static class SchedulingPolicyKeys
     public const string InstallationMaxAssignmentDays = "installation.maxAssignmentDays";
 }
 
+/// <summary>
+/// Flow 3 (after-sales) timings, edited through the same Admin settings API (versioned, audited, Manager read-only). Each value is
+/// read when a request, quotation, purchase or schedule is created and the derived deadline is stored, so a change is never retroactive.
+/// </summary>
+public static class AfterSalesSettingKeys
+{
+    public const string InspectionDurationMinutes = "afterSales.inspectionDurationMinutes";
+    public const string QuotationValidityDays = "afterSales.quotationValidityDays";
+    public const string CheckoutExpiryMinutes = "afterSales.checkoutExpiryMinutes";
+    public const string MaintenanceBookingLeadDays = "afterSales.maintenanceBookingLeadDays";
+    public const string MaintenanceNoticeLeadDays = "afterSales.maintenanceNoticeLeadDays";
+    public const string CustomerResponseHours = "afterSales.customerResponseHours";
+    public const string FollowUpMaxDays = "afterSales.followUpMaxDays";
+    public const string DelayedMaintenanceExtensionDays = "afterSales.delayedMaintenanceExtensionDays";
+    public const string AppointmentChangeLeadHours = "afterSales.appointmentChangeLeadHours";
+    public const string DisasterWaitingDays = "afterSales.disasterWaitingDays";
+}
+
 /// <summary>One typed setting: stable key, integer type, unit, inclusive range, bootstrap default and description.</summary>
 public sealed record SystemSettingDefinition(string Key, string Type, string Unit, int Min, int Max, int Default, string Description, bool AdminEditable = true);
 
@@ -80,6 +98,7 @@ public sealed class SchedulingPolicyDefinitions
     public static SchedulingPolicyDefinitions Create(SchedulingOptions scheduling, OnSiteSurveyOptions onSite, InstallationOptions installation)
     {
         const string M = SystemSettingUnits.Minutes;
+        const string H = SystemSettingUnits.Hours;
         const string D = SystemSettingUnits.Days;
         const string I = SystemSettingTypes.Int;
         return new SchedulingPolicyDefinitions(
@@ -110,6 +129,27 @@ public sealed class SchedulingPolicyDefinitions
                 "How long before the appointment start the technician may start the on-site survey (also the release cut-off)."),
             new(SchedulingPolicyKeys.InstallationMaxAssignmentDays, I, D, 1, 365, installation.MaxAssignmentDays,
                 "Longest installation assignment, in local calendar days touched by the interval."),
+            // ---- Flow 3: after-sales services
+            new(AfterSalesSettingKeys.InspectionDurationMinutes, I, M, 15, 480, 60,
+                "Estimated length of a fault inspection visit (reserved on the technician's schedule)."),
+            new(AfterSalesSettingKeys.QuotationValidityDays, I, D, 1, 60, 7,
+                "A repair / maintenance quotation must be accepted and paid within this many days of being issued."),
+            new(AfterSalesSettingKeys.CheckoutExpiryMinutes, I, M, 5, 1440, 30,
+                "Lifetime of an after-sales PayOS checkout (service packages, combined contract + packages, quotations)."),
+            new(AfterSalesSettingKeys.MaintenanceBookingLeadDays, I, D, 0, 60, 7,
+                "A maintenance visit must be booked at least this many days before its start."),
+            new(AfterSalesSettingKeys.MaintenanceNoticeLeadDays, I, D, 1, 90, 14,
+                "Customers are notified this many days before a maintenance period opens."),
+            new(AfterSalesSettingKeys.CustomerResponseHours, I, H, 1, 336, 24,
+                "Without a booking this long after the maintenance notice, a Sales follow-up task is created."),
+            new(AfterSalesSettingKeys.FollowUpMaxDays, I, D, 1, 60, 7,
+                "After this long without reaching the customer, the follow-up closes and the planned visit is marked NOT_COMPLETED."),
+            new(AfterSalesSettingKeys.DelayedMaintenanceExtensionDays, I, D, 0, 180, 30,
+                "A valid booking that SmartSolar had to postpone may be completed until this many days after the term ends."),
+            new(AfterSalesSettingKeys.AppointmentChangeLeadHours, I, H, 0, 336, 24,
+                "Customers may cancel or reschedule a maintenance appointment online until this long before its start."),
+            new(AfterSalesSettingKeys.DisasterWaitingDays, I, D, 0, 60, 7,
+                "Waiting period of a new disaster-protection term (inside its duration; none for a continuous renewal)."),
         ]);
     }
 

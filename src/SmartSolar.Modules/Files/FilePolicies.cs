@@ -89,6 +89,7 @@ public static partial class FilePolicies
         [FilePurposes.InstallationEvidence] = new(FilePurposes.InstallationEvidence, "installations/", [Jpeg, Png, Webp], 15 * Mb, true),
         [FilePurposes.KnowledgeDocument] = new(FilePurposes.KnowledgeDocument, "knowledge/", [Pdf, Docx, PlainText, Markdown], 50 * Mb, true),
         [FilePurposes.ProjectDocument] = new(FilePurposes.ProjectDocument, "project-documents/", [Pdf, Jpeg, Png], 20 * Mb, true),
+        [FilePurposes.ServiceEvidence] = new(FilePurposes.ServiceEvidence, "after-sales/", [Jpeg, Png, Webp], 15 * Mb, true),
     };
 
     private static readonly IReadOnlyDictionary<string, string[]> Extensions = new Dictionary<string, string[]>

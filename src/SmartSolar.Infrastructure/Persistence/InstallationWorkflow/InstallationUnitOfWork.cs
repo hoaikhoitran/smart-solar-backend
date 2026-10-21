@@ -4,7 +4,8 @@ using SmartSolar.Modules.Installations;
 
 namespace SmartSolar.Infrastructure.Persistence.InstallationWorkflow;
 
-/// <summary>Installation persistence. One project per contract (unique index), one current assignment per project (partial unique index),
+/// <summary>Installation persistence. One project per contract (unique index), one current assignment per project (partial unique index;
+/// after-sales visit assignments, which share the table, are excluded from every query here),
 /// non-overlapping current assignments per technician (exclusion constraint, PostgreSQL manual SQL), revision token on the project.</summary>
 public sealed class InstallationUnitOfWork(AppDbContext db) : TransactionalUnitOfWork(db), IInstallationUnitOfWork
 {
@@ -34,7 +35,7 @@ public sealed class InstallationUnitOfWork(AppDbContext db) : TransactionalUnitO
 
     public async Task<IReadOnlyList<InstallationProject>> ListForTechnicianAsync(Guid technicianUserId, CancellationToken cancellationToken)
         => (await Db.InstallationProjects.AsNoTracking()
-                .Where(p => Db.InstallationAssignments.Any(a => a.ProjectId == p.Id && a.TechnicianUserId == technicianUserId
+                .Where(p => Db.InstallationAssignments.Any(a => a.ProjectId == p.Id && a.TechnicianUserId == technicianUserId && a.ServiceVisitId == null
                     && (a.Status == AssignmentStatuses.Pending || a.Status == AssignmentStatuses.Accepted || a.Status == AssignmentStatuses.Completed)))
                 .ToListAsync(cancellationToken)).OrderBy(p => p.ScheduledStartsAt).ToList();
 
@@ -53,11 +54,13 @@ public sealed class InstallationUnitOfWork(AppDbContext db) : TransactionalUnitO
     }
 
     public async Task<IReadOnlyList<InstallationAssignment>> GetAssignmentsAsync(Guid projectId, bool track, CancellationToken cancellationToken)
-        => await (track ? Db.InstallationAssignments : Db.InstallationAssignments.AsNoTracking()).Where(a => a.ProjectId == projectId).ToListAsync(cancellationToken);
+        => await (track ? Db.InstallationAssignments : Db.InstallationAssignments.AsNoTracking()).Where(a => a.ProjectId == projectId && a.ServiceVisitId == null)
+            .ToListAsync(cancellationToken);
 
     public Task<InstallationAssignment?> GetCurrentAssignmentAsync(Guid projectId, bool track, CancellationToken cancellationToken)
         => (track ? Db.InstallationAssignments : Db.InstallationAssignments.AsNoTracking())
-            .FirstOrDefaultAsync(a => a.ProjectId == projectId && (a.Status == AssignmentStatuses.Pending || a.Status == AssignmentStatuses.Accepted), cancellationToken);
+            .FirstOrDefaultAsync(a => a.ProjectId == projectId && a.ServiceVisitId == null
+                && (a.Status == AssignmentStatuses.Pending || a.Status == AssignmentStatuses.Accepted), cancellationToken);
 
     public async Task<IReadOnlyList<InstallationEvidence>> GetEvidenceAsync(Guid projectId, CancellationToken cancellationToken)
         => await Db.InstallationEvidence.AsNoTracking().Where(e => e.ProjectId == projectId).ToListAsync(cancellationToken);

@@ -101,6 +101,8 @@ public sealed class AppDbContext : DbContext
 
     public DbSet<SmartSolar.Modules.Payments.PaymentAttempt> PaymentAttempts => Set<SmartSolar.Modules.Payments.PaymentAttempt>();
 
+    public DbSet<SmartSolar.Modules.Payments.PaymentAttemptItem> PaymentAttemptItems => Set<SmartSolar.Modules.Payments.PaymentAttemptItem>();
+
     public DbSet<SmartSolar.Modules.Payments.PaymentWebhookEvent> PaymentWebhookEvents => Set<SmartSolar.Modules.Payments.PaymentWebhookEvent>();
 
     public DbSet<SmartSolar.Modules.Payments.PaymentEvent> PaymentEvents => Set<SmartSolar.Modules.Payments.PaymentEvent>();
@@ -134,6 +136,35 @@ public sealed class AppDbContext : DbContext
     public DbSet<SmartSolar.Modules.KnowledgeBase.RagUsageDaily> RagUsageDaily => Set<SmartSolar.Modules.KnowledgeBase.RagUsageDaily>();
 
     public DbSet<SmartSolar.Modules.KnowledgeBase.RagUsageReservation> RagUsageReservations => Set<SmartSolar.Modules.KnowledgeBase.RagUsageReservation>();
+
+    // Flow 3 — After-Sales Services
+    public DbSet<SmartSolar.Modules.AfterSales.WarrantyOption> WarrantyOptions => Set<SmartSolar.Modules.AfterSales.WarrantyOption>();
+
+    public DbSet<SmartSolar.Modules.AfterSales.ServicePackage> ServicePackages => Set<SmartSolar.Modules.AfterSales.ServicePackage>();
+
+    public DbSet<SmartSolar.Modules.AfterSales.ServiceSubscription> ServiceSubscriptions => Set<SmartSolar.Modules.AfterSales.ServiceSubscription>();
+
+    public DbSet<SmartSolar.Modules.AfterSales.MaintenanceEntitlement> MaintenanceEntitlements => Set<SmartSolar.Modules.AfterSales.MaintenanceEntitlement>();
+
+    public DbSet<SmartSolar.Modules.AfterSales.ServiceRequest> ServiceRequests => Set<SmartSolar.Modules.AfterSales.ServiceRequest>();
+
+    public DbSet<SmartSolar.Modules.AfterSales.ServiceItem> ServiceItems => Set<SmartSolar.Modules.AfterSales.ServiceItem>();
+
+    public DbSet<SmartSolar.Modules.AfterSales.ServiceVisit> ServiceVisits => Set<SmartSolar.Modules.AfterSales.ServiceVisit>();
+
+    public DbSet<SmartSolar.Modules.AfterSales.ServiceEvidence> ServiceEvidence => Set<SmartSolar.Modules.AfterSales.ServiceEvidence>();
+
+    public DbSet<SmartSolar.Modules.AfterSales.ServiceQuotation> ServiceQuotations => Set<SmartSolar.Modules.AfterSales.ServiceQuotation>();
+
+    public DbSet<SmartSolar.Modules.AfterSales.DisasterClaim> DisasterClaims => Set<SmartSolar.Modules.AfterSales.DisasterClaim>();
+
+    public DbSet<SmartSolar.Modules.AfterSales.SalesTask> SalesTasks => Set<SmartSolar.Modules.AfterSales.SalesTask>();
+
+    public DbSet<SmartSolar.Modules.AfterSales.RefundRecord> RefundRecords => Set<SmartSolar.Modules.AfterSales.RefundRecord>();
+
+    public DbSet<SmartSolar.Modules.AfterSales.AfterSalesEvent> AfterSalesEvents => Set<SmartSolar.Modules.AfterSales.AfterSalesEvent>();
+
+    public DbSet<SmartSolar.Modules.AfterSales.AfterSalesNotification> AfterSalesNotifications => Set<SmartSolar.Modules.AfterSales.AfterSalesNotification>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

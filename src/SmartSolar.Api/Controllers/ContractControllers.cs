@@ -21,7 +21,7 @@ public sealed class SalesContractsController(ContractHandlers handlers) : Operat
     [Authorize(Roles = RoleCodes.Sales)]
     [EnableRateLimiting(RateLimitingExtensions.ContractWritePolicy)]
     public async Task<IActionResult> Create(Guid quotationId, [FromBody] ContractTermsRequest request, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await handlers.CreateAsync(user, quotationId, request.Terms, cancellationToken), StatusCodes.Status201Created) : UnauthorizedFailure();
+        => CurrentUserId() is { } user ? Respond(await handlers.CreateAsync(user, quotationId, request.Terms, cancellationToken, request.WarrantyMonths), StatusCodes.Status201Created) : UnauthorizedFailure();
 
     [HttpGet("survey-requests/{surveyRequestId:guid}/contracts")]
     [EnableRateLimiting(RateLimitingExtensions.ContractReadPolicy)]
@@ -40,7 +40,7 @@ public sealed class SalesContractsController(ContractHandlers handlers) : Operat
     {
         if (CurrentUserId() is not { } user) return UnauthorizedFailure();
         if (request.Revision is not { } revision) return Invalid("revision", "'revision' is required.");
-        return Respond(await handlers.UpdateTermsAsync(user, contractId, revision, request.Terms, cancellationToken));
+        return Respond(await handlers.UpdateTermsAsync(user, contractId, revision, request.Terms, cancellationToken, request.WarrantyMonths));
     }
 
     [HttpPost("contracts/{contractId:guid}/issue")]
@@ -79,7 +79,7 @@ public sealed class SalesContractsController(ContractHandlers handlers) : Operat
     [Authorize(Roles = RoleCodes.Sales)]
     [EnableRateLimiting(RateLimitingExtensions.ContractWritePolicy)]
     public async Task<IActionResult> Amend(Guid contractId, [FromBody] ContractTermsRequest request, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await handlers.CreateAmendmentAsync(user, contractId, request.Terms, cancellationToken), StatusCodes.Status201Created) : UnauthorizedFailure();
+        => CurrentUserId() is { } user ? Respond(await handlers.CreateAmendmentAsync(user, contractId, request.Terms, cancellationToken, request.WarrantyMonths), StatusCodes.Status201Created) : UnauthorizedFailure();
 
     private bool IsManager() => IsInRole(RoleCodes.Manager) || IsInRole(RoleCodes.Admin);
 }

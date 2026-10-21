@@ -60,7 +60,7 @@ public abstract class OperationResultControllerBase : ControllerBase
         if (code.EndsWith("NOT_FOUND", StringComparison.Ordinal)) return StatusCodes.Status404NotFound;
         if (code is CommonErrorCodes.ValidationFailed || code.Contains("VALIDATION", StringComparison.Ordinal) || code.StartsWith("FILE_INVALID", StringComparison.Ordinal)
             || code is "FILE_TYPE_NOT_ALLOWED" or "FILE_TOO_LARGE" or "FILE_BUCKET_NOT_ALLOWED" or "FILE_WRONG_PURPOSE" or "QUOTATION_INVALID_LINE"
-                or "RAG_MESSAGE_TOO_LONG" or "PAYMENT_AMOUNT_NOT_SUPPORTED"
+                or "RAG_MESSAGE_TOO_LONG" or "PAYMENT_AMOUNT_NOT_SUPPORTED" or "AFTER_SALES_REASON_REQUIRED" or "CONTRACT_WARRANTY_REQUIRED"
             || code.StartsWith("SYSTEM_SETTING_", StringComparison.Ordinal))
             return StatusCodes.Status400BadRequest;
         if (code is CommonErrorCodes.Forbidden or "FILE_NOT_OWNED") return StatusCodes.Status403Forbidden;

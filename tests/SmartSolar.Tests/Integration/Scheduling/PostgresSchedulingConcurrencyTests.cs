@@ -113,7 +113,7 @@ public sealed class PostgresSchedulingConcurrencyTests
         {
             var racer = On(db);
             racer.Clock.Now = startedAt;
-            return Unit.Scheduling.SchedulingAuditFixTests.Worker(() => racer.UnitOfWork, racer.Clock).RunOnceAsync(None);
+            return Unit.Scheduling.AppointmentSweepAndEdgeCaseTests.Worker(() => racer.UnitOfWork, racer.Clock).RunOnceAsync(None);
         });
 
         Assert.Equal(3, processed.Sum());

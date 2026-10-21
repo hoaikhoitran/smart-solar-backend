@@ -21,7 +21,7 @@ public sealed class PaymentOptions
     public string CancelUrl { get; set; } = "";
 }
 
-public sealed record PaymentAttemptView(Guid PaymentAttemptId, Guid ContractId, long OrderCode, decimal Amount, string Currency, string Status,
+public sealed record PaymentAttemptView(Guid PaymentAttemptId, Guid? ContractId, long OrderCode, decimal Amount, string Currency, string Status,
     string? CheckoutUrl, string? QrCode, DateTimeOffset ExpiresAt, DateTimeOffset? PaidAt, string? ProviderReference, string? FailureReason, DateTimeOffset CreatedAt);
 
 public sealed record PaymentEventView(Guid PaymentAttemptId, string EventType, string? FromStatus, string? ToStatus, string Source, string? Detail, DateTimeOffset CreatedAt);
@@ -42,7 +42,13 @@ public sealed record WebhookResult(bool Accepted, string Outcome);
 /// <item>A second successful payment can never pay the contract twice: it becomes REFUND_REQUIRED.</item>
 /// </list>
 /// </summary>
-public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGateway gateway, PaymentOptions options, TimeProvider time, ILogger<PaymentService> logger)
+/// <para>
+/// After-sales checkouts (Flow 3) use the same attempt with <see cref="PaymentAttemptItem"/> allocations: optionally the signed
+/// contract plus service packages, or a repair / maintenance quotation alone. Their items are settled by
+/// <see cref="IPaymentItemSettlement"/> in the confirmation transaction, using the provider-confirmed transaction time.
+/// </para>
+public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGateway gateway, PaymentOptions options, TimeProvider time, ILogger<PaymentService> logger,
+    IPaymentItemSettlement? settlement = null)
 {
     public async Task<OperationResult<PaymentAttemptView>> CreateOrGetAttemptAsync(Guid customerUserId, Guid contractId, CancellationToken cancellationToken)
     {
@@ -98,6 +104,99 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
         var link = await gateway.CreatePaymentLinkAsync(new PaymentLinkRequest(orderCode, (long)contract.TotalAmount, created.Description, options.ReturnUrl,
             options.CancelUrl, created.ExpiresAt, contract.CustomerName, contract.CustomerEmail, contract.CustomerPhone), cancellationToken);
         return await RecordLinkAsync(created.Id, link, cancellationToken);
+    }
+
+    /// <summary>
+    /// Creates one checkout for after-sales items, optionally together with the customer's SIGNED contract (contract amount kept as
+    /// its own CONTRACT line; the contract total itself is never changed). <paramref name="reserveItems"/> runs inside the same
+    /// transaction as the new attempt and links the items to it (revision-checked), so a double request cannot create two links for
+    /// the same item; it returns an error message to refuse. The link expires at <paramref name="expiresAt"/>.
+    /// </summary>
+    public async Task<OperationResult<PaymentAttemptView>> CreateCheckoutAsync(Guid customerUserId, Guid? contractId, IReadOnlyList<CheckoutItem> items,
+        DateTimeOffset expiresAt, Func<Guid, CancellationToken, Task<string?>> reserveItems, CancellationToken cancellationToken)
+    {
+        var lines = items.Select(i => new PaymentAttemptItem
+        {
+            Id = Guid.NewGuid(), ItemType = i.ItemType, SubscriptionId = i.SubscriptionId, QuotationId = i.QuotationId, Amount = i.Amount,
+            Status = PaymentItemStatuses.Pending,
+        }).ToList();
+        PayableContract? contract = null;
+        if (contractId is { } id)
+        {
+            contract = await unitOfWork.GetContractAsync(id, cancellationToken);
+            if (contract is null || contract.CustomerUserId != customerUserId)
+                return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ContractNotFound, "Contract was not found.");
+            if (contract.Status == "PAID") return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid.");
+            if (contract.Status != "SIGNED")
+                return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ContractNotSigned, "Payment opens after the signed contract is approved.");
+            lines.Insert(0, new PaymentAttemptItem { Id = Guid.NewGuid(), ItemType = PaymentItemTypes.Contract, ContractId = id, Amount = contract.TotalAmount,
+                Status = PaymentItemStatuses.Pending });
+        }
+        var total = lines.Sum(l => l.Amount);
+        if (lines.Count == 0 || lines.Any(l => l.Amount <= 0 || decimal.Truncate(l.Amount) != l.Amount) || total > options.MaxAmountVnd)
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AmountNotSupported,
+                $"A checkout must contain whole VND amounts with a total up to {options.MaxAmountVnd:N0}.");
+
+        var now = time.GetUtcNow();
+        if (expiresAt <= now.AddMinutes(1))
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AmountNotSupported, "The checkout deadline has already passed.");
+        var orderCode = NewOrderCode(now);
+        var created = new PaymentAttempt
+        {
+            Id = Guid.NewGuid(), ContractId = contractId, CustomerUserId = customerUserId, Provider = gateway.ProviderName, OrderCode = orderCode,
+            Amount = total, Currency = "VND", Description = $"SS{orderCode % 10_000_000:D7}", Status = PaymentStatuses.Pending,
+            ExpiresAt = expiresAt, CreatedAt = now, UpdatedAt = now,
+        };
+        string? refused = null;
+        try
+        {
+            await unitOfWork.ExecuteInTransactionAsync<bool>(async token =>
+            {
+                refused = await reserveItems(created.Id, token);
+                if (refused is not null) return (false, false);
+                unitOfWork.AddAttempt(created);
+                foreach (var line in lines)
+                {
+                    line.PaymentAttemptId = created.Id;
+                    unitOfWork.AddItem(line);
+                }
+                AddEvent(created, "CREATED", null, PaymentStatuses.Pending, PaymentSources.Customer, string.Join(", ", lines.Select(l => $"{l.ItemType} {l.Amount:0}")), now);
+                await unitOfWork.SaveChangesAsync(token);
+                return (true, true);
+            }, cancellationToken);
+        }
+        catch (PersistenceConflictException)
+        {
+            // A concurrent checkout of the same contract or item was created first.
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CheckoutInProgress, "A payment for these items is already in progress.");
+        }
+        if (refused is not null) return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CheckoutInProgress, refused);
+
+        var link = await gateway.CreatePaymentLinkAsync(new PaymentLinkRequest(orderCode, (long)total, created.Description, options.ReturnUrl,
+            options.CancelUrl, created.ExpiresAt, contract?.CustomerName, contract?.CustomerEmail, contract?.CustomerPhone), cancellationToken);
+        return await RecordLinkAsync(created.Id, link, cancellationToken);
+    }
+
+    /// <summary>
+    /// Cancels an after-sales checkout link of the customer (the quotation was rejected or superseded, or the package cancelled). When the
+    /// provider reports it already paid, it is confirmed instead (money is never ignored). Returns the attempt as it ends up.
+    /// </summary>
+    public async Task<PaymentAttempt?> CancelAttemptAsync(Guid attemptId, string reason, CancellationToken cancellationToken)
+    {
+        var settled = await ReconcileAsync(attemptId, force: true, cancellationToken);
+        if (settled is null || !PaymentStatuses.Payable.Contains(settled.Status)) return settled;
+        if (await gateway.CancelPaymentLinkAsync(settled.OrderCode, reason, cancellationToken) is not (GatewayCallStatus.Succeeded or GatewayCallStatus.NotConfigured))
+            return settled;
+        return await TransitionAsync(attemptId, PaymentStatuses.Cancelled, PaymentSources.System, Truncate(reason, 300), cancellationToken);
+    }
+
+    /// <summary>A checkout of the customer (for the after-sales payment views); null when it is not theirs.</summary>
+    public async Task<PaymentAttemptView?> GetAttemptForCustomerAsync(Guid customerUserId, Guid attemptId, bool reconcile, CancellationToken cancellationToken)
+    {
+        var attempt = await unitOfWork.FindAttemptAsync(attemptId, false, cancellationToken);
+        if (attempt is null || attempt.CustomerUserId != customerUserId) return null;
+        if (reconcile && PaymentStatuses.Payable.Contains(attempt.Status)) attempt = await ReconcileAsync(attemptId, force: false, cancellationToken) ?? attempt;
+        return View(attempt);
     }
 
     private async Task<OperationResult<PaymentAttemptView>> RecordLinkAsync(Guid attemptId, PaymentLinkResult link, CancellationToken cancellationToken)
@@ -277,19 +376,29 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
                     attempt.UpdatedAt = now;
                     attempt.Revision++;
 
+                    var items = await unitOfWork.GetItemsAsync(attempt.Id, true, token);
                     if (amountPaid != (long)attempt.Amount)
                     {
                         attempt.Status = PaymentStatuses.ReviewRequired;
                         attempt.FailureReason = $"Amount paid {amountPaid} does not equal {attempt.Amount:0}.";
                         AddEvent(attempt, "AMOUNT_MISMATCH", from, attempt.Status, source, attempt.FailureReason, now);
                     }
-                    else if (await unitOfWork.TryMarkContractPaidAsync(attempt.ContractId, now, token))
+                    else if (attempt.ContractId is null)
+                    {
+                        // After-sales-only checkout: the money is captured; each item is applied (or flagged for a manual refund).
+                        attempt.Status = PaymentStatuses.Paid;
+                        attempt.PaidAt = now;
+                        AddEvent(attempt, "PAID", from, attempt.Status, source, reference, now);
+                        await SettleItemsAsync(attempt, items, transactionAt ?? now, now, token);
+                    }
+                    else if (await unitOfWork.TryMarkContractPaidAsync(attempt.ContractId.Value, now, token))
                     {
                         attempt.Status = PaymentStatuses.Paid;
                         attempt.PaidAt = now;
                         AddEvent(attempt, "PAID", from, attempt.Status, source, reference, now);
+                        await SettleItemsAsync(attempt, items, transactionAt ?? now, now, token);
                     }
-                    else if (await unitOfWork.IsContractPaidAsync(attempt.ContractId, token))
+                    else if (await unitOfWork.IsContractPaidAsync(attempt.ContractId.Value, token))
                     {
                         attempt.Status = PaymentStatuses.RefundRequired;
                         attempt.FailureReason = "The contract was already paid by another attempt.";
@@ -313,6 +422,25 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
             }
         }
         return await unitOfWork.FindAttemptAsync(attemptId, false, cancellationToken);
+    }
+
+    /// <summary>The contract line is settled by the contract transition above; every other line goes to the after-sales settlement.</summary>
+    private async Task SettleItemsAsync(PaymentAttempt attempt, IReadOnlyList<PaymentAttemptItem> items, DateTimeOffset providerPaidAt, DateTimeOffset now,
+        CancellationToken token)
+    {
+        foreach (var contractLine in items.Where(i => i.ItemType == PaymentItemTypes.Contract)) contractLine.Status = PaymentItemStatuses.Settled;
+        var serviceLines = items.Where(i => i.ItemType != PaymentItemTypes.Contract).ToList();
+        if (serviceLines.Count == 0) return;
+        if (settlement is null)
+        {
+            foreach (var line in serviceLines)
+            {
+                line.Status = PaymentItemStatuses.ReviewRequired;
+                line.Note = "After-sales settlement is not available.";
+            }
+            return;
+        }
+        await settlement.SettleAsync(attempt, serviceLines, providerPaidAt, now, token);
     }
 
     private async Task<PaymentAttempt?> TransitionAsync(Guid attemptId, string to, string source, string? detail, CancellationToken cancellationToken)

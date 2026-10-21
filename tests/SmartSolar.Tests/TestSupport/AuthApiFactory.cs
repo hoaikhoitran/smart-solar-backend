@@ -91,6 +91,7 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("Rag:IngestionWorkerEnabled", "false");
         // The escalation worker is driven explicitly by tests.
         builder.UseSetting("Scheduling:EscalationWorkerEnabled", "false");
+        builder.UseSetting("AfterSales:WorkerEnabled", "false");
 
         foreach (var (key, value) in _settings)
         {
