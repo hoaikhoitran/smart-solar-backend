@@ -1,0 +1,169 @@
+province_code,commune_code,name,unit_type
+79,25747,Phường Thủ Dầu Một,WARD
+79,25750,Phường Phú Lợi,WARD
+79,25760,Phường Bình Dương,WARD
+79,25768,Phường Phú An,WARD
+79,25771,Phường Chánh Hiệp,WARD
+79,25777,Xã Dầu Tiếng,COMMUNE
+79,25780,Xã Minh Thạnh,COMMUNE
+79,25792,Xã Long Hòa,COMMUNE
+79,25807,Xã Thanh An,COMMUNE
+79,25813,Phường Bến Cát,WARD
+79,25819,Xã Trừ Văn Thố,COMMUNE
+79,25822,Xã Bàu Bàng,COMMUNE
+79,25837,Phường Chánh Phú Hòa,WARD
+79,25840,Phường Long Nguyên,WARD
+79,25843,Phường Tây Nam,WARD
+79,25846,Phường Thới Hòa,WARD
+79,25849,Phường Hòa Lợi,WARD
+79,25858,Xã Phú Giáo,COMMUNE
+79,25864,Xã Phước Thành,COMMUNE
+79,25867,Xã An Long,COMMUNE
+79,25882,Xã Phước Hòa,COMMUNE
+79,25888,Phường Tân Uyên,WARD
+79,25891,Phường Tân Khánh,WARD
+79,25906,Xã Bắc Tân Uyên,COMMUNE
+79,25909,Xã Thường Tân,COMMUNE
+79,25912,Phường Vĩnh Tân,WARD
+79,25915,Phường Bình Cơ,WARD
+79,25920,Phường Tân Hiệp,WARD
+79,25942,Phường Dĩ An,WARD
+79,25945,Phường Tân Đông Hiệp,WARD
+79,25951,Phường Đông Hòa,WARD
+79,25966,Phường Lái Thiêu,WARD
+79,25969,Phường Thuận Giao,WARD
+79,25975,Phường An Phú,WARD
+79,25978,Phường Thuận An,WARD
+79,25987,Phường Bình Hòa,WARD
+79,26506,Phường Vũng Tàu,WARD
+79,26526,Phường Tam Thắng,WARD
+79,26536,Phường Rạch Dừa,WARD
+79,26542,Phường Phước Thắng,WARD
+79,26545,Xã Long Sơn,COMMUNE
+79,26560,Phường Bà Rịa,WARD
+79,26566,Phường Long Hương,WARD
+79,26572,Phường Tam Long,WARD
+79,26575,Xã Ngãi Giao,COMMUNE
+79,26584,Xã Xuân Sơn,COMMUNE
+79,26590,Xã Bình Giã,COMMUNE
+79,26596,Xã Châu Đức,COMMUNE
+79,26608,Xã Kim Long,COMMUNE
+79,26617,Xã Nghĩa Thành,COMMUNE
+79,26620,Xã Hồ Tràm,COMMUNE
+79,26632,Xã Xuyên Mộc,COMMUNE
+79,26638,Xã Bàu Lâm,COMMUNE
+79,26641,Xã Hòa Hội,COMMUNE
+79,26647,Xã Hòa Hiệp,COMMUNE
+79,26656,Xã Bình Châu,COMMUNE
+79,26659,Xã Long Điền,COMMUNE
+79,26662,Xã Long Hải,COMMUNE
+79,26680,Xã Đất Đỏ,COMMUNE
+79,26686,Xã Phước Hải,COMMUNE
+79,26704,Phường Phú Mỹ,WARD
+79,26710,Phường Tân Hải,WARD
+79,26713,Phường Tân Phước,WARD
+79,26725,Phường Tân Thành,WARD
+79,26728,Xã Châu Pha,COMMUNE
+79,26732,Đặc khu Côn Đảo,SPECIAL_ZONE
+79,26737,Phường Tân Định,WARD
+79,26740,Phường Sài Gòn,WARD
+79,26743,Phường Bến Thành,WARD
+79,26758,Phường Cầu Ông Lãnh,WARD
+79,26767,Phường An Phú Đông,WARD
+79,26773,Phường Thới An,WARD
+79,26782,Phường Tân Thới Hiệp,WARD
+79,26785,Phường Trung Mỹ Tây,WARD
+79,26791,Phường Đông Hưng Thuận,WARD
+79,26800,Phường Linh Xuân,WARD
+79,26803,Phường Tam Bình,WARD
+79,26809,Phường Hiệp Bình,WARD
+79,26824,Phường Thủ Đức,WARD
+79,26833,Phường Long Bình,WARD
+79,26842,Phường Tăng Nhơn Phú,WARD
+79,26848,Phường Phước Long,WARD
+79,26857,Phường Long Phước,WARD
+79,26860,Phường Long Trường,WARD
+79,26876,Phường An Nhơn,WARD
+79,26878,Phường An Hội Đông,WARD
+79,26882,Phường An Hội Tây,WARD
+79,26884,Phường Gò Vấp,WARD
+79,26890,Phường Hạnh Thông,WARD
+79,26898,Phường Thông Tây Hội,WARD
+79,26905,Phường Bình Lợi Trung,WARD
+79,26911,Phường Bình Quới,WARD
+79,26929,Phường Bình Thạnh,WARD
+79,26944,Phường Gia Định,WARD
+79,26956,Phường Thạnh Mỹ Tây,WARD
+79,26968,Phường Tân Sơn Nhất,WARD
+79,26977,Phường Tân Sơn Hòa,WARD
+79,26983,Phường Bảy Hiền,WARD
+79,26995,Phường Tân Hòa,WARD
+79,27004,Phường Tân Bình,WARD
+79,27007,Phường Tân Sơn,WARD
+79,27013,Phường Tây Thạnh,WARD
+79,27019,Phường Tân Sơn Nhì,WARD
+79,27022,Phường Phú Thọ Hòa,WARD
+79,27028,Phường Phú Thạnh,WARD
+79,27031,Phường Tân Phú,WARD
+79,27043,Phường Đức Nhuận,WARD
+79,27058,Phường Cầu Kiệu,WARD
+79,27073,Phường Phú Nhuận,WARD
+79,27094,Phường An Khánh,WARD
+79,27097,Phường Bình Trưng,WARD
+79,27112,Phường Cát Lái,WARD
+79,27139,Phường Xuân Hòa,WARD
+79,27142,Phường Nhiêu Lộc,WARD
+79,27154,Phường Bàn Cờ,WARD
+79,27163,Phường Hòa Hưng,WARD
+79,27169,Phường Diên Hồng,WARD
+79,27190,Phường Vườn Lài,WARD
+79,27211,Phường Hòa Bình,WARD
+79,27226,Phường Phú Thọ,WARD
+79,27232,Phường Bình Thới,WARD
+79,27238,Phường Minh Phụng,WARD
+79,27259,Phường Xóm Chiếu,WARD
+79,27265,Phường Khánh Hội,WARD
+79,27286,Phường Vĩnh Hội,WARD
+79,27301,Phường Chợ Quán,WARD
+79,27316,Phường An Đông,WARD
+79,27343,Phường Chợ Lớn,WARD
+79,27349,Phường Phú Lâm,WARD
+79,27364,Phường Bình Phú,WARD
+79,27367,Phường Bình Tây,WARD
+79,27373,Phường Bình Tiên,WARD
+79,27418,Phường Chánh Hưng,WARD
+79,27424,Phường Bình Đông,WARD
+79,27427,Phường Phú Định,WARD
+79,27439,Phường Bình Hưng Hòa,WARD
+79,27442,Phường Bình Tân,WARD
+79,27448,Phường Bình Trị Đông,WARD
+79,27457,Phường Tân Tạo,WARD
+79,27460,Phường An Lạc,WARD
+79,27475,Phường Tân Hưng,WARD
+79,27478,Phường Tân Thuận,WARD
+79,27484,Phường Phú Thuận,WARD
+79,27487,Phường Tân Mỹ,WARD
+79,27496,Xã Tân An Hội,COMMUNE
+79,27508,Xã An Nhơn Tây,COMMUNE
+79,27511,Xã Nhuận Đức,COMMUNE
+79,27526,Xã Thái Mỹ,COMMUNE
+79,27541,Xã Phú Hòa Đông,COMMUNE
+79,27544,Xã Bình Mỹ,COMMUNE
+79,27553,Xã Củ Chi,COMMUNE
+79,27559,Xã Hóc Môn,COMMUNE
+79,27568,Xã Đông Thạnh,COMMUNE
+79,27577,Xã Xuân Thới Sơn,COMMUNE
+79,27592,Xã Bà Điểm,COMMUNE
+79,27595,Xã Tân Nhựt,COMMUNE
+79,27601,Xã Vĩnh Lộc,COMMUNE
+79,27604,Xã Tân Vĩnh Lộc,COMMUNE
+79,27610,Xã Bình Lợi,COMMUNE
+79,27619,Xã Bình Hưng,COMMUNE
+79,27628,Xã Hưng Long,COMMUNE
+79,27637,Xã Bình Chánh,COMMUNE
+79,27655,Xã Nhà Bè,COMMUNE
+79,27658,Xã Hiệp Phước,COMMUNE
+79,27664,Xã Cần Giờ,COMMUNE
+79,27667,Xã Bình Khánh,COMMUNE
+79,27673,Xã An Thới Đông,COMMUNE
+79,27676,Xã Thạnh An,COMMUNE

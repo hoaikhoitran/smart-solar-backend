@@ -1,27 +1,29 @@
 using FluentValidation;
+using SmartSolar.Modules.Identity.Constants;
 using SmartSolar.Modules.Scheduling.Constants;
 using SmartSolar.Modules.Scheduling.Contracts.Persistence;
 using SmartSolar.Modules.Scheduling.Domain;
 using SmartSolar.Modules.Scheduling.Entities;
 using SmartSolar.Modules.Scheduling.Options;
+using SmartSolar.Modules.Scheduling.Zones;
 using SmartSolar.Modules.Scheduling.Services;
 
 namespace SmartSolar.Modules.Scheduling.PreSurveyAppointments;
 
-public sealed record UpsertTechnicianProfileCommand(
-    Guid TechnicianUserId, decimal? BaseLatitude, decimal? BaseLongitude, string? BaseLabel, bool IsSchedulingActive, int? MaxAppointmentsPerDay,
-    TimeOnly? EarliestBaseDeparture = null);
+public sealed record UpsertTechnicianProfileCommand(Guid TechnicianUserId, bool IsSchedulingActive, int? MaxAppointmentsPerDay, Guid? ActorUserId = null);
 
 public sealed record AddUnavailablePeriodCommand(Guid ActorUserId, Guid TechnicianUserId, DateTimeOffset StartsAt, DateTimeOffset EndsAt, string? Reason);
 
 public sealed record WorkingPeriodInput(DayOfWeek Day, TimeOnly Start, TimeOnly End);
 
 /// <summary><see cref="UseDefault"/> = true removes the custom week; otherwise <see cref="Periods"/> is the full week (missing days are days off).</summary>
-public sealed record SetWorkingScheduleCommand(Guid TechnicianUserId, bool UseDefault, IReadOnlyList<WorkingPeriodInput> Periods);
+public sealed record SetWorkingScheduleCommand(Guid TechnicianUserId, bool UseDefault, IReadOnlyList<WorkingPeriodInput> Periods, Guid? ActorUserId = null);
 
-public sealed record TechnicianProfileView(Guid TechnicianUserId, string FullName, string? Phone, bool IsActiveUser, decimal? BaseLatitude, decimal? BaseLongitude,
-    string? BaseLabel, bool IsSchedulingActive, int? MaxAppointmentsPerDay, bool ReadyForScheduling,
-    bool HasCustomWorkingSchedule, string EarliestBaseDeparture, bool EarliestBaseDepartureIsDefault, string VehicleType);
+/// <summary>Replaces the technician's zone set (removed memberships are soft-removed and kept as history).</summary>
+public sealed record SetTechnicianZonesCommand(Guid ActorUserId, Guid TechnicianUserId, IReadOnlyList<Guid> ZoneIds);
+
+public sealed record TechnicianProfileView(Guid TechnicianUserId, string FullName, string? Phone, bool IsActiveUser, bool IsSchedulingActive,
+    int? MaxAppointmentsPerDay, bool ReadyForScheduling, bool HasCustomWorkingSchedule, IReadOnlyList<ZoneView> Zones);
 
 public sealed record UnavailablePeriodView(Guid Id, Guid TechnicianUserId, DateTimeOffset StartsAt, DateTimeOffset EndsAt, string? Reason);
 
@@ -29,24 +31,17 @@ public sealed record WorkingPeriodView(string Day, string Start, string End);
 
 public sealed record WorkingScheduleView(Guid TechnicianUserId, bool UsesDefault, string TimeZone, IReadOnlyList<WorkingPeriodView> Periods);
 
-/// <summary>An existing appointment that a configuration change would make impossible.</summary>
+/// <summary>An existing confirmed appointment that a configuration change would make impossible.</summary>
 public sealed record ConflictingAppointmentView(Guid AppointmentId, Guid? SurveyRequestId, DateTimeOffset StartsAt, DateTimeOffset EndsAt, string Status, string Problem);
+
+public sealed record TechnicianZonesView(Guid TechnicianUserId, IReadOnlyList<ZoneView> Zones, IReadOnlyList<RehomeResult> RehomedHolds);
 
 public sealed class UpsertTechnicianProfileCommandValidator : AbstractValidator<UpsertTechnicianProfileCommand>
 {
     public UpsertTechnicianProfileCommandValidator()
     {
         RuleFor(x => x.TechnicianUserId).NotEmpty();
-        RuleFor(x => x.BaseLatitude).InclusiveBetween(-90, 90).When(x => x.BaseLatitude.HasValue);
-        RuleFor(x => x.BaseLongitude).InclusiveBetween(-180, 180).When(x => x.BaseLongitude.HasValue);
-        RuleFor(x => x).Must(x => x.BaseLatitude.HasValue == x.BaseLongitude.HasValue)
-            .WithMessage("Base latitude and longitude must be provided together.").OverridePropertyName("BaseLatitude");
-        RuleFor(x => x).Must(x => !x.IsSchedulingActive || GeoPoint.From(x.BaseLatitude, x.BaseLongitude) is not null)
-            .WithMessage("An active scheduling profile needs a real base coordinate (not 0,0).").OverridePropertyName("BaseLatitude");
-        RuleFor(x => x.BaseLabel).MaximumLength(200);
         RuleFor(x => x.MaxAppointmentsPerDay).InclusiveBetween(1, 20).When(x => x.MaxAppointmentsPerDay.HasValue);
-        RuleFor(x => x.EarliestBaseDeparture).Must(t => t!.Value >= new TimeOnly(4, 0) && t.Value <= new TimeOnly(12, 0))
-            .When(x => x.EarliestBaseDeparture.HasValue).WithMessage("earliestBaseDeparture must be between 04:00 and 12:00 local time.");
     }
 }
 
@@ -84,21 +79,44 @@ public sealed class SetWorkingScheduleCommandValidator : AbstractValidator<SetWo
         });
 }
 
+public sealed class SetTechnicianZonesCommandValidator : AbstractValidator<SetTechnicianZonesCommand>
+{
+    public SetTechnicianZonesCommandValidator()
+    {
+        RuleFor(x => x.TechnicianUserId).NotEmpty();
+        RuleFor(x => x.ZoneIds).NotNull();
+        RuleFor(x => x.ZoneIds).Must(ids => ids.Count <= 200).WithMessage("At most 200 zones.");
+        RuleForEach(x => x.ZoneIds).NotEmpty();
+    }
+}
+
 /// <summary>
-/// Technician scheduling setup for ADMIN/MANAGER: profile (base location, active flag, daily cap,
-/// earliest base departure), custom weekly working schedule, and leave. Changes that would make an
-/// existing appointment impossible are refused with TECHNICIAN_HAS_CONFLICTING_APPOINTMENTS and the
-/// affected appointments; nothing is cancelled automatically. Changes that alter routes queue a
-/// durable recalculation of the affected days.
+/// Technician scheduling setup for ADMIN/MANAGER: profile (scheduling flag, daily cap), operational zones, custom
+/// weekly working schedule, and leave. A change that would strand a confirmed (ACCEPTED/ASSIGNED) future
+/// appointment is refused with TECHNICIAN_HAS_CONFLICTING_APPOINTMENTS listing them; pending capacity holds
+/// that the change invalidates (including holds above a lowered daily limit) are moved to another eligible technician
+/// automatically, or the appointment escalates without a holder. Every change runs under the technician lock, serialised
+/// with bookings.
 /// </summary>
 public sealed class AdminTechnicianHandlers(
     ISchedulingUnitOfWork unitOfWork,
-    ScheduleRecalculationService recalculation,
+    AppointmentAssignmentService assignments,
     WorkingCalendar calendar,
+    SchedulingOptions options,
     TimeProvider time)
 {
-    public async Task<IReadOnlyList<TechnicianProfileView>> ListAsync(CancellationToken cancellationToken)
-        => (await unitOfWork.ListTechniciansAsync(cancellationToken)).Select(t => View(t.UserId, t.FullName, t.Phone, t.IsActiveUser, t.Profile)).ToList();
+    /// <summary>
+    /// Installation work that pins the technician's scheduling and zones: upcoming current assignments plus those of started,
+    /// unfinished projects (IN_PROGRESS / REWORK_REQUIRED / PENDING_CUSTOMER_ACCEPTANCE) even after their interval ended.
+    /// </summary>
+    private async Task<IReadOnlyList<UpcomingAppointment>> InstallationWorkAsync(Guid technicianUserId, DateTimeOffset now, CancellationToken token)
+        => (await unitOfWork.ListUpcomingInstallationAssignmentsAsync(technicianUserId, now, token))
+            .Concat(await unitOfWork.ListStartedInstallationAssignmentsAsync(technicianUserId, token))
+            .DistinctBy(a => a.AppointmentId).OrderBy(a => a.StartsAt).ToList();
+
+    public async Task<IReadOnlyList<TechnicianProfileView>> ListAsync(Guid? zoneId, CancellationToken cancellationToken)
+        => (await unitOfWork.ListTechniciansAsync(zoneId, cancellationToken))
+            .Select(t => View(t.UserId, t.FullName, t.Phone, t.IsActiveUser, t.Profile, t.Zones)).ToList();
 
     public async Task<SchedulingResult<TechnicianProfileView>> UpsertProfileAsync(UpsertTechnicianProfileCommand command, CancellationToken cancellationToken)
     {
@@ -106,59 +124,120 @@ public sealed class AdminTechnicianHandlers(
         if (technician is null || !technician.HasTechnicianRole)
             return SchedulingResult<TechnicianProfileView>.Fail(SchedulingErrorCodes.TechnicianNotFound, "Technician was not found.");
 
-        var recalcDates = new List<DateOnly>();
-        var outcome = await unitOfWork.ExecuteInTransactionAsync<SchedulingResult<TechnicianProfile>>(async token =>
+        var outcome = await WithHoldsAsync<TechnicianProfile>(command.TechnicianUserId, async (upcoming, now, token) =>
         {
-            await unitOfWork.LockTechniciansAsync([command.TechnicianUserId], token);
-            var now = time.GetUtcNow();
+            if (command.IsSchedulingActive) return await DailyLimitAsync<TechnicianProfile>(command.TechnicianUserId, command.MaxAppointmentsPerDay, upcoming, now, token);
+            var confirmed = upcoming.Where(a => AppointmentStatuses.IsConfirmed(a.Status)).Select(a => Conflict(a, EligibilityReasons.SchedulingDisabled)).ToList();
+            if (confirmed.Count > 0)
+                return (null, Conflicts<TechnicianProfile>(confirmed, "The technician has confirmed upcoming appointments. Reassign them before disabling scheduling."));
+            // Installation assignments (Installation Flow) are made under the same technician lock, so this check cannot race an assignment.
+            var installation = await InstallationWorkAsync(command.TechnicianUserId, now, token);
+            if (installation.Count > 0)
+                return (null, Conflicts<TechnicianProfile>(installation.Select(a => Conflict(a, EligibilityReasons.SchedulingDisabled)),
+                    "The technician is the responsible technician of upcoming installation work. Reassign the installations before disabling scheduling."));
+            return (upcoming.Where(a => AppointmentStatuses.IsOpen(a.Status)), null);
+        }, async (now, token) =>
+        {
             var existing = await unitOfWork.FindProfileForUpdateAsync(command.TechnicianUserId, token);
-            var upcoming = await unitOfWork.ListUpcomingAppointmentsAsync(command.TechnicianUserId, now, token);
-
-            if (!command.IsSchedulingActive && upcoming.Count > 0)
-                return (Conflicts<TechnicianProfile>(upcoming.Select(a => Conflict(a, "SCHEDULING_DISABLED")),
-                    "The technician still has upcoming appointments. Reassign them before disabling scheduling."), false);
-
-            var newEarliest = command.EarliestBaseDeparture ?? calendar.DefaultEarliestBaseDeparture;
-            var oldEarliest = existing?.EarliestBaseDeparture ?? calendar.DefaultEarliestBaseDeparture;
-            if (newEarliest > oldEarliest)
-            {
-                var late = await FirstLegsDepartingBeforeAsync(command.TechnicianUserId, upcoming, newEarliest, token);
-                if (late.Count > 0)
-                    return (Conflicts<TechnicianProfile>(late, "Existing first appointments require leaving the base before the new earliest departure."), false);
-            }
-
             if (existing is null)
             {
                 existing = new TechnicianProfile { UserId = command.TechnicianUserId, CreatedAt = now };
                 unitOfWork.AddProfile(existing);
             }
-
-            var baseChanged = existing.BaseLatitude != command.BaseLatitude || existing.BaseLongitude != command.BaseLongitude;
-            existing.BaseLatitude = command.BaseLatitude;
-            existing.BaseLongitude = command.BaseLongitude;
-            existing.BaseLabel = string.IsNullOrWhiteSpace(command.BaseLabel) ? null : command.BaseLabel.Trim();
             existing.IsSchedulingActive = command.IsSchedulingActive;
             existing.MaxAppointmentsPerDay = command.MaxAppointmentsPerDay;
-            existing.EarliestBaseDeparture = command.EarliestBaseDeparture;
             existing.UpdatedAt = now;
-
-            if (baseChanged)
-            {
-                // First legs of every upcoming day now start elsewhere: re-estimate them durably.
-                foreach (var date in upcoming.Select(a => calendar.LocalDateOf(a.StartsAt)).Distinct())
-                {
-                    await unitOfWork.RequestRecalculationAsync(command.TechnicianUserId, date, RecalculationReasons.BaseLocationChanged, now, token);
-                    recalcDates.Add(date);
-                }
-            }
-
-            await unitOfWork.SaveChangesAsync(token);
-            return (SchedulingResult<TechnicianProfile>.Ok(existing), true);
-        }, cancellationToken);
+            return existing;
+        }, command.ActorUserId, "TECHNICIAN_SCHEDULING_DISABLED", cancellationToken);
 
         if (!outcome.Succeeded) return SchedulingResult<TechnicianProfileView>.Fail(outcome.ErrorCode!, outcome.Message!, outcome.Details);
-        foreach (var date in recalcDates) await recalculation.TryRunAsync(command.TechnicianUserId, date, cancellationToken);
-        return SchedulingResult<TechnicianProfileView>.Ok(View(technician.UserId, technician.FullName, null, technician.IsActiveUser, outcome.Value));
+        var zones = await unitOfWork.ListTechnicianZonesAsync(command.TechnicianUserId, cancellationToken);
+        return SchedulingResult<TechnicianProfileView>.Ok(View(technician.UserId, technician.FullName, null, technician.IsActiveUser, outcome.Value, zones));
+    }
+
+    /// <summary>
+    /// Replaces the zone set (a technician may belong to several zones). Refused (409 TECHNICIAN_HAS_CONFLICTING_APPOINTMENTS, with the
+    /// appointments) when a confirmed future survey appointment or installation work would no longer be in one of the technician's
+    /// active zones; pending holds no longer covered are re-homed or escalated. Removed memberships are kept as history.
+    /// Scope: an Admin may change any membership; a Manager only adds or removes memberships of zones whose responsible manager
+    /// (<c>operational_zone.responsible_manager_user_id</c>) they are — memberships of other zones must stay exactly as they are
+    /// (403 ZONE_SCOPE_FORBIDDEN). Checked against the actor's current roles inside the transaction, under the technician lock.
+    /// </summary>
+    public async Task<SchedulingResult<TechnicianZonesView>> SetZonesAsync(SetTechnicianZonesCommand command, CancellationToken cancellationToken)
+    {
+        var technician = await unitOfWork.GetTechnicianAsync(command.TechnicianUserId, cancellationToken);
+        if (technician is null || !technician.HasTechnicianRole)
+            return SchedulingResult<TechnicianZonesView>.Fail(SchedulingErrorCodes.TechnicianNotFound, "Technician was not found.");
+        if (technician.Profile is null)
+            return SchedulingResult<TechnicianZonesView>.Fail(SchedulingErrorCodes.TechnicianProfileRequired, "Configure the technician profile (PUT …/profile) first.");
+
+        var wanted = command.ZoneIds.Distinct().ToList();
+        var zones = await unitOfWork.GetZonesAsync(wanted, cancellationToken);
+        if (zones.Count != wanted.Count)
+            return SchedulingResult<TechnicianZonesView>.Fail(SchedulingErrorCodes.ZoneNotFound, "One or more operational zones were not found.");
+        var activeWanted = zones.Where(z => z.IsActive).Select(z => z.Id).ToHashSet();
+
+        var rehomed = new List<RehomeResult>();
+        var outcome = await WithHoldsAsync<bool>(command.TechnicianUserId, async (upcoming, now, token) =>
+        {
+            if (await ScopeErrorAsync(command.ActorUserId, command.TechnicianUserId, wanted, token) is { } scopeError) return (null, scopeError);
+            var conflicts = new List<ConflictingAppointmentView>();
+            var holds = new List<UpcomingAppointment>();
+            foreach (var a in upcoming.Where(a => a.PropertySiteId is not null))
+            {
+                var coverage = await unitOfWork.GetSiteCoverageAsync(a.PropertySiteId!.Value, token);
+                if (coverage.ZoneIds.Any(activeWanted.Contains)) continue;
+                if (AppointmentStatuses.IsConfirmed(a.Status)) conflicts.Add(Conflict(a, EligibilityReasons.OutsideZone));
+                else holds.Add(a);
+            }
+            // Installation assignments are never moved automatically: one outside the new zones refuses the change.
+            foreach (var a in await InstallationWorkAsync(command.TechnicianUserId, now, token))
+            {
+                if (a.PropertySiteId is not { } site || (await unitOfWork.GetSiteCoverageAsync(site, token)).ZoneIds.Any(activeWanted.Contains)) continue;
+                conflicts.Add(Conflict(a, EligibilityReasons.OutsideZone));
+            }
+            return conflicts.Count > 0
+                ? (null, Conflicts<bool>(conflicts, "The technician has confirmed upcoming appointments in the zones being removed. Reassign them first."))
+                : (holds, null);
+        }, async (now, token) =>
+        {
+            var current = await unitOfWork.FindActiveMembershipsForUpdateAsync(command.TechnicianUserId, token);
+            foreach (var membership in current.Where(m => !wanted.Contains(m.ZoneId)))
+            {
+                membership.RemovedAt = now;
+                membership.RemovedByUserId = command.ActorUserId;
+            }
+            // Soft removals first: the partial unique index only counts active memberships.
+            await unitOfWork.SaveChangesAsync(token);
+            foreach (var zoneId in wanted.Where(id => current.All(m => m.ZoneId != id)))
+                unitOfWork.AddMembership(new TechnicianZoneMembership
+                {
+                    Id = Guid.NewGuid(), TechnicianUserId = command.TechnicianUserId, ZoneId = zoneId,
+                    AssignedByUserId = command.ActorUserId, AssignedAt = now,
+                });
+            return true;
+        }, command.ActorUserId, "TECHNICIAN_ZONES_CHANGED", cancellationToken, rehomed);
+
+        if (!outcome.Succeeded) return SchedulingResult<TechnicianZonesView>.Fail(outcome.ErrorCode!, outcome.Message!, outcome.Details);
+        var memberships = await unitOfWork.ListTechnicianZonesAsync(command.TechnicianUserId, cancellationToken);
+        return SchedulingResult<TechnicianZonesView>.Ok(new TechnicianZonesView(command.TechnicianUserId,
+            memberships.Select(m => ZoneView.From(m)!).ToList(), rehomed));
+    }
+
+    /// <summary>Null when the actor may replace the technician's current memberships with <paramref name="wanted"/>.</summary>
+    private async Task<SchedulingResult<bool>?> ScopeErrorAsync(Guid actorUserId, Guid technicianUserId, IReadOnlyCollection<Guid> wanted, CancellationToken token)
+    {
+        if (await unitOfWork.IsActiveUserWithRoleAsync(actorUserId, [RoleCodes.Admin], token)) return null;
+        if (!await unitOfWork.IsActiveUserWithRoleAsync(actorUserId, [RoleCodes.Manager], token))
+            return SchedulingResult<bool>.Fail(SchedulingErrorCodes.ZoneScopeForbidden, "Only an Admin or a responsible Manager can change technician zones.");
+        var current = (await unitOfWork.FindActiveMembershipsForUpdateAsync(technicianUserId, token)).Select(m => m.ZoneId).ToHashSet();
+        var changed = wanted.Where(id => !current.Contains(id)).Concat(current.Where(id => !wanted.Contains(id))).Distinct().ToList();
+        if (changed.Count == 0) return null;
+        var outside = (await unitOfWork.GetZonesAsync(changed, token)).Where(z => z.ResponsibleManagerUserId != actorUserId).Select(z => z.Id).ToList();
+        return outside.Count == 0
+            ? null
+            : SchedulingResult<bool>.Fail(SchedulingErrorCodes.ZoneScopeForbidden,
+                "You can add or remove technicians only in the operational zones you are the responsible manager of.", new { zoneIds = outside });
     }
 
     public async Task<SchedulingResult<WorkingScheduleView>> GetWorkingScheduleAsync(Guid technicianUserId, CancellationToken cancellationToken)
@@ -178,23 +257,33 @@ public sealed class AdminTechnicianHandlers(
             return SchedulingResult<WorkingScheduleView>.Fail(SchedulingErrorCodes.TechnicianProfileRequired, "Configure the technician profile (PUT …/profile) first.");
 
         var week = command.UseDefault ? null : command.Periods.Select(p => new WeeklyPeriod(p.Day, p.Start, p.End)).ToList();
-        var dates = new List<DateOnly>();
-        var outcome = await unitOfWork.ExecuteInTransactionAsync<SchedulingResult<bool>>(async token =>
+        var probe = new TechnicianDayState(command.TechnicianUserId, technician.FullName, [], [], CustomWeeklySchedule: week);
+        bool Outside(UpcomingAppointment a)
         {
-            await unitOfWork.LockTechniciansAsync([command.TechnicianUserId], token);
-            var now = time.GetUtcNow();
-            var upcoming = await unitOfWork.ListUpcomingAppointmentsAsync(command.TechnicianUserId, now, token);
-            var probe = new TechnicianDayState(command.TechnicianUserId, technician.FullName, null, [], [], CustomWeeklySchedule: week);
+            var intervals = calendar.Resolve(probe, calendar.LocalDateOf(a.StartsAt)).WorkingIntervals!;
+            return !intervals.Any(w => w.StartsAtUtc <= a.StartsAt && a.EndsAt <= w.EndsAtUtc);
+        }
 
-            var outside = upcoming.Where(a =>
-            {
-                var date = calendar.LocalDateOf(a.StartsAt);
-                var intervals = calendar.Resolve(probe, date).WorkingIntervals!;
-                return !intervals.Any(w => w.StartsAtUtc <= a.StartsAt && a.EndsAt <= w.EndsAtUtc);
-            }).Select(a => Conflict(a, FeasibilityReasons.OutsideWorkingHours)).ToList();
-            if (outside.Count > 0)
-                return (Conflicts<bool>(outside, "Existing appointments fall outside the new working schedule. Reschedule or reassign them first."), false);
+        // A (multi-day) installation assignment must still fall on working days with start/end inside working hours.
+        bool InstallationOutside(UpcomingAppointment a)
+        {
+            var days = new List<TechnicianDayState>();
+            for (var d = calendar.LocalDateOf(a.StartsAt); d <= calendar.LocalDateOf(a.EndsAt.AddTicks(-1)); d = d.AddDays(1)) days.Add(calendar.Resolve(probe, d));
+            return EligibilityRules.CheckSpan(days, new EligibilityRequest(a.StartsAt, a.EndsAt, null, CountsTowardDailyLimit: false), TimeSpan.Zero) is not null;
+        }
 
+        var outcome = await WithHoldsAsync<bool>(command.TechnicianUserId, async (upcoming, now, token) =>
+        {
+            var outside = upcoming.Where(Outside).ToList();
+            var confirmed = outside.Where(a => AppointmentStatuses.IsConfirmed(a.Status)).Select(a => Conflict(a, EligibilityReasons.OutsideWorkingHours))
+                .Concat((await unitOfWork.ListUpcomingInstallationAssignmentsAsync(command.TechnicianUserId, now, token)).Where(InstallationOutside)
+                    .Select(a => Conflict(a, EligibilityReasons.OutsideWorkingHours)))
+                .ToList();
+            return confirmed.Count > 0
+                ? (null, Conflicts<bool>(confirmed, "Confirmed appointments or installation assignments fall outside the new working schedule. Reschedule or reassign them first."))
+                : (outside.Where(a => AppointmentStatuses.IsOpen(a.Status)), null);
+        }, async (now, token) =>
+        {
             var profile = (await unitOfWork.FindProfileForUpdateAsync(command.TechnicianUserId, token))!;
             profile.HasCustomWorkingSchedule = !command.UseDefault;
             profile.UpdatedAt = now;
@@ -204,18 +293,10 @@ public sealed class AdminTechnicianHandlers(
                 {
                     Id = Guid.NewGuid(), TechnicianUserId = command.TechnicianUserId, DayOfWeek = (int)p.Day, StartTime = p.Start, EndTime = p.End,
                 }).ToList(), token);
-
-            foreach (var date in upcoming.Select(a => calendar.LocalDateOf(a.StartsAt)).Distinct())
-            {
-                await unitOfWork.RequestRecalculationAsync(command.TechnicianUserId, date, RecalculationReasons.WorkingScheduleChanged, now, token);
-                dates.Add(date);
-            }
-            await unitOfWork.SaveChangesAsync(token);
-            return (SchedulingResult<bool>.Ok(true), true);
-        }, cancellationToken);
+            return true;
+        }, command.ActorUserId, "TECHNICIAN_WORKING_SCHEDULE_CHANGED", cancellationToken);
 
         if (!outcome.Succeeded) return SchedulingResult<WorkingScheduleView>.Fail(outcome.ErrorCode!, outcome.Message!, outcome.Details);
-        foreach (var date in dates) await recalculation.TryRunAsync(command.TechnicianUserId, date, cancellationToken);
         return SchedulingResult<WorkingScheduleView>.Ok(await ScheduleViewAsync(command.TechnicianUserId, !command.UseDefault, cancellationToken));
     }
 
@@ -236,22 +317,22 @@ public sealed class AdminTechnicianHandlers(
             CreatedAt = time.GetUtcNow(),
         };
 
-        var outcome = await unitOfWork.ExecuteInTransactionAsync<SchedulingResult<bool>>(async token =>
+        var outcome = await WithHoldsAsync<bool>(command.TechnicianUserId, async (upcoming, now, token) =>
         {
-            // Serialise with bookings for this technician so a booking cannot slip in unseen.
-            await unitOfWork.LockTechniciansAsync([command.TechnicianUserId], token);
-            var overlapping = (await unitOfWork.ListUpcomingAppointmentsAsync(command.TechnicianUserId, period.StartsAt, token))
-                .Where(a => a.StartsAt < period.EndsAt && period.StartsAt < a.EndsAt)
-                .Select(a => Conflict(a, FeasibilityReasons.Unavailable))
+            var overlapping = upcoming.Where(a => a.StartsAt < period.EndsAt && period.StartsAt < a.EndsAt).ToList();
+            var confirmed = overlapping.Where(a => AppointmentStatuses.IsConfirmed(a.Status)).Select(a => Conflict(a, EligibilityReasons.OnLeave))
+                .Concat((await unitOfWork.ListUpcomingInstallationAssignmentsAsync(command.TechnicianUserId, now, token))
+                    .Where(a => a.StartsAt < period.EndsAt && period.StartsAt < a.EndsAt).Select(a => Conflict(a, EligibilityReasons.OnLeave)))
                 .ToList();
-            if (overlapping.Count > 0)
-                return (Conflicts<bool>(overlapping,
-                    "The technician has appointments in this period. Reassign or reschedule them first; appointments are never cancelled automatically."), false);
-
+            return confirmed.Count > 0
+                ? (null, Conflicts<bool>(confirmed,
+                    "The technician has confirmed appointments or installation work in this period. Reassign or reschedule them first; nothing is cancelled automatically."))
+                : (overlapping.Where(a => AppointmentStatuses.IsOpen(a.Status)), null);
+        }, (_, _) =>
+        {
             unitOfWork.AddUnavailablePeriod(period);
-            await unitOfWork.SaveChangesAsync(token);
-            return (SchedulingResult<bool>.Ok(true), true);
-        }, cancellationToken);
+            return Task.FromResult(true);
+        }, command.ActorUserId, "TECHNICIAN_ON_LEAVE", cancellationToken);
 
         if (!outcome.Succeeded) return SchedulingResult<UnavailablePeriodView>.Fail(outcome.ErrorCode!, outcome.Message!, outcome.Details);
         return SchedulingResult<UnavailablePeriodView>.Ok(new UnavailablePeriodView(period.Id, period.TechnicianUserId,
@@ -264,25 +345,74 @@ public sealed class AdminTechnicianHandlers(
                 TimeZoneInfo.ConvertTime(p.StartsAt, calendar.TimeZone), TimeZoneInfo.ConvertTime(p.EndsAt, calendar.TimeZone), p.Reason))
             .ToList();
 
-    /// <summary>Removing leave only adds capacity; existing routes are unaffected, new slots appear immediately.</summary>
+    /// <summary>Removing leave only adds capacity; new slots appear immediately.</summary>
     public Task<bool> RemoveUnavailablePeriodAsync(Guid technicianUserId, Guid periodId, CancellationToken cancellationToken)
         => unitOfWork.RemoveUnavailablePeriodAsync(technicianUserId, periodId, cancellationToken);
 
-    /// <summary>First appointments of a day whose current base→first-stop estimate departs before <paramref name="earliest"/>.</summary>
-    private async Task<List<ConflictingAppointmentView>> FirstLegsDepartingBeforeAsync(
-        Guid technicianUserId, IReadOnlyList<UpcomingAppointment> upcoming, TimeOnly earliest, CancellationToken token)
+    /// <summary>
+    /// Shared transaction shape: lock the technician and every possible new holder of their pending holds, re-read
+    /// the upcoming commitments, let <paramref name="check"/> refuse (confirmed conflicts) or pick the holds to move,
+    /// apply the change, re-home those holds, save, commit. When the technician's open holds under the lock differ from
+    /// the set read before (a booking or hold move committed in between), the transaction rolls back and is retried with
+    /// the new holds' possible holders locked too (bounded, like acceptance), so no hold is re-homed without its candidates locked.
+    /// </summary>
+    private async Task<SchedulingResult<T>> WithHoldsAsync<T>(
+        Guid technicianUserId,
+        Func<IReadOnlyList<UpcomingAppointment>, DateTimeOffset, CancellationToken, Task<(IEnumerable<UpcomingAppointment>? Holds, SchedulingResult<T>? Error)>> check,
+        Func<DateTimeOffset, CancellationToken, Task<T>> change,
+        Guid? actorUserId,
+        string reason,
+        CancellationToken cancellationToken,
+        List<RehomeResult>? rehomed = null)
     {
-        var conflicts = new List<ConflictingAppointmentView>();
-        foreach (var first in upcoming.GroupBy(a => calendar.LocalDateOf(a.StartsAt)).Select(g => (Date: g.Key, First: g.OrderBy(a => a.StartsAt).First())))
+        var extraLocks = new HashSet<Guid>();
+        for (var attempt = 0; attempt < Math.Max(1, options.MaxReservationAttempts) + 1; attempt++)
         {
-            var estimate = await unitOfWork.GetLatestInboundEstimateAsync(first.First.AppointmentId, token);
-            if (estimate is { OriginKind: TravelOriginKinds.Base, Status: Travel.RouteCalculationStatuses.Ok }
-                && estimate.DepartureAt < calendar.ToUtc(first.Date, earliest))
+            var before = (await unitOfWork.ListUpcomingAppointmentsAsync(technicianUserId, time.GetUtcNow(), cancellationToken))
+                .Where(a => AppointmentStatuses.IsOpen(a.Status)).Select(a => a.AppointmentId).ToHashSet();
+            var candidates = await assignments.RehomeCandidatesAsync(before, cancellationToken);
+            var locked = candidates.Concat(extraLocks).Append(technicianUserId).ToHashSet();
+            var moved = new List<RehomeResult>();
+            (bool Retry, SchedulingResult<T>? Result) outcome;
+            try
             {
-                conflicts.Add(Conflict(first.First, FeasibilityReasons.BeforeEarliestDeparture));
+                outcome = await unitOfWork.ExecuteInTransactionAsync<(bool, SchedulingResult<T>?)>(async token =>
+                {
+                    moved.Clear();   // the execution strategy may run this body again
+                    await unitOfWork.LockTechniciansAsync(locked, token);
+                    var now = time.GetUtcNow();
+                    var upcoming = await unitOfWork.ListUpcomingAppointmentsAsync(technicianUserId, now, token);
+                    var holdsNow = upcoming.Where(a => AppointmentStatuses.IsOpen(a.Status)).Select(a => a.AppointmentId).ToHashSet();
+                    if (!holdsNow.SetEquals(before))
+                    {
+                        extraLocks.UnionWith(await assignments.RehomeCandidatesAsync(holdsNow, token));
+                        return ((true, null), false);
+                    }
+                    var (holds, error) = await check(upcoming, now, token);
+                    if (error is not null) return ((false, error), false);
+
+                    var value = await change(now, token);
+                    await unitOfWork.SaveChangesAsync(token);
+                    moved.AddRange(await assignments.RehomeHoldsAsync(technicianUserId, holds!.Select(h => h.AppointmentId).ToList(), locked,
+                        actorUserId ?? Guid.Empty, reason, token));
+                    await unitOfWork.SaveChangesAsync(token);
+                    return ((false, SchedulingResult<T>.Ok(value)), true);
+                }, cancellationToken);
             }
+            catch (SchedulingConflictException ex) when (ex.Kind is SchedulingConflictException.StaleAppointment or SchedulingConflictException.TechnicianOverlap)
+            {
+                outcome = (true, null);
+            }
+            catch (SchedulingConflictException)
+            {
+                return SchedulingResult<T>.Fail(SchedulingErrorCodes.ConcurrencyConflict, "The technician's schedule changed meanwhile. Reload and try again.");
+            }
+
+            if (outcome.Retry) continue;
+            if (outcome.Result!.Succeeded) rehomed?.AddRange(moved);
+            return outcome.Result;
         }
-        return conflicts;
+        return SchedulingResult<T>.Fail(SchedulingErrorCodes.ConcurrencyConflict, "The technician's schedule changed meanwhile. Reload and try again.");
     }
 
     private async Task<WorkingScheduleView> ScheduleViewAsync(Guid technicianUserId, bool custom, CancellationToken cancellationToken)
@@ -295,17 +425,46 @@ public sealed class AdminTechnicianHandlers(
         return new WorkingScheduleView(technicianUserId, !custom, calendar.TimeZone.Id, periods.ToList());
     }
 
+    /// <summary>
+    /// A lower daily limit: on every local day with upcoming work whose survey commitments exceed the new cap, the latest pending
+    /// holds above the cap are re-homed (or escalate); a day whose confirmed (ACCEPTED/ASSIGNED/COMPLETED) appointments alone exceed
+    /// the cap refuses the change with TECHNICIAN_HAS_CONFLICTING_APPOINTMENTS (DAILY_LIMIT_REACHED).
+    /// </summary>
+    private async Task<(IEnumerable<UpcomingAppointment>? Holds, SchedulingResult<T>? Error)> DailyLimitAsync<T>(Guid technicianUserId, int? maxPerDay,
+        IReadOnlyList<UpcomingAppointment> upcoming, DateTimeOffset now, CancellationToken token)
+    {
+        var cap = maxPerDay ?? options.MaxAppointmentsPerTechnicianPerDay;
+        var conflicts = new List<ConflictingAppointmentView>();
+        var holds = new List<UpcomingAppointment>();
+        foreach (var date in upcoming.Select(a => calendar.LocalDateOf(a.StartsAt)).Distinct().Order())
+        {
+            var day = (await assignments.Eligibility.LoadDaysAsync(date, new TechnicianScope([technicianUserId], SchedulableOnly: false), token)).SingleOrDefault();
+            if (day is null) continue;
+            var counted = day.CountedCommitments();
+            if (counted <= cap) continue;
+            var confirmed = day.Appointments.Count(a => a.CountsTowardDailyLimit && !a.IsPendingHold);
+            var ofDay = upcoming.Where(a => calendar.LocalDateOf(a.StartsAt) == date).ToList();
+            if (confirmed > cap)
+            {
+                conflicts.AddRange(ofDay.Where(a => AppointmentStatuses.IsConfirmed(a.Status)).Select(a => Conflict(a, EligibilityReasons.DailyLimitReached)));
+                continue;
+            }
+            holds.AddRange(ofDay.Where(a => AppointmentStatuses.IsOpen(a.Status)).OrderByDescending(a => a.StartsAt).Take(counted - cap));
+        }
+        return conflicts.Count > 0
+            ? (null, Conflicts<T>(conflicts, "The technician has more confirmed appointments on a day than the new daily limit allows. Reassign some of them first."))
+            : (holds, null);
+    }
+
     private ConflictingAppointmentView Conflict(UpcomingAppointment a, string problem) => new(a.AppointmentId, a.SurveyRequestId,
         TimeZoneInfo.ConvertTime(a.StartsAt, calendar.TimeZone), TimeZoneInfo.ConvertTime(a.EndsAt, calendar.TimeZone), a.Status, problem);
 
     private static SchedulingResult<T> Conflicts<T>(IEnumerable<ConflictingAppointmentView> conflicts, string message)
         => SchedulingResult<T>.Fail(SchedulingErrorCodes.TechnicianHasConflictingAppointments, message, new { conflictingAppointments = conflicts.ToList() });
 
-    private TechnicianProfileView View(Guid id, string name, string? phone, bool active, TechnicianProfile? p) => new(
-        id, name, phone, active, p?.BaseLatitude, p?.BaseLongitude, p?.BaseLabel, p?.IsSchedulingActive ?? false, p?.MaxAppointmentsPerDay,
-        active && p is { IsSchedulingActive: true } && GeoPoint.From(p.BaseLatitude, p.BaseLongitude) is not null,
+    private static TechnicianProfileView View(Guid id, string name, string? phone, bool active, TechnicianProfile? p, IReadOnlyList<ZoneRef> zones) => new(
+        id, name, phone, active, p?.IsSchedulingActive ?? false, p?.MaxAppointmentsPerDay,
+        active && p is { IsSchedulingActive: true } && zones.Count > 0,
         p?.HasCustomWorkingSchedule ?? false,
-        (p?.EarliestBaseDeparture ?? calendar.DefaultEarliestBaseDeparture).ToString("HH:mm"),
-        p?.EarliestBaseDeparture is null,
-        "MOTORCYCLE");
+        zones.Select(z => ZoneView.From(z)!).ToList());
 }

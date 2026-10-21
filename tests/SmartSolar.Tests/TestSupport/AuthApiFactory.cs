@@ -8,7 +8,6 @@ using Microsoft.Extensions.Hosting;
 using SmartSolar.Infrastructure.Persistence;
 using SmartSolar.Modules.Common.Messaging;
 using SmartSolar.Modules.SolarSimulation.Energy;
-using SmartSolar.Modules.Scheduling.Travel;
 
 namespace SmartSolar.Tests.TestSupport;
 
@@ -34,11 +33,18 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
 
     public FakeClimateContextProvider Climate { get; } = new();
 
-    /// <summary>Synthetic travel times: integration tests never call Vietmap.</summary>
-    public FakeTravelTimeEstimator Travel { get; } = new();
-
     /// <summary>Pretends the broker and SMTP are both on, so admin flows publish their links to <see cref="Publisher"/>.</summary>
     public bool EmailCanDeliver { get; init; }
+
+    /// <summary>Extra service replacements (for example synthetic storage or RAG clients).</summary>
+    public Action<IServiceCollection>? ConfigureTestServices { get; init; }
+
+    /// <summary>Controllable clock and in-memory cache behind the simulation result cache (never a real Redis).</summary>
+    public FixedTimeProvider SimulationTime { get; } = new(DateTimeOffset.UtcNow);
+
+    private FakeDistributedCache? _simulationCache;
+
+    public FakeDistributedCache SimulationCache => _simulationCache ??= new FakeDistributedCache(SimulationTime);
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -74,8 +80,18 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("RateLimiting:AdminUsersRead:PermitLimit", "1000");
         builder.UseSetting("RateLimiting:AdminUsersWrite:PermitLimit", "1000");
         builder.UseSetting("RateLimiting:AdminUsersRecovery:PermitLimit", "1000");
-        // The durable recalculation worker is driven explicitly by tests.
-        builder.UseSetting("Scheduling:RecalculationWorkerEnabled", "false");
+        foreach (var policy in SmartSolar.Api.Extensions.RateLimitingExtensions.InstallationWorkflowPolicies
+                     .Concat(SmartSolar.Api.Extensions.RateLimitingExtensions.KnowledgeBasePolicies)
+                     .Concat(SmartSolar.Api.Extensions.RateLimitingExtensions.SystemSettingsPolicies))
+        {
+            builder.UseSetting($"{policy.Section}:PermitLimit", "1000");
+        }
+        // Installation Flow background sweeps are driven explicitly by tests.
+        builder.UseSetting("Payments:ReconciliationWorkerEnabled", "false");
+        builder.UseSetting("Rag:IngestionWorkerEnabled", "false");
+        // The escalation worker is driven explicitly by tests.
+        builder.UseSetting("Scheduling:EscalationWorkerEnabled", "false");
+        builder.UseSetting("AfterSales:WorkerEnabled", "false");
 
         foreach (var (key, value) in _settings)
         {
@@ -98,11 +114,17 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
             services.AddSingleton<IPvEnergyEstimator>(PvEnergy);
             services.RemoveAll<IClimateContextProvider>();
             services.AddSingleton<IClimateContextProvider>(Climate);
-            services.RemoveAll<ITravelTimeEstimator>();
-            services.AddSingleton<ITravelTimeEstimator>(Travel);
             services.RemoveAll<SmartSolar.Modules.Common.Email.IEmailDeliveryStatus>();
             services.AddSingleton<SmartSolar.Modules.Common.Email.IEmailDeliveryStatus>(
                 new SmartSolar.Infrastructure.Email.ConfiguredEmailDeliveryStatus(EmailCanDeliver));
+            services.RemoveAll<SmartSolar.Modules.SolarSimulation.Contracts.Caching.ISimulationResultCache>();
+            services.AddSingleton<SmartSolar.Modules.SolarSimulation.Contracts.Caching.ISimulationResultCache>(sp =>
+                new SmartSolar.Infrastructure.Caching.DistributedSimulationResultCache(
+                    SimulationCache,
+                    sp.GetRequiredService<SmartSolar.Modules.SolarSimulation.Options.SolarSimulationOptions>(),
+                    SimulationTime,
+                    Microsoft.Extensions.Logging.Abstractions.NullLogger<SmartSolar.Infrastructure.Caching.DistributedSimulationResultCache>.Instance));
+            ConfigureTestServices?.Invoke(services);
 
             // Create the schema before the host starts, because startup seeding
             // writes roles into this database.

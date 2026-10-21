@@ -7,6 +7,7 @@ using SmartSolar.Tests.TestSupport;
 
 namespace SmartSolar.Tests.Unit.Identity;
 
+/// <summary>Refresh-token rotation and logout (the race and replay-detection cases are in RefreshTokenSecurityTests).</summary>
 public class RefreshAndLogoutHandlerTests
 {
     private const string Password = "correct horse battery";
@@ -23,91 +24,41 @@ public class RefreshAndLogoutHandlerTests
     }
 
     [Fact]
-    public async Task Valid_refresh_token_issues_a_new_pair()
-    {
-        await using var ctx = new IdentityTestContext();
-        var (_, refreshToken) = await SignedIn(ctx);
-
-        var result = await ctx.CreateRefreshTokenHandler()
-            .HandleAsync(new RefreshTokenCommand(refreshToken), CancellationToken.None);
-
-        Assert.Equal(RefreshOutcome.Succeeded, result.Outcome);
-        Assert.False(string.IsNullOrWhiteSpace(result.AccessToken));
-        Assert.NotEqual(refreshToken, result.RefreshToken);
-    }
-
-    [Fact]
-    public async Task Rotation_revokes_the_old_token_and_stores_the_new_one_hashed()
-    {
-        await using var ctx = new IdentityTestContext();
-        var (_, refreshToken) = await SignedIn(ctx);
-
-        var result = await ctx.CreateRefreshTokenHandler()
-            .HandleAsync(new RefreshTokenCommand(refreshToken), CancellationToken.None);
-
-        ctx.Db.ChangeTracker.Clear();
-        var old = await ctx.Db.RefreshTokens.SingleAsync(t => t.TokenHash == SecureTokenFactory.Hash(refreshToken));
-        var fresh = await ctx.Db.RefreshTokens
-            .SingleAsync(t => t.TokenHash == SecureTokenFactory.Hash(result.RefreshToken));
-
-        Assert.NotNull(old.RevokedAt);
-        Assert.Null(fresh.RevokedAt);
-        Assert.NotEqual(result.RefreshToken, fresh.TokenHash);
-    }
-
-    [Fact]
-    public async Task A_rotated_token_cannot_be_used_again()
+    public async Task A_valid_refresh_token_is_rotated_into_a_new_hashed_pair_and_cannot_be_replayed()
     {
         await using var ctx = new IdentityTestContext();
         var (_, refreshToken) = await SignedIn(ctx);
         var handler = ctx.CreateRefreshTokenHandler();
-        await handler.HandleAsync(new RefreshTokenCommand(refreshToken), CancellationToken.None);
+
+        var result = await handler.HandleAsync(new RefreshTokenCommand(refreshToken), CancellationToken.None);
+
+        Assert.Equal(RefreshOutcome.Succeeded, result.Outcome);
+        Assert.False(string.IsNullOrWhiteSpace(result.AccessToken));
+        Assert.NotEqual(refreshToken, result.RefreshToken);
         ctx.Db.ChangeTracker.Clear();
+        var old = await ctx.Db.RefreshTokens.SingleAsync(t => t.TokenHash == SecureTokenFactory.Hash(refreshToken));
+        var fresh = await ctx.Db.RefreshTokens.SingleAsync(t => t.TokenHash == SecureTokenFactory.Hash(result.RefreshToken));
+        Assert.NotNull(old.RevokedAt);
+        Assert.Null(fresh.RevokedAt);
 
-        var replay = await handler.HandleAsync(new RefreshTokenCommand(refreshToken), CancellationToken.None);
-
-        Assert.Equal(RefreshOutcome.Invalid, replay.Outcome);
+        Assert.Equal(RefreshOutcome.Invalid, (await handler.HandleAsync(new RefreshTokenCommand(refreshToken), CancellationToken.None)).Outcome);
     }
 
     [Fact]
-    public async Task Expired_token_is_rejected()
+    public async Task Expired_revoked_and_unknown_tokens_are_rejected_without_issuing_a_token()
     {
         await using var ctx = new IdentityTestContext();
         var user = await ctx.SeedActiveUserAsync("person@example.com", Password);
-        var token = ctx.SecureTokens.Create();
-        await ctx.SeedRefreshTokenAsync(user.Id, token.TokenHash, DateTimeOffset.UtcNow.AddMinutes(-1));
+        var expired = ctx.SecureTokens.Create();
+        var revoked = ctx.SecureTokens.Create();
+        await ctx.SeedRefreshTokenAsync(user.Id, expired.TokenHash, DateTimeOffset.UtcNow.AddMinutes(-1));
+        await ctx.SeedRefreshTokenAsync(user.Id, revoked.TokenHash, DateTimeOffset.UtcNow.AddDays(7), revokedAt: DateTimeOffset.UtcNow);
+        var handler = ctx.CreateRefreshTokenHandler();
 
-        var result = await ctx.CreateRefreshTokenHandler()
-            .HandleAsync(new RefreshTokenCommand(token.RawToken), CancellationToken.None);
+        foreach (var raw in new[] { expired.RawToken, revoked.RawToken, "not-a-real-token" })
+            Assert.Equal(RefreshOutcome.Invalid, (await handler.HandleAsync(new RefreshTokenCommand(raw), CancellationToken.None)).Outcome);
 
-        Assert.Equal(RefreshOutcome.Invalid, result.Outcome);
-    }
-
-    [Fact]
-    public async Task Revoked_token_is_rejected()
-    {
-        await using var ctx = new IdentityTestContext();
-        var user = await ctx.SeedActiveUserAsync("person@example.com", Password);
-        var token = ctx.SecureTokens.Create();
-        await ctx.SeedRefreshTokenAsync(
-            user.Id, token.TokenHash, DateTimeOffset.UtcNow.AddDays(7), revokedAt: DateTimeOffset.UtcNow);
-
-        var result = await ctx.CreateRefreshTokenHandler()
-            .HandleAsync(new RefreshTokenCommand(token.RawToken), CancellationToken.None);
-
-        Assert.Equal(RefreshOutcome.Invalid, result.Outcome);
-    }
-
-    [Fact]
-    public async Task Unknown_token_is_rejected()
-    {
-        await using var ctx = new IdentityTestContext();
-        await ctx.SeedActiveUserAsync("person@example.com", Password);
-
-        var result = await ctx.CreateRefreshTokenHandler()
-            .HandleAsync(new RefreshTokenCommand("not-a-real-token"), CancellationToken.None);
-
-        Assert.Equal(RefreshOutcome.Invalid, result.Outcome);
+        Assert.Equal(2, await ctx.Db.RefreshTokens.CountAsync());
     }
 
     [Theory]
@@ -132,73 +83,27 @@ public class RefreshAndLogoutHandlerTests
     }
 
     [Fact]
-    public async Task A_failed_rotation_adds_no_token()
-    {
-        await using var ctx = new IdentityTestContext();
-        await ctx.SeedActiveUserAsync("person@example.com", Password);
-
-        await ctx.CreateRefreshTokenHandler()
-            .HandleAsync(new RefreshTokenCommand("unknown"), CancellationToken.None);
-
-        Assert.Equal(0, await ctx.Db.RefreshTokens.CountAsync());
-    }
-
-    [Fact]
-    public async Task Logout_revokes_the_token()
-    {
-        await using var ctx = new IdentityTestContext();
-        var (_, refreshToken) = await SignedIn(ctx);
-
-        var result = await ctx.CreateLogoutHandler()
-            .HandleAsync(new LogoutCommand(refreshToken), CancellationToken.None);
-
-        Assert.True(result.Accepted);
-        ctx.Db.ChangeTracker.Clear();
-        Assert.NotNull((await ctx.Db.RefreshTokens.SingleAsync()).RevokedAt);
-    }
-
-    [Fact]
-    public async Task Logout_is_idempotent_and_keeps_the_first_revocation_time()
+    public async Task Logout_revokes_the_session_once_and_answers_the_same_for_unknown_tokens()
     {
         await using var ctx = new IdentityTestContext();
         var (_, refreshToken) = await SignedIn(ctx);
         var handler = ctx.CreateLogoutHandler();
-        await handler.HandleAsync(new LogoutCommand(refreshToken), CancellationToken.None);
+
+        var first = await handler.HandleAsync(new LogoutCommand(refreshToken), CancellationToken.None);
         ctx.Db.ChangeTracker.Clear();
         var firstRevokedAt = (await ctx.Db.RefreshTokens.SingleAsync()).RevokedAt;
+        Assert.True(first.Accepted);
+        Assert.NotNull(firstRevokedAt);
+
+        // Idempotent: a second logout keeps the first revocation time; an unknown token gets the same answer.
         ctx.Db.ChangeTracker.Clear();
-
         var second = await handler.HandleAsync(new LogoutCommand(refreshToken), CancellationToken.None);
-
+        var unknown = await handler.HandleAsync(new LogoutCommand("never-existed"), CancellationToken.None);
         Assert.True(second.Accepted);
+        Assert.Equal(first.ToString(), unknown.ToString());
         ctx.Db.ChangeTracker.Clear();
         Assert.Equal(firstRevokedAt, (await ctx.Db.RefreshTokens.SingleAsync()).RevokedAt);
-    }
 
-    [Fact]
-    public async Task Logout_answers_the_same_for_a_token_that_never_existed()
-    {
-        await using var ctx = new IdentityTestContext();
-        var (_, refreshToken) = await SignedIn(ctx);
-        var handler = ctx.CreateLogoutHandler();
-
-        var known = await handler.HandleAsync(new LogoutCommand(refreshToken), CancellationToken.None);
-        var unknown = await handler.HandleAsync(new LogoutCommand("never-existed"), CancellationToken.None);
-
-        Assert.Equal(known.ToString(), unknown.ToString());
-    }
-
-    [Fact]
-    public async Task A_logged_out_token_can_no_longer_refresh()
-    {
-        await using var ctx = new IdentityTestContext();
-        var (_, refreshToken) = await SignedIn(ctx);
-        await ctx.CreateLogoutHandler().HandleAsync(new LogoutCommand(refreshToken), CancellationToken.None);
-        ctx.Db.ChangeTracker.Clear();
-
-        var result = await ctx.CreateRefreshTokenHandler()
-            .HandleAsync(new RefreshTokenCommand(refreshToken), CancellationToken.None);
-
-        Assert.Equal(RefreshOutcome.Invalid, result.Outcome);
+        Assert.Equal(RefreshOutcome.Invalid, (await ctx.CreateRefreshTokenHandler().HandleAsync(new RefreshTokenCommand(refreshToken), CancellationToken.None)).Outcome);
     }
 }

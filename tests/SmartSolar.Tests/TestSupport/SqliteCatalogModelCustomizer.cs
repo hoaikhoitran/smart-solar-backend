@@ -28,18 +28,38 @@ public sealed class SqliteCatalogModelCustomizer : ModelCustomizer
         base.Customize(modelBuilder, context);
 
         ConvertSortableColumns(modelBuilder.Entity<Product>());
+        ConvertSortableColumns(modelBuilder.Entity<ProductImage>());
         ConvertSortableColumns(modelBuilder.Entity<SurveyRequest>());
-        ConvertSortableColumns(modelBuilder.Entity<SolarSimulation>());
+        ConvertSortableColumns(modelBuilder.Entity<SelectedSimulation>());
         ConvertSortableColumns(modelBuilder.Entity<TechnicianAppointment>());
         ConvertSortableColumns(modelBuilder.Entity<TechnicianUnavailablePeriod>());
-        ConvertSortableColumns(modelBuilder.Entity<TechnicianTravelEstimate>());
         ConvertSortableColumns(modelBuilder.Entity<TechnicianProfile>());
-        ConvertSortableColumns(modelBuilder.Entity<TechnicianScheduleRecalculation>());
+        ConvertSortableColumns(modelBuilder.Entity<SmartSolar.Modules.Scheduling.Zones.OperationalZone>());
+        ConvertSortableColumns(modelBuilder.Entity<SmartSolar.Modules.Scheduling.Zones.OperationalZoneCommune>());
+        ConvertSortableColumns(modelBuilder.Entity<SmartSolar.Modules.Scheduling.Zones.TechnicianZoneMembership>());
+        ConvertSortableColumns(modelBuilder.Entity<SmartSolar.Modules.AdministrativeUnits.AdministrativeProvince>());
+        ConvertSortableColumns(modelBuilder.Entity<SmartSolar.Modules.AdministrativeUnits.AdministrativeCatalogImport>());
+        ConvertSortableColumns(modelBuilder.Entity<SurveyRequestEvent>());
         ConvertSortableColumns(modelBuilder.Entity<TechnicianAppointmentEvent>());
         ConvertSortableColumns(modelBuilder.Entity<SchedulingNotification>());
         ConvertSortableColumns(modelBuilder.Entity<SmartSolar.Modules.Identity.Entities.UserAccountAuditEntry>());
         ConvertSortableColumns(modelBuilder.Entity<SmartSolar.Modules.Identity.Entities.UserAccount>());
+
+        // Installation Flow, after-sales and knowledge-base entities.
+        foreach (var entity in modelBuilder.Model.GetEntityTypes().ToList())
+        {
+            var ns = entity.ClrType.Namespace ?? "";
+            if (Namespaces.Any(n => ns.StartsWith(n, StringComparison.Ordinal)))
+                ConvertSortableColumns(modelBuilder.Entity(entity.ClrType));
+        }
     }
+
+    private static readonly string[] Namespaces =
+    [
+        "SmartSolar.Modules.Files", "SmartSolar.Modules.OnSiteSurveys", "SmartSolar.Modules.Quotations", "SmartSolar.Modules.CustomerContracts",
+        "SmartSolar.Modules.Payments", "SmartSolar.Modules.Installations", "SmartSolar.Modules.KnowledgeBase", "SmartSolar.Modules.Scheduling.Dispatch",
+        "SmartSolar.Modules.AfterSales",
+    ];
 
     private static void ConvertSortableColumns(EntityTypeBuilder entity)
     {

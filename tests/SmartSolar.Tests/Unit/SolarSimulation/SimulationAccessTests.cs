@@ -20,7 +20,7 @@ public sealed class SimulationAccessTests
             CancellationToken.None);
         if (withRequest)
         {
-            await ctx.SeedSurveyRequestAsync(draft.Id, assignedSaleId is null ? SurveyRequestStatus.Pending : SurveyRequestStatus.Assigned, assignedSaleId);
+            await ctx.SeedSurveyRequestAsync(draft.Id, assignedSaleId is null ? SurveyRequestStatus.Pending : SurveyRequestStatus.Pending, assignedSaleId);
         }
         return (ctx, user.Id, draft.Id, created.Simulation!.SimulationId);
     }
@@ -58,7 +58,7 @@ public sealed class SimulationAccessTests
         var created = await ctx.CreateSimulationHandler().HandleAsync(
             new CreateSimulationCommand(user.Id, draft.Id, 1, product.Id, MountingTypes.Flush, null, null, new InstallationRequest(null, null, null, null, null), null),
             CancellationToken.None);
-        await ctx.SeedSurveyRequestAsync(draft.Id, SurveyRequestStatus.Assigned, assigned.Id);
+        await ctx.SeedSurveyRequestAsync(draft.Id, SurveyRequestStatus.Pending, assigned.Id);
         var simulationId = created.Simulation!.SimulationId;
 
         var read = await ctx.GetSimulationHandler().HandleAsync(new SimulationViewer(assigned.Id, false, true), draft.Id, simulationId, CancellationToken.None);
@@ -66,7 +66,7 @@ public sealed class SimulationAccessTests
         var otherRead = await ctx.GetSimulationHandler().HandleAsync(new SimulationViewer(other.Id, false, true), draft.Id, simulationId, CancellationToken.None);
 
         Assert.Equal(SimulationQueryOutcome.Found, read.Outcome);
-        Assert.Single(list.Simulations!);
+        Assert.Single(list.Simulations!.Items);
         Assert.Equal(SimulationQueryOutcome.Forbidden, otherRead.Outcome);
     }
 
@@ -91,6 +91,7 @@ public sealed class SimulationAccessTests
         var noSimulation = await ctx.GetSimulationHandler().HandleAsync(new SimulationViewer(owner, true, false), preSurveyId, Guid.NewGuid(), CancellationToken.None);
 
         Assert.Equal(SimulationQueryOutcome.PreSurveyNotFound, noPreSurvey.Outcome);
-        Assert.Equal(SimulationQueryOutcome.SimulationNotFound, noSimulation.Outcome);
+        // An id that is not cached and not the stored selection is reported as expired (410).
+        Assert.Equal(SimulationQueryOutcome.Expired, noSimulation.Outcome);
     }
 }

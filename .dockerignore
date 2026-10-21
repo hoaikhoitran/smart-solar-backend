@@ -9,3 +9,5 @@
 !.env.example
 tests/
 artifacts/
+# The RAG service has its own image and build context.
+src/SmartSolar.RagService/

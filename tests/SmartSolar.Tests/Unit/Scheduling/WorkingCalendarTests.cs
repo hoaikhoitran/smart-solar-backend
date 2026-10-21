@@ -6,6 +6,9 @@ namespace SmartSolar.Tests.Unit.Scheduling;
 
 public sealed class WorkingCalendarTests
 {
+    /// <summary>The default booking limits (scheduling.bookingHorizonDays = 30, scheduling.minimumBookingLeadMinutes = 0).</summary>
+    private static readonly BookingLimits Limits = new(new SchedulingOptions().BookingHorizonDays, new SchedulingOptions().MinimumBookingLeadMinutes);
+
     private static readonly DateOnly Day = new(2026, 10, 20);
     private static WorkingCalendar Calendar(Action<SchedulingOptions>? configure = null)
     {
@@ -55,7 +58,7 @@ public sealed class WorkingCalendarTests
     {
         var now = Local(2026, 10, 20, 9, 10);
 
-        var starts = Calendar().BookableWindows(Day, now).Select(w => w.LocalStart.ToString("HH:mm")).ToList();
+        var starts = Calendar().BookableWindows(Day, now, Limits).Select(w => w.LocalStart.ToString("HH:mm")).ToList();
 
         Assert.Equal("09:30", starts[0]);
         Assert.DoesNotContain("09:00", starts);
@@ -67,9 +70,9 @@ public sealed class WorkingCalendarTests
         var now = Local(2026, 10, 20, 7, 0);
         var calendar = Calendar();
 
-        Assert.Empty(calendar.BookableWindows(Day.AddDays(-1), now));
-        Assert.NotEmpty(calendar.BookableWindows(Day.AddDays(29), now));
-        Assert.Empty(calendar.BookableWindows(Day.AddDays(30), now));
+        Assert.Empty(calendar.BookableWindows(Day.AddDays(-1), now, Limits));
+        Assert.NotEmpty(calendar.BookableWindows(Day.AddDays(29), now, Limits));
+        Assert.Empty(calendar.BookableWindows(Day.AddDays(30), now, Limits));
     }
 
     [Theory]
@@ -82,7 +85,7 @@ public sealed class WorkingCalendarTests
     [InlineData("2026-10-19T08:00:00+07:00", false)]    // past
     public void Requested_start_must_resolve_to_a_bookable_window(string start, bool expected)
     {
-        var ok = Calendar().TryResolveBookable(DateTimeOffset.Parse(start), Local(2026, 10, 19, 12, 0), out var window, out var reason);
+        var ok = Calendar().TryResolveBookable(DateTimeOffset.Parse(start), Local(2026, 10, 19, 12, 0), Limits, out var window, out var reason);
 
         Assert.Equal(expected, ok);
         Assert.Equal(expected, window is not null);

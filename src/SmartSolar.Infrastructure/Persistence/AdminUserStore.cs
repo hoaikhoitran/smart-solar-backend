@@ -10,7 +10,8 @@ using SmartSolar.Modules.Scheduling.Constants;
 namespace SmartSolar.Infrastructure.Persistence;
 
 /// <summary>Administrative account queries and writes. Never selects password hashes or token hashes into results.</summary>
-public sealed class AdminUserStore(AppDbContext db) : IAdminUserStore
+/// <param name="includeInstallationAssignments">Installation Flow enabled: current (PENDING/ACCEPTED) installation assignments also block deactivation.</param>
+public sealed class AdminUserStore(AppDbContext db, bool includeInstallationAssignments = false) : IAdminUserStore
 {
     public async Task<PagedResult<AdminUserRow>> ListAsync(AdminUserQuery query, CancellationToken cancellationToken)
     {
@@ -68,26 +69,49 @@ public sealed class AdminUserStore(AppDbContext db) : IAdminUserStore
     public async Task<TechnicianProfileSummary?> GetTechnicianSummaryAsync(Guid userId, CancellationToken cancellationToken)
     {
         var p = await db.TechnicianProfiles.AsNoTracking().FirstOrDefaultAsync(x => x.UserId == userId, cancellationToken);
+        var codes = await db.TechnicianZoneMemberships.AsNoTracking()
+            .Where(m => m.TechnicianUserId == userId && m.RemovedAt == null)
+            .Join(db.OperationalZones, m => m.ZoneId, z => z.Id, (m, z) => z.Code)
+            .OrderBy(c => c)
+            .ToListAsync(cancellationToken);
         return p is null
-            ? new TechnicianProfileSummary(false, false, false, null, null, false, null)
-            : new TechnicianProfileSummary(true, p.IsSchedulingActive, p.BaseLatitude != null && p.BaseLongitude != null, p.BaseLabel,
-                p.MaxAppointmentsPerDay, p.HasCustomWorkingSchedule, p.EarliestBaseDeparture);
+            ? new TechnicianProfileSummary(false, false, null, false, codes)
+            : new TechnicianProfileSummary(true, p.IsSchedulingActive, p.MaxAppointmentsPerDay, p.HasCustomWorkingSchedule, codes);
     }
 
     public async Task<AccountOperationalWork> GetOperationalWorkAsync(Guid userId, DateTimeOffset nowUtc, CancellationToken cancellationToken)
     {
         var appointments = (await db.TechnicianAppointments.AsNoTracking()
-                .Where(a => a.Status != AppointmentStatuses.Cancelled && a.EndsAt > nowUtc
+                // Confirmed jobs and pending capacity holds (disabling scheduling re-homes holds automatically).
+                .Where(a => a.Status != AppointmentStatuses.Cancelled && a.Status != AppointmentStatuses.Completed && a.EndsAt > nowUtc
                             && (a.ReservedTechnicianUserId == userId || a.AssignedTechnicianUserId == userId))
                 .Select(a => new { a.Id, a.SurveyRequestId, a.StartsAt, a.Status })
                 .ToListAsync(cancellationToken))
             .OrderBy(a => a.StartsAt)
             .Select(a => new BlockingAppointment(a.Id, a.SurveyRequestId, a.StartsAt, a.Status))
             .ToList();
+        if (includeInstallationAssignments)
+        {
+            // Reported with status INSTALLATION_ASSIGNMENT; the id is the installation assignment.
+            // Upcoming assignments, and those of started unfinished projects even after their interval ended (the work goes on).
+            appointments.AddRange((await db.InstallationAssignments.AsNoTracking()
+                    .Where(a => a.TechnicianUserId == userId
+                                && (a.Status == SmartSolar.Modules.Installations.AssignmentStatuses.Pending
+                                    || a.Status == SmartSolar.Modules.Installations.AssignmentStatuses.Accepted))
+                    .Join(db.InstallationProjects, a => a.ProjectId, p => p.Id, (a, p) => new { a.Id, a.StartsAt, a.EndsAt, ProjectStatus = p.Status })
+                    .Where(x => x.EndsAt > nowUtc
+                                || x.ProjectStatus == SmartSolar.Modules.Installations.InstallationStatuses.InProgress
+                                || x.ProjectStatus == SmartSolar.Modules.Installations.InstallationStatuses.ReworkRequired
+                                || x.ProjectStatus == SmartSolar.Modules.Installations.InstallationStatuses.PendingCustomerAcceptance)
+                    .Select(a => new { a.Id, a.StartsAt })
+                    .ToListAsync(cancellationToken))
+                .OrderBy(a => a.StartsAt)
+                .Select(a => new BlockingAppointment(a.Id, null, a.StartsAt, InstallationCommitments.Status)));
+        }
 
         var requests = await db.SurveyRequests.AsNoTracking()
             .Where(s => s.AssignedSaleId == userId
-                        && (s.Status == SurveyRequestStatus.Assigned || s.Status == SurveyRequestStatus.Reviewing || s.Status == SurveyRequestStatus.Scheduled))
+                        && (s.Status == SurveyRequestStatus.Pending || s.Status == SurveyRequestStatus.Scheduled))
             .Select(s => s.Id)
             .ToListAsync(cancellationToken);
 

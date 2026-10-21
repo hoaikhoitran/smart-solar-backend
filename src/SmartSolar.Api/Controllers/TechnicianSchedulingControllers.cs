@@ -9,38 +9,28 @@ using SmartSolar.Modules.Scheduling.PreSurveyAppointments;
 
 namespace SmartSolar.Api.Controllers;
 
-/// <summary>Sales: technicians who can actually take a claimed request's appointment.</summary>
+/// <summary>Sales owner or Manager/Admin: technicians who can take a request's appointment, with reason codes for the others.</summary>
 [ApiController]
 [Route("api/technicians/availability")]
-[Authorize(Roles = RoleCodes.Sales)]
+[Authorize(Roles = $"{RoleCodes.Sales},{RoleCodes.Manager},{RoleCodes.Admin}")]
 public sealed class TechnicianAvailabilityController(TechnicianAvailabilityHandler handler) : SchedulingControllerBase
 {
-    /// <summary>GET /api/technicians/availability?surveyRequestId=…[&amp;startsAt=…&amp;endsAt=…] (defaults to the booked time).</summary>
+    /// <summary>GET /api/technicians/availability?surveyRequestId=… (for the booked appointment interval).</summary>
     [HttpGet]
     [EnableRateLimiting(RateLimitingExtensions.SchedulingReadPolicy)]
-    public async Task<IActionResult> Get([FromQuery] Guid surveyRequestId, [FromQuery] string? startsAt, [FromQuery] string? endsAt, CancellationToken cancellationToken)
+    public async Task<IActionResult> Get([FromQuery] Guid surveyRequestId, CancellationToken cancellationToken)
     {
         if (CurrentUserId() is not { } userId) return UnauthorizedFailure();
         if (surveyRequestId == Guid.Empty) return InvalidField("surveyRequestId", "'surveyRequestId' is required.");
-
-        DateTimeOffset? start = null, end = null;
-        if (startsAt is not null)
-        {
-            if (!IsoTimestamp.TryParse(startsAt, out var s)) return InvalidField("startsAt", "'startsAt' must be ISO 8601 with an offset.");
-            start = s;
-        }
-        if (endsAt is not null)
-        {
-            if (!IsoTimestamp.TryParse(endsAt, out var e)) return InvalidField("endsAt", "'endsAt' must be ISO 8601 with an offset.");
-            end = e;
-        }
-        if (end is not null && start is null) return InvalidField("startsAt", "'startsAt' is required when 'endsAt' is given.");
-
-        return Respond(await handler.HandleAsync(new TechnicianAvailabilityQuery(userId, surveyRequestId, start, end), cancellationToken));
+        var isManager = User.IsInRole(RoleCodes.Manager) || User.IsInRole(RoleCodes.Admin);
+        return Respond(await handler.HandleAsync(new TechnicianAvailabilityQuery(userId, isManager, surveyRequestId), cancellationToken));
     }
 }
 
-/// <summary>Technician: officially assigned jobs only. Flow 1 ends with the acknowledgment.</summary>
+/// <summary>
+/// Technician: open jobs in their operational zones (self-acceptance) and their confirmed jobs. The V1
+/// acknowledge endpoint was removed: acceptance itself confirms the job.
+/// </summary>
 [ApiController]
 [Route("api/technicians/me")]
 [Authorize(Roles = RoleCodes.Technician)]
@@ -48,38 +38,67 @@ public sealed class TechnicianAppointmentsController(TechnicianJobHandlers jobs,
     : SchedulingControllerBase
 {
     [HttpGet("appointments")]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingReadPolicy)]
     public async Task<IActionResult> List(CancellationToken cancellationToken)
         => CurrentUserId() is { } userId ? Ok(await jobs.ListAsync(userId, cancellationToken)) : UnauthorizedFailure();
 
     [HttpGet("appointments/{appointmentId:guid}")]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingReadPolicy)]
     public async Task<IActionResult> Get(Guid appointmentId, CancellationToken cancellationToken)
         => CurrentUserId() is { } userId ? Respond(await jobs.GetAsync(userId, appointmentId, cancellationToken)) : UnauthorizedFailure();
 
-    /// <summary>Records receipt of the assigned job (idempotent). This is the final step of Flow 1.</summary>
-    [HttpPost("appointments/{appointmentId:guid}/acknowledge")]
-    public async Task<IActionResult> Acknowledge(Guid appointmentId, CancellationToken cancellationToken)
-        => CurrentUserId() is { } userId ? Respond(await jobs.AcknowledgeAsync(userId, appointmentId, cancellationToken)) : UnauthorizedFailure();
+    /// <summary>Open (PENDING_ACCEPTANCE / ESCALATED) future appointments in the caller's active operational zones.</summary>
+    [HttpGet("open-appointments")]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingReadPolicy)]
+    public async Task<IActionResult> ListOpen(CancellationToken cancellationToken)
+        => CurrentUserId() is { } userId ? Ok(await jobs.ListOpenAsync(userId, cancellationToken)) : UnauthorizedFailure();
 
-    /// <summary>The technician's own day plan with stored travel estimates.</summary>
+    /// <summary>One open appointment; 404 when it is outside the caller's areas or no longer open.</summary>
+    [HttpGet("open-appointments/{appointmentId:guid}")]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingReadPolicy)]
+    public async Task<IActionResult> GetOpen(Guid appointmentId, CancellationToken cancellationToken)
+        => CurrentUserId() is { } userId ? Respond(await jobs.GetOpenAsync(userId, appointmentId, cancellationToken)) : UnauthorizedFailure();
+
+    /// <summary>Self-acceptance. 200 (also for a repeat by the same technician); 409 APPOINTMENT_ALREADY_TAKEN when someone else won.</summary>
+    [HttpPost("appointments/{appointmentId:guid}/accept")]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingWritePolicy)]
+    public async Task<IActionResult> Accept(Guid appointmentId, [FromBody] AcceptAppointmentRequest? request, CancellationToken cancellationToken)
+        => CurrentUserId() is { } userId
+            ? Respond(await jobs.AcceptAsync(new AcceptAppointmentCommand(userId, appointmentId, request?.ExpectedRevision), cancellationToken))
+            : UnauthorizedFailure();
+
+    /// <summary>The confirmed technician can no longer attend (before the start; reason required).</summary>
+    [HttpPost("appointments/{appointmentId:guid}/release")]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingWritePolicy)]
+    public async Task<IActionResult> Release(Guid appointmentId, [FromBody] ReleaseAppointmentRequest? request, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } userId) return UnauthorizedFailure();
+        if (string.IsNullOrWhiteSpace(request?.Reason) || request.Reason.Length > 500) return InvalidField("reason", "'reason' is required (at most 500 characters).");
+        return Respond(await jobs.ReleaseAsync(new ReleaseAppointmentCommand(userId, appointmentId, request.Reason), cancellationToken));
+    }
+
+    /// <summary>The technician's own day plan (confirmed jobs).</summary>
     [HttpGet("schedule")]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingReadPolicy)]
     public async Task<IActionResult> Schedule([FromQuery] DateOnly? date, CancellationToken cancellationToken)
         => CurrentUserId() is { } userId
-            ? Ok(await schedules.HandleAsync(userId, date ?? calendar.LocalDateOf(time.GetUtcNow()), cancellationToken))
+            ? Ok(await schedules.HandleAsync(userId, date ?? calendar.LocalDateOf(time.GetUtcNow()), includeHolds: false, cancellationToken))
             : UnauthorizedFailure();
 }
 
-/// <summary>Dashboard data: any technician's day plan (MANAGER/ADMIN).</summary>
+/// <summary>Dashboard data: any technician's day plan including internal capacity holds (MANAGER/ADMIN).</summary>
 [ApiController]
 [Route("api/technicians/{technicianUserId:guid}/schedule")]
 [Authorize(Roles = $"{RoleCodes.Manager},{RoleCodes.Admin}")]
 public sealed class TechnicianScheduleController(TechnicianScheduleHandler schedules, WorkingCalendar calendar, TimeProvider time) : SchedulingControllerBase
 {
     [HttpGet]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingReadPolicy)]
     public async Task<IActionResult> Get(Guid technicianUserId, [FromQuery] DateOnly? date, CancellationToken cancellationToken)
-        => Ok(await schedules.HandleAsync(technicianUserId, date ?? calendar.LocalDateOf(time.GetUtcNow()), cancellationToken));
+        => Ok(await schedules.HandleAsync(technicianUserId, date ?? calendar.LocalDateOf(time.GetUtcNow()), includeHolds: true, cancellationToken));
 }
 
-/// <summary>Minimal technician scheduling setup: base location, active flag, leave (ADMIN/MANAGER).</summary>
+/// <summary>Technician scheduling setup: profile, service areas, working schedule, leave (ADMIN/MANAGER).</summary>
 [ApiController]
 [Route("api/admin/technicians")]
 [Authorize(Roles = $"{RoleCodes.Admin},{RoleCodes.Manager}")]
@@ -88,28 +107,40 @@ public sealed class AdminTechniciansController(
     FluentValidation.IValidator<UpsertTechnicianProfileCommand> profileValidator,
     FluentValidation.IValidator<AddUnavailablePeriodCommand> periodValidator) : SchedulingControllerBase
 {
+    /// <summary>GET /api/admin/technicians[?zoneId=…] (zoneId: only the active members of that operational zone)</summary>
     [HttpGet]
-    public async Task<IActionResult> List(CancellationToken cancellationToken) => Ok(await handlers.ListAsync(cancellationToken));
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingReadPolicy)]
+    public async Task<IActionResult> List([FromQuery] Guid? zoneId, CancellationToken cancellationToken) => Ok(await handlers.ListAsync(zoneId, cancellationToken));
 
+    /// <summary>Scheduling flag and daily cap. Disabling is refused while confirmed appointments exist; pending holds move automatically.</summary>
     [HttpPut("{technicianUserId:guid}/profile")]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingWritePolicy)]
     public async Task<IActionResult> UpsertProfile(Guid technicianUserId, [FromBody] UpsertTechnicianProfileRequest request, CancellationToken cancellationToken)
     {
-        TimeOnly? earliest = null;
-        if (!string.IsNullOrWhiteSpace(request.EarliestBaseDeparture))
-        {
-            if (!TimeOnly.TryParseExact(request.EarliestBaseDeparture.Trim(), "HH:mm", out var parsed))
-                return InvalidField("earliestBaseDeparture", "'earliestBaseDeparture' must be a local time in HH:mm format.");
-            earliest = parsed;
-        }
-
-        var command = new UpsertTechnicianProfileCommand(technicianUserId, request.BaseLatitude, request.BaseLongitude, request.BaseLabel,
-            request.IsSchedulingActive, request.MaxAppointmentsPerDay, earliest);
+        var command = new UpsertTechnicianProfileCommand(technicianUserId, request.IsSchedulingActive, request.MaxAppointmentsPerDay, CurrentUserId());
         var validation = await profileValidator.ValidateAsync(command, cancellationToken);
         if (!validation.IsValid) return ValidationFailure(validation);
         return Respond(await handlers.UpsertProfileAsync(command, cancellationToken));
     }
 
+    /// <summary>
+    /// Replaces the technician's operational zones (others are soft-removed, history kept). 409 TECHNICIAN_HAS_CONFLICTING_APPOINTMENTS when
+    /// confirmed future work would leave the technician's zones; pending holds are re-homed or escalated.
+    /// </summary>
+    [HttpPut("{technicianUserId:guid}/zones")]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingWritePolicy)]
+    public async Task<IActionResult> SetZones(Guid technicianUserId, [FromBody] SetTechnicianZonesRequest request,
+        [FromServices] FluentValidation.IValidator<SetTechnicianZonesCommand> validator, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } userId) return UnauthorizedFailure();
+        var command = new SetTechnicianZonesCommand(userId, technicianUserId, request.ZoneIds ?? []);
+        var validation = await validator.ValidateAsync(command, cancellationToken);
+        if (!validation.IsValid) return ValidationFailure(validation);
+        return Respond(await handlers.SetZonesAsync(command, cancellationToken));
+    }
+
     [HttpPost("{technicianUserId:guid}/unavailable-periods")]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingWritePolicy)]
     public async Task<IActionResult> AddUnavailablePeriod(Guid technicianUserId, [FromBody] AddUnavailablePeriodRequest request, CancellationToken cancellationToken)
     {
         if (CurrentUserId() is not { } userId) return UnauthorizedFailure();
@@ -123,15 +154,18 @@ public sealed class AdminTechniciansController(
     }
 
     [HttpGet("{technicianUserId:guid}/unavailable-periods")]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingReadPolicy)]
     public async Task<IActionResult> ListUnavailablePeriods(Guid technicianUserId, CancellationToken cancellationToken)
         => Ok(await handlers.ListUnavailablePeriodsAsync(technicianUserId, cancellationToken));
 
     [HttpGet("{technicianUserId:guid}/working-schedule")]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingReadPolicy)]
     public async Task<IActionResult> GetWorkingSchedule(Guid technicianUserId, CancellationToken cancellationToken)
         => Respond(await handlers.GetWorkingScheduleAsync(technicianUserId, cancellationToken));
 
-    /// <summary>Replaces the technician's weekly schedule (local time). Refused with 409 when existing appointments would fall outside it.</summary>
+    /// <summary>Replaces the technician's weekly schedule (local time). Refused with 409 when confirmed appointments would fall outside it.</summary>
     [HttpPut("{technicianUserId:guid}/working-schedule")]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingWritePolicy)]
     public async Task<IActionResult> SetWorkingSchedule(
         Guid technicianUserId, [FromBody] SetWorkingScheduleRequest request,
         [FromServices] FluentValidation.IValidator<SetWorkingScheduleCommand> validator, CancellationToken cancellationToken)
@@ -146,13 +180,14 @@ public sealed class AdminTechniciansController(
             periods.Add(new WorkingPeriodInput(day, start, end));
         }
 
-        var command = new SetWorkingScheduleCommand(technicianUserId, request.UseDefault, periods);
+        var command = new SetWorkingScheduleCommand(technicianUserId, request.UseDefault, periods, CurrentUserId());
         var validation = await validator.ValidateAsync(command, cancellationToken);
         if (!validation.IsValid) return ValidationFailure(validation);
         return Respond(await handlers.SetWorkingScheduleAsync(command, cancellationToken));
     }
 
     [HttpDelete("{technicianUserId:guid}/unavailable-periods/{periodId:guid}")]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingWritePolicy)]
     public async Task<IActionResult> RemoveUnavailablePeriod(Guid technicianUserId, Guid periodId, CancellationToken cancellationToken)
         => await handlers.RemoveUnavailablePeriodAsync(technicianUserId, periodId, cancellationToken)
             ? NoContent()

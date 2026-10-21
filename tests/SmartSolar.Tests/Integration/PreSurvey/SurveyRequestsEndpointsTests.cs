@@ -99,7 +99,7 @@ public class SurveyRequestsEndpointsTests
 
         var newer = await SeedRequestAsync(factory, "Customer A", submittedAt: now.AddHours(-1));
         await SeedRequestAsync(
-            factory, "Customer B", SurveyRequestStatus.Assigned, otherSale.Id, now.AddHours(-5), now.AddHours(-4));
+            factory, "Customer B", SurveyRequestStatus.Pending, otherSale.Id, now.AddHours(-5), now.AddHours(-4));
         var older = await SeedRequestAsync(factory, "Customer C", submittedAt: now.AddHours(-3));
 
         // Act
@@ -132,7 +132,7 @@ public class SurveyRequestsEndpointsTests
 
         var request = Assert.Single(await factory.SurveyRequestsAsync());
         Assert.Equal(sale.Id, request.AssignedSaleId);
-        Assert.Equal(SurveyRequestStatus.Assigned, request.Status);
+        Assert.Equal(SurveyRequestStatus.Pending, request.Status);
         Assert.NotNull(request.AssignedAt);
     }
 
@@ -206,11 +206,11 @@ public class SurveyRequestsEndpointsTests
         var now = DateTimeOffset.UtcNow;
 
         var older = await SeedRequestAsync(
-            factory, "Customer A", SurveyRequestStatus.Assigned, saleA.Id, now.AddDays(-2), now.AddDays(-2));
+            factory, "Customer A", SurveyRequestStatus.Pending, saleA.Id, now.AddDays(-2), now.AddDays(-2));
         var newer = await SeedRequestAsync(
-            factory, "Customer B", SurveyRequestStatus.Assigned, saleA.Id, now.AddDays(-2), now.AddDays(-1));
+            factory, "Customer B", SurveyRequestStatus.Pending, saleA.Id, now.AddDays(-2), now.AddDays(-1));
         await SeedRequestAsync(
-            factory, "Customer C", SurveyRequestStatus.Assigned, saleB.Id, now.AddDays(-2), now);
+            factory, "Customer C", SurveyRequestStatus.Pending, saleB.Id, now.AddDays(-2), now);
 
         // Act
         var response = await clientA.GetAsync($"{BaseUrl}/my");
@@ -229,7 +229,7 @@ public class SurveyRequestsEndpointsTests
         using var factory = new AuthApiFactory();
         var (sale, client) = await factory.SeedUserClientAsync(RoleCodes.Sales);
         var request = await SeedRequestAsync(
-            factory, "Detail Customer", SurveyRequestStatus.Assigned, sale.Id, assignedAt: DateTimeOffset.UtcNow);
+            factory, "Detail Customer", SurveyRequestStatus.Pending, sale.Id, assignedAt: DateTimeOffset.UtcNow);
 
         // Act
         var response = await client.GetAsync($"{BaseUrl}/{request.Id}");
@@ -241,7 +241,7 @@ public class SurveyRequestsEndpointsTests
         Assert.Equal(request.PreSurveyId, body.GetProperty("preSurveyId").GetGuid());
         Assert.Equal(sale.Id, body.GetProperty("assignedSaleId").GetGuid());
         Assert.Equal("Detail Customer", body.GetProperty("customerName").GetString());
-        Assert.Equal((int)SurveyRequestStatus.Assigned, body.GetProperty("status").GetInt32());
+        Assert.Equal((int)SurveyRequestStatus.Pending, body.GetProperty("status").GetInt32());
     }
 
     [Fact]
@@ -252,7 +252,7 @@ public class SurveyRequestsEndpointsTests
         var (saleA, _) = await factory.SeedUserClientAsync(RoleCodes.Sales, "Sales A");
         var (_, clientB) = await factory.SeedUserClientAsync(RoleCodes.Sales, "Sales B");
         var request = await SeedRequestAsync(
-            factory, status: SurveyRequestStatus.Assigned, assignedSaleId: saleA.Id, assignedAt: DateTimeOffset.UtcNow);
+            factory, status: SurveyRequestStatus.Pending, assignedSaleId: saleA.Id, assignedAt: DateTimeOffset.UtcNow);
 
         // Act
         var response = await clientB.GetAsync($"{BaseUrl}/{request.Id}");
@@ -332,6 +332,6 @@ public class SurveyRequestsEndpointsTests
         Assert.Equal("Flow Customer", detailBody.GetProperty("customerName").GetString());
         Assert.Equal(60m, detailBody.GetProperty("totalAreaM2").GetDecimal());
         Assert.Equal(sale.Id, detailBody.GetProperty("assignedSaleId").GetGuid());
-        Assert.Equal((int)SurveyRequestStatus.Assigned, detailBody.GetProperty("status").GetInt32());
+        Assert.Equal((int)SurveyRequestStatus.Pending, detailBody.GetProperty("status").GetInt32());
     }
 }

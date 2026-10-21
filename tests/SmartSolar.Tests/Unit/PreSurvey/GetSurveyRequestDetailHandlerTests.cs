@@ -28,7 +28,7 @@ public sealed class GetSurveyRequestDetailHandlerTests
         var assignedAt = new DateTimeOffset(2026, 10, 3, 8, 0, 0, TimeSpan.Zero);
         var request = await ctx.SeedSurveyRequestAsync(
             preSurvey.Id,
-            SurveyRequestStatus.Assigned,
+            SurveyRequestStatus.Pending,
             sale.Id,
             submittedAt,
             assignedAt);
@@ -66,7 +66,7 @@ public sealed class GetSurveyRequestDetailHandlerTests
         Assert.Equal(preSurvey.AzimuthDegree, detail.AzimuthDegree);
         Assert.Equal(preSurvey.HasObstruction, detail.HasObstruction);
 
-        Assert.Equal(SurveyRequestStatus.Assigned, detail.Status);
+        Assert.Equal(SurveyRequestStatus.Pending, detail.Status);
         Assert.Equal(submittedAt, detail.SubmittedAt);
         Assert.Equal(assignedAt, detail.AssignedAt);
         Assert.Null(detail.ScheduledAt);
@@ -83,7 +83,7 @@ public sealed class GetSurveyRequestDetailHandlerTests
         var preSurvey = await ctx.SeedSubmittedPreSurveyAsync();
         var request = await ctx.SeedSurveyRequestAsync(
             preSurvey.Id,
-            SurveyRequestStatus.Assigned,
+            SurveyRequestStatus.Pending,
             saleA.Id,
             assignedAt: DateTimeOffset.UtcNow);
 

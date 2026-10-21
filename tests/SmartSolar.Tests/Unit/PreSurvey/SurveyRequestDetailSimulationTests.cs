@@ -32,6 +32,7 @@ public sealed class SurveyRequestDetailSimulationTests
         var created = await ctx.CreateSimulationHandler().HandleAsync(
             new CreateSimulationCommand(user.Id, draft.Id, 1, product.Id, MountingTypes.Flush, null, null, new InstallationRequest(null, null, null, null, null), null),
             CancellationToken.None);
+        await ctx.SelectSimulationAsync(user.Id, draft.Id, created.Simulation!.SimulationId);
         var submitted = await ctx.SubmitPreSurveyHandler().HandleAsync(new SubmitPreSurveyCommand(user.Id, draft.Id), CancellationToken.None);
         ctx.Db.ChangeTracker.Clear();
 

@@ -41,11 +41,9 @@ public sealed record AdminUserRow(
 public sealed record TechnicianProfileSummary(
     bool HasProfile,
     bool IsSchedulingActive,
-    bool HasBaseLocation,
-    string? BaseLabel,
     int? MaxAppointmentsPerDay,
     bool HasCustomWorkingSchedule,
-    TimeOnly? EarliestBaseDeparture);
+    IReadOnlyList<string> ZoneCodes);
 
 /// <summary>An upcoming appointment that would be orphaned by disabling the account.</summary>
 public sealed record BlockingAppointment(Guid AppointmentId, Guid? SurveyRequestId, DateTimeOffset StartsAt, string Status);

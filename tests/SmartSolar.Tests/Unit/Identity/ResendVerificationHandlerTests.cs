@@ -79,54 +79,11 @@ public class ResendVerificationHandlerTests
     }
 
     [Fact]
-    public async Task Returns_generic_success_and_does_nothing_for_a_missing_account()
-    {
-        await using var ctx = new IdentityTestContext();
-
-        var result = await ctx.CreateResendVerificationHandler()
-            .HandleAsync(new ResendVerificationCommand("nobody@example.com"), CancellationToken.None);
-
-        Assert.True(result.Accepted);
-        Assert.Equal(0, await ctx.Db.AuthActionTokens.CountAsync());
-        Assert.Empty(ctx.Publisher.Published);
-    }
-
-    [Fact]
-    public async Task Returns_generic_success_and_does_nothing_for_a_verified_account()
-    {
-        await using var ctx = new IdentityTestContext();
-        await ctx.SeedUserAsync(
-            "verified@example.com", passwordHash: "hash", emailVerifiedAt: DateTimeOffset.UtcNow);
-
-        var result = await ctx.CreateResendVerificationHandler()
-            .HandleAsync(new ResendVerificationCommand("verified@example.com"), CancellationToken.None);
-
-        Assert.True(result.Accepted);
-        Assert.Equal(0, await ctx.Db.AuthActionTokens.CountAsync());
-        Assert.Empty(ctx.Publisher.Published);
-    }
-
-    [Fact]
-    public async Task Returns_generic_success_and_does_nothing_for_an_oauth_only_account()
-    {
-        await using var ctx = new IdentityTestContext();
-        var oauthUser = await ctx.SeedUserAsync("oauth@example.com", passwordHash: null);
-
-        var result = await ctx.CreateResendVerificationHandler()
-            .HandleAsync(new ResendVerificationCommand("oauth@example.com"), CancellationToken.None);
-
-        Assert.True(result.Accepted);
-        Assert.Equal(0, await ctx.Db.AuthActionTokens.CountAsync());
-        Assert.Empty(ctx.Publisher.Published);
-        Assert.Null((await ctx.Db.UserAccounts.SingleAsync(u => u.Id == oauthUser.Id)).PasswordHash);
-    }
-
-    [Fact]
-    public async Task Returns_the_same_result_for_every_account_state()
+    public async Task Every_account_state_gets_the_same_answer_and_only_an_eligible_account_gets_a_token()
     {
         await using var ctx = new IdentityTestContext();
         await ctx.SeedUserAsync("local@example.com", passwordHash: "hash");
-        await ctx.SeedUserAsync("oauth@example.com", passwordHash: null);
+        var oauthUser = await ctx.SeedUserAsync("oauth@example.com", passwordHash: null);
         await ctx.SeedUserAsync("done@example.com", passwordHash: "hash", emailVerifiedAt: DateTimeOffset.UtcNow);
         var handler = ctx.CreateResendVerificationHandler();
 
@@ -139,9 +96,11 @@ public class ResendVerificationHandlerTests
         };
 
         Assert.All(results, r => Assert.True(r.Accepted));
-        // Only the eligible local account produced a token or an event.
+        Assert.Single(results.Select(r => r.ToString()).Distinct());
+        // Only the local unverified account produced a token or an event; nothing is attached to the OAuth-only account.
         Assert.Equal(1, await ctx.Db.AuthActionTokens.CountAsync());
         Assert.Single(ctx.Publisher.Published);
+        Assert.Null((await ctx.Db.UserAccounts.SingleAsync(u => u.Id == oauthUser.Id)).PasswordHash);
     }
 
     [Fact]

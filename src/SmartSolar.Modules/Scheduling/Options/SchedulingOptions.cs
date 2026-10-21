@@ -15,28 +15,25 @@ public sealed class SchedulingOptions
     public string WorkingHours { get; set; } = "08:00-12:00,13:00-17:00";
 
     /// <summary>
-    /// Days on which the default <see cref="WorkingHours"/> apply (comma-separated MON…SUN). Default:
-    /// every day, as in V1. Technicians with a custom weekly schedule ignore this and
-    /// <see cref="WorkingHours"/>.
+    /// Days on which the default <see cref="WorkingHours"/> apply (comma-separated MON…SUN). Technicians with
+    /// a custom weekly schedule ignore this and <see cref="WorkingHours"/>.
     /// </summary>
     public string WorkingDays { get; set; } = "MON,TUE,WED,THU,FRI,SAT,SUN";
-
-    /// <summary>
-    /// Earliest local time a technician may leave the base for the first appointment of the day
-    /// ("HH:mm"). Independent of on-site working hours. A technician-specific value overrides it.
-    /// </summary>
-    public string EarliestBaseDeparture { get; set; } = "07:00";
 
     public int AppointmentDurationMinutes { get; set; } = 90;
 
     /// <summary>Spacing between bookable start times.</summary>
     public int SlotIntervalMinutes { get; set; } = 30;
 
-    /// <summary>Upper limit of active appointments per technician per local day (not a target).</summary>
+    /// <summary>Upper limit of survey appointments (pending holds included) per technician per local day.</summary>
     public int MaxAppointmentsPerTechnicianPerDay { get; set; } = 3;
 
-    /// <summary>Added on top of every provider travel estimate.</summary>
-    public int SafetyBufferMinutes { get; set; } = 30;
+    /// <summary>
+    /// Minimum gap between two commitments of the same technician (survey appointments and installation
+    /// assignments): previous end + buffer &lt;= start and end + buffer &lt;= next start. A conservative fixed
+    /// buffer, NOT a travel-time estimate.
+    /// </summary>
+    public int BufferBetweenAppointmentsMinutes { get; set; } = 30;
 
     /// <summary>How many days ahead (including today) customers may book.</summary>
     public int BookingHorizonDays { get; set; } = 30;
@@ -44,30 +41,32 @@ public sealed class SchedulingOptions
     /// <summary>Minimum time between now and an appointment start. 0 = any future start.</summary>
     public int MinimumBookingLeadMinutes { get; set; } = 0;
 
-    /// <summary>
-    /// The slot search stops after this many feasible technicians; the reported count is then marked
-    /// AT_LEAST rather than EXACT.
-    /// </summary>
+    /// <summary>The slot listing reports at most this many eligible holders per slot (CapacityStatus AT_LEAST beyond it).</summary>
     public int MaxReportedSlotCapacity { get; set; } = 3;
 
-    /// <summary>Upper bound of travel-estimate requests for one operation (slot listing, booking, availability).</summary>
-    public int MaxRouteRequestsPerOperation { get; set; } = 60;
-
-    /// <summary>At most this many technicians are route-checked per candidate time (nearest first).</summary>
-    public int MaxTechniciansEvaluatedPerSlot { get; set; } = 6;
-
-    /// <summary>How many times a reservation is re-estimated when the schedule changed concurrently.</summary>
+    /// <summary>How many times a reservation or acceptance is retried when the schedule changed concurrently.</summary>
     public int MaxReservationAttempts { get; set; } = 3;
 
-    /// <summary>Runs the background worker that retries pending route recalculations (disable only in tests).</summary>
-    public bool RecalculationWorkerEnabled { get; set; } = true;
+    // ---- Bootstrap defaults of admin-editable settings ----
+    // AcceptanceWindowMinutes, AcceptanceMinimumLeadMinutes, CustomerChangeLeadMinutes, MinimumBookingLeadMinutes, BookingHorizonDays and
+    // BufferBetweenAppointmentsMinutes are only the DEFAULTS of the system settings (scheduling.*): handlers and workers read the effective
+    // values from ISchedulingPolicyProvider, never from these properties.
 
-    /// <summary>How often the worker looks for due recalculations.</summary>
-    public int RecalculationPollSeconds { get; set; } = 30;
+    /// <summary>
+    /// Default of <c>scheduling.acceptanceWindowMinutes</c>: technicians have this long after booking to self-accept, deadline =
+    /// LEAST(booked_at + window, starts_at − minimum lead).
+    /// </summary>
+    public int AcceptanceWindowMinutes { get; set; } = 240;
 
-    /// <summary>Lease held while one instance processes a technician-day.</summary>
-    public int RecalculationLeaseSeconds { get; set; } = 120;
+    /// <summary>Acceptance must happen at least this long before the start, otherwise the appointment escalates to staff.</summary>
+    public int AcceptanceMinimumLeadMinutes { get; set; } = 120;
 
-    /// <summary>Upper bound of the exponential retry delay after a failed recalculation.</summary>
-    public int RecalculationMaxBackoffMinutes { get; set; } = 60;
+    /// <summary>Customers may reschedule or cancel until this long before the start.</summary>
+    public int CustomerChangeLeadMinutes { get; set; } = 120;
+
+    /// <summary>Runs the background worker that escalates pending appointments past their deadline.</summary>
+    public bool EscalationWorkerEnabled { get; set; } = true;
+
+    /// <summary>How often the escalation worker runs.</summary>
+    public int EscalationPollSeconds { get; set; } = 60;
 }

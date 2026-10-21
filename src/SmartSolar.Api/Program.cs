@@ -3,6 +3,13 @@ using SmartSolar.Api.Extensions;
 using SmartSolar.Api.Middlewares;
 using SmartSolar.Infrastructure;
 
+// Controlled administrative catalog import (CLI mode of the host; never an HTTP endpoint or a startup task).
+if (SmartSolar.Api.Cli.AdministrativeCatalogCli.IsCommand(args))
+{
+    Environment.ExitCode = await SmartSolar.Api.Cli.AdministrativeCatalogCli.RunAsync(args, Console.Out, CancellationToken.None);
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
@@ -25,7 +32,7 @@ builder.Services.AddCors(options =>
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddIdentityModule(builder.Configuration);
 builder.Services.AddJwtAuthentication(IdentityModuleExtensions.ReadJwtOptions(builder.Configuration));
-builder.Services.AddCatalogModule();
+builder.Services.AddCatalogModule(builder.Configuration);
 builder.Services.AddAuthRateLimiting(builder.Configuration);
 builder.Services.AddCatalogRateLimiting(builder.Configuration);
 builder.Services.AddPreSurveyModule();
@@ -34,6 +41,14 @@ builder.Services.AddSimulationRateLimiting(builder.Configuration);
 builder.Services.AddSchedulingModule(builder.Configuration);
 builder.Services.AddSchedulingRateLimiting(builder.Configuration);
 builder.Services.AddAdminUsersRateLimiting(builder.Configuration);
+builder.Services.AddFeatureFlagsAndFileStorage(builder.Configuration);
+builder.Services.AddInstallationWorkflow(builder.Configuration);
+builder.Services.AddInstallationWorkflowRateLimiting(builder.Configuration);
+builder.Services.AddAfterSales(builder.Configuration);
+builder.Services.AddKnowledgeBase(builder.Configuration);
+builder.Services.AddKnowledgeBaseRateLimiting(builder.Configuration);
+builder.Services.AddSystemSettingsModule(builder.Configuration);
+builder.Services.AddSystemSettingsRateLimiting(builder.Configuration);
 builder.Services.AddForwardedHeaders(builder.Configuration);
 builder.Services.AddControllers();
 builder.Services.AddEnvelopedModelValidation();
@@ -41,6 +56,10 @@ builder.Services.AddEnvelopedModelValidation();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
+     options.CustomSchemaIds(
+        type => type.FullName?.Replace('+', '.') ?? type.Name
+    );
+
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
         Name = "Authorization",
@@ -67,6 +86,11 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 var app = builder.Build();
+
+if (app.Services.GetRequiredService<SmartSolar.Modules.Common.Features.FeatureOptions>().UsesLegacyFlag)
+{
+    app.Logger.LogWarning("'Features:Flow2Enabled' is deprecated; set 'Features:InstallationWorkflowEnabled' and 'Features:KnowledgeBaseEnabled' instead.");
+}
 
 await app.SeedSystemRolesAsync();
 

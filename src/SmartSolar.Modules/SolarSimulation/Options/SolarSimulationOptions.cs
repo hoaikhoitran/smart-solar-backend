@@ -30,6 +30,42 @@ public sealed class SolarSimulationOptions
 
     /// <summary>Overall time budget for all provider calls of one simulation (seconds).</summary>
     public int ProviderBudgetSeconds { get; set; } = 25;
+
+    /// <summary>
+    /// How long a full simulation result stays in the distributed cache (minutes, absolute; default
+    /// one day). Identical input within this window reuses the cached result. Only the selected
+    /// simulation's compact summary is kept in PostgreSQL after that.
+    /// </summary>
+    public int ResultTtlMinutes { get; set; } = 1440;
+
+    /// <summary>Upper bound of the best-effort recent-results list kept per pre-survey.</summary>
+    public int MaxRecentResults { get; set; } = 20;
+
+    public SimulationSnapshotOptions Snapshots { get; set; } = new();
+}
+
+/// <summary>
+/// Optional durable copy of the selected simulation's full payload in S3 (or an S3-compatible
+/// store). Disabled by default. Credentials are never configured here: the default AWS
+/// credential chain (IAM role) is used, or the optional Storage:S3 static keys from the environment.
+/// </summary>
+public sealed class SimulationSnapshotOptions
+{
+    public bool Enabled { get; set; }
+
+    public string? Bucket { get; set; }
+
+    public string Region { get; set; } = "ap-southeast-1";
+
+    /// <summary>Custom endpoint for S3-compatible stores (MinIO, R2...). Empty = AWS.</summary>
+    public string? ServiceUrl { get; set; }
+
+    public bool ForcePathStyle { get; set; }
+
+    public int TimeoutSeconds { get; set; } = 15;
+
+    /// <summary>Snapshots larger than this are not written or read (bytes).</summary>
+    public long MaxSnapshotBytes { get; set; } = 8 * 1024 * 1024;
 }
 
 /// <summary>

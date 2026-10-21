@@ -6,6 +6,7 @@ using SmartSolar.Api.Contracts;
 using SmartSolar.Api.Extensions;
 using SmartSolar.Modules.PreSurvey.Constants;
 using SmartSolar.Modules.Scheduling.Constants;
+using SmartSolar.Modules.Scheduling.Dispatch;
 using SmartSolar.Modules.Scheduling.PreSurveyAppointments;
 
 namespace SmartSolar.Api.Controllers;
@@ -41,15 +42,24 @@ public abstract class SchedulingControllerBase : ControllerBase
 
     public static int StatusFor(string code) => code switch
     {
-        SchedulingErrorCodes.ValidationFailed or SchedulingErrorCodes.InvalidBookingTime => StatusCodes.Status400BadRequest,
-        PreSurveyErrorCodes.SurveyRequestNotAssigned => StatusCodes.Status403Forbidden,
+        SchedulingErrorCodes.ValidationFailed or SchedulingErrorCodes.InvalidBookingTime or SchedulingErrorCodes.AssignmentReasonRequired
+            or DispatchErrorCodes.ReasonRequired => StatusCodes.Status400BadRequest,
+        PreSurveyErrorCodes.SurveyRequestNotAssigned or SchedulingErrorCodes.SurveyRequestNotOwned
+            or SchedulingErrorCodes.ZoneManagementForbidden or SchedulingErrorCodes.ZoneScopeForbidden => StatusCodes.Status403Forbidden,
         SchedulingErrorCodes.SurveyRequestNotFound or SchedulingErrorCodes.PropertySiteNotFound or SchedulingErrorCodes.BookingNotFound
-            or SchedulingErrorCodes.AppointmentNotFound or SchedulingErrorCodes.TechnicianNotFound => StatusCodes.Status404NotFound,
-        SchedulingErrorCodes.SlotUnavailable or SchedulingErrorCodes.BookingAlreadyExists or SchedulingErrorCodes.InvalidBookingState
-            or SchedulingErrorCodes.TechnicianNotAvailable or SchedulingErrorCodes.ConcurrencyConflict
-            or SchedulingErrorCodes.TechnicianHasConflictingAppointments or SchedulingErrorCodes.TechnicianProfileRequired => StatusCodes.Status409Conflict,
-        SchedulingErrorCodes.PropertySiteLocationRequired or SchedulingErrorCodes.TravelRouteUnavailable => StatusCodes.Status422UnprocessableEntity,
-        SchedulingErrorCodes.TravelProviderUnavailable or SchedulingErrorCodes.TravelProviderQuotaExceeded => StatusCodes.Status503ServiceUnavailable,
-        _ => StatusCodes.Status400BadRequest,
+            or SchedulingErrorCodes.AppointmentNotFound or SchedulingErrorCodes.TechnicianNotFound or SchedulingErrorCodes.ZoneNotFound
+            or DispatchErrorCodes.DispatchRequestNotFound or DispatchErrorCodes.ProposalNotFound
+            => StatusCodes.Status404NotFound,
+        // Invalid or out-of-scope location (or the request names something unusable). A temporarily uncovered area — NO_ZONE_COVERAGE,
+        // ZONE_NOT_SERVICEABLE — is NOT a 422: like the capacity codes it is a 409 with details.dispatchAvailable = true.
+        SchedulingErrorCodes.SiteLocationRequired
+            or SchedulingErrorCodes.LocationUnknown or SchedulingErrorCodes.LocationSuperseded or SchedulingErrorCodes.LocationOutOfServiceArea
+            or SchedulingErrorCodes.ResponsibleManagerInvalid or SchedulingErrorCodes.SalesUserInvalid => StatusCodes.Status422UnprocessableEntity,
+        // Slot taken, state, staleness, duplicates, eligibility (TECHNICIAN_*, OUTSIDE_WORKING_HOURS, DAILY_LIMIT_REACHED), already taken,
+        // ZONE_* / COMMUNE_* conflicts (ZONE_CODE_EXISTS, ZONE_STALE_REVISION, ZONE_IN_USE, COMMUNE_ALREADY_MAPPED, COMMUNE_IN_USE),
+        // coverage/capacity codes (NO_ZONE_COVERAGE, ZONE_NOT_SERVICEABLE, NO_ZONE_TECHNICIAN, NO_AVAILABLE_TECHNICIAN, SCHEDULE_CONFLICT),
+        // zone authorization (ZONE_MANAGEMENT_FORBIDDEN, ZONE_SCOPE_FORBIDDEN are 403 above) and dispatch conflicts (DISPATCH_*, PROPOSAL_*,
+        // CROSS_ZONE_AUTHORIZATION_REQUIRED).
+        _ => StatusCodes.Status409Conflict,
     };
 }

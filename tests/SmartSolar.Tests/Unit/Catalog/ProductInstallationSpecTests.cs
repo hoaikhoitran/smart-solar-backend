@@ -134,7 +134,7 @@ public class ProductInstallationSpecTests
         var command = new UpdateProductCommand(
             ProductId: Guid.NewGuid(), Sku: "PNL-550", ProductType: "SOLAR_PANEL", Category: "PANEL", Name: "Mono 550", Brand: "Jinko",
             Model: null, Unit: "PCS", UnitPrice: 1m, Currency: "VND", RatedPowerW: 550m, WidthMm: 1134m,
-            HeightMm: 2278m, WarrantyMonth: null, Spec: spec, ImageUrl: null);
+            HeightMm: 2278m, WarrantyMonth: null, Spec: spec);
 
         var failures = new UpdateProductCommandValidator().Validate(command).Errors;
 

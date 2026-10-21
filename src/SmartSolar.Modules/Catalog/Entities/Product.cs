@@ -37,11 +37,15 @@ public sealed class Product
 
     public ProductStatus Status { get; set; }
 
-    public string? ImageUrl { get; set; }
-
     public DateTimeOffset CreatedAt { get; set; }
 
     public DateTimeOffset UpdatedAt { get; set; }
 
     public DateTimeOffset? DeletedAt { get; set; }
+
+    /// <summary>
+    /// The image gallery. Image rows are only ever changed through the image
+    /// operations, never through product create/update field edits.
+    /// </summary>
+    public List<ProductImage> Images { get; set; } = new();
 }

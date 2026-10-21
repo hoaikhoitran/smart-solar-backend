@@ -21,7 +21,7 @@ public sealed class GetPendingSurveyRequestsHandlerTests
         var requestA = await ctx.SeedSurveyRequestAsync(preSurveyA.Id, submittedAt: now.AddHours(-1));
         var requestB = await ctx.SeedSurveyRequestAsync(
             preSurveyB.Id,
-            SurveyRequestStatus.Assigned,
+            SurveyRequestStatus.Pending,
             sale.Id,
             submittedAt: now.AddHours(-5),
             assignedAt: now.AddHours(-4));
@@ -91,4 +91,18 @@ public sealed class GetPendingSurveyRequestsHandlerTests
         Assert.Equal(preSurvey.UsableAreaM2, item.UsableAreaM2);
         Assert.Equal(submittedAt, item.SubmittedAt);
     }
+
+    [Fact]
+    public async Task The_unclaimed_queue_includes_scheduled_requests_and_excludes_cancelled_ones()
+    {
+        await using var ctx = new PreSurveyTestContext();
+        var scheduled = await ctx.SeedSurveyRequestAsync((await ctx.SeedSubmittedPreSurveyAsync("Scheduled", "S")).Id, SurveyRequestStatus.Scheduled);
+        var cancelled = await ctx.SeedSurveyRequestAsync((await ctx.SeedSubmittedPreSurveyAsync("Cancelled", "C")).Id, SurveyRequestStatus.Cancelled);
+
+        var items = await ctx.GetPendingSurveyRequestsHandler().HandleAsync(CancellationToken.None);
+
+        Assert.Contains(items, x => x.SurveyRequestId == scheduled.Id);
+        Assert.DoesNotContain(items, x => x.SurveyRequestId == cancelled.Id);
+    }
 }
+

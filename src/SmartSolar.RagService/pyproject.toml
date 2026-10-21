@@ -1,0 +1,19 @@
+[project]
+name = "smartsolar-rag-service"
+version = "1.0.0"
+requires-python = ">=3.9"
+
+[tool.ruff]
+line-length = 160
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "BLE"]
+# UP007/UP006: keep Optional/List so the code runs on Python 3.9 (local tooling) and 3.12 (image).
+ignore = ["UP007", "UP006", "UP035"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S105", "S106"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

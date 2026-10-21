@@ -16,13 +16,13 @@ public sealed class GetMySurveyRequestsHandlerTests
 
         var requestA = await ctx.SeedSurveyRequestAsync(
             (await ctx.SeedSubmittedPreSurveyAsync("Customer A")).Id,
-            SurveyRequestStatus.Assigned, saleA.Id, now.AddDays(-3), now.AddDays(-2));
+            SurveyRequestStatus.Pending, saleA.Id, now.AddDays(-3), now.AddDays(-2));
         var requestB = await ctx.SeedSurveyRequestAsync(
             (await ctx.SeedSubmittedPreSurveyAsync("Customer B")).Id,
-            SurveyRequestStatus.Assigned, saleA.Id, now.AddDays(-3), now.AddDays(-1));
+            SurveyRequestStatus.Pending, saleA.Id, now.AddDays(-3), now.AddDays(-1));
         var requestC = await ctx.SeedSurveyRequestAsync(
             (await ctx.SeedSubmittedPreSurveyAsync("Customer C")).Id,
-            SurveyRequestStatus.Assigned, saleB.Id, now.AddDays(-3), now.AddHours(-1));
+            SurveyRequestStatus.Pending, saleB.Id, now.AddDays(-3), now.AddHours(-1));
         await ctx.SeedSurveyRequestAsync((await ctx.SeedSubmittedPreSurveyAsync("Customer D")).Id);
 
         // Act
@@ -69,7 +69,7 @@ public sealed class GetMySurveyRequestsHandlerTests
         var assignedAt = new DateTimeOffset(2026, 10, 1, 10, 0, 0, TimeSpan.Zero);
         var request = await ctx.SeedSurveyRequestAsync(
             preSurvey.Id,
-            SurveyRequestStatus.Assigned,
+            SurveyRequestStatus.Pending,
             sale.Id,
             submittedAt,
             assignedAt);
@@ -87,7 +87,7 @@ public sealed class GetMySurveyRequestsHandlerTests
         Assert.Equal("Warehouse", item.PropertyName);
         Assert.Equal("Can Tho", item.Province);
         Assert.Equal("Ninh Kieu", item.District);
-        Assert.Equal(SurveyRequestStatus.Assigned, item.Status);
+        Assert.Equal(SurveyRequestStatus.Pending, item.Status);
         Assert.Equal(submittedAt, item.SubmittedAt);
         Assert.Equal(assignedAt, item.AssignedAt);
         Assert.Null(item.ScheduledAt);

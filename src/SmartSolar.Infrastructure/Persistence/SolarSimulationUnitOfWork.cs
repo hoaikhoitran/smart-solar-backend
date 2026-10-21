@@ -1,18 +1,29 @@
 using Microsoft.EntityFrameworkCore;
 using SmartSolar.Modules.PreSurvey.Enums;
 using SmartSolar.Modules.SolarSimulation.Contracts.Persistence;
-using SimulationEntity = SmartSolar.Modules.SolarSimulation.Entities.SolarSimulation;
+using SmartSolar.Modules.SolarSimulation.Entities;
 
 namespace SmartSolar.Infrastructure.Persistence;
 
 /// <summary>
-/// Snapshots are insert-only: this unit of work has no update or delete operation for them.
-/// Pre-survey consistency is enforced in the database with conditional UPDATEs that lock the
-/// pre-survey row; in PostgreSQL READ COMMITTED a waiting UPDATE re-checks its WHERE clause
-/// against the committed row, so a concurrent submit or geometry edit makes it match nothing.
+/// PostgreSQL side of simulations: only the compact selected_simulation summary is stored (full
+/// results live in the distributed cache). Pre-survey consistency is enforced with conditional
+/// UPDATEs that lock the pre-survey row; in PostgreSQL READ COMMITTED a waiting UPDATE re-checks its
+/// WHERE clause against the committed row, so a concurrent submit or geometry edit makes it match nothing.
 /// </summary>
 public sealed class SolarSimulationUnitOfWork : ISolarSimulationUnitOfWork
 {
+    /// <summary>
+    /// Appointment statuses whose assigned technician may read the pre-survey's simulations.
+    /// Single predicate shared with the scheduling lifecycle (the Flow 1 redesign updates this set).
+    /// </summary>
+    internal static readonly string[] TechnicianReadableAppointmentStatuses =
+    [
+        SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.Accepted,
+        SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.Assigned,
+        SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.Completed,
+    ];
+
     private readonly AppDbContext _db;
 
     public SolarSimulationUnitOfWork(AppDbContext db)
@@ -51,8 +62,7 @@ public sealed class SolarSimulationUnitOfWork : ISolarSimulationUnitOfWork
         // active appointment of this pre-survey's survey request.
         var technicians = await _db.TechnicianAppointments.AsNoTracking()
             .Where(a => a.AssignedTechnicianUserId != null
-                        && (a.Status == SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.Assigned
-                            || a.Status == SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.Acknowledged)
+                        && TechnicianReadableAppointmentStatuses.Contains(a.Status)
                         && _db.SurveyRequests.Any(r => r.Id == a.SurveyRequestId && r.PreSurveyId == preSurveyId))
             .Select(a => a.AssignedTechnicianUserId!.Value)
             .ToListAsync(cancellationToken);
@@ -60,14 +70,12 @@ public sealed class SolarSimulationUnitOfWork : ISolarSimulationUnitOfWork
         return source with { AssignedTechnicianUserIds = technicians };
     }
 
-    public Task<SimulationEntity?> FindReusableAsync(Guid preSurveyId, string fingerprint, CancellationToken cancellationToken)
-        => _db.SolarSimulations
+    public Task<SelectedSimulation?> GetSelectionAsync(Guid preSurveyId, CancellationToken cancellationToken)
+        => _db.SelectedSimulations
             .AsNoTracking()
-            .FirstOrDefaultAsync(
-                x => x.PreSurveyId == preSurveyId && x.InputFingerprint == fingerprint && x.IsReusable,
-                cancellationToken);
+            .FirstOrDefaultAsync(x => x.PreSurveyId == preSurveyId, cancellationToken);
 
-    public Task<SaveSimulationOutcome> TrySaveAndSelectAsync(SimulationEntity simulation, CancellationToken cancellationToken)
+    public Task<SelectSimulationOutcome> TrySelectAsync(SelectedSimulation selection, CancellationToken cancellationToken)
     {
         var strategy = _db.Database.CreateExecutionStrategy();
 
@@ -78,23 +86,25 @@ public sealed class SolarSimulationUnitOfWork : ISolarSimulationUnitOfWork
                 _db.ChangeTracker.Clear();
                 await using var transaction = await _db.Database.BeginTransactionAsync(token);
 
-                // Row lock + check. The no-op SET keeps revision untouched so a concurrent
-                // submit that already read the pre-survey stays valid.
+                // Row lock + check, and release the FK to the row being replaced: the pre-survey
+                // must still be Draft at the selected result's geometry version.
                 var locked = await _db.PreSurveys
                     .Where(x =>
-                        x.Id == simulation.PreSurveyId &&
+                        x.Id == selection.PreSurveyId &&
                         x.Status == PreSurveyStatus.Draft &&
-                        x.GeometryVersion == simulation.PreSurveyGeometryVersion)
-                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.GeometryVersion, x => x.GeometryVersion), token);
+                        x.GeometryVersion == selection.PreSurveyGeometryVersion)
+                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.SelectedSimulationId, (Guid?)null), token);
 
                 if (locked == 0)
                 {
-                    return await ExplainAsync(simulation.PreSurveyId, token) == SelectSimulationOutcome.NotDraft
-                        ? SaveSimulationOutcome.NotDraft
-                        : SaveSimulationOutcome.SourceChanged;
+                    return await ExplainAsync(selection.PreSurveyId, token);
                 }
 
-                _db.SolarSimulations.Add(simulation);
+                await _db.SelectedSimulations
+                    .Where(x => x.PreSurveyId == selection.PreSurveyId)
+                    .ExecuteDeleteAsync(token);
+
+                _db.SelectedSimulations.Add(selection);
                 try
                 {
                     await _db.SaveChangesAsync(token);
@@ -102,62 +112,42 @@ public sealed class SolarSimulationUnitOfWork : ISolarSimulationUnitOfWork
                 catch (DbUpdateException ex) when (DbExceptionClassifier.IsUniqueViolation(ex))
                 {
                     _db.ChangeTracker.Clear();
-                    return SaveSimulationOutcome.DuplicateFingerprint;
+                    return SelectSimulationOutcome.Conflict;
                 }
 
                 await _db.PreSurveys
-                    .Where(x => x.Id == simulation.PreSurveyId)
-                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.SelectedSimulationId, simulation.Id), token);
+                    .Where(x => x.Id == selection.PreSurveyId)
+                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.SelectedSimulationId, (Guid?)selection.SimulationId), token);
 
                 await transaction.CommitAsync(token);
                 _db.ChangeTracker.Clear();
-                return SaveSimulationOutcome.Saved;
+                return SelectSimulationOutcome.Selected;
             });
     }
 
-    public async Task<SelectSimulationOutcome> TrySelectAsync(
-        Guid preSurveyId, Guid simulationId, int geometryVersion, CancellationToken cancellationToken)
+    public Task<ClearSelectionOutcome> TryClearSelectionAsync(Guid preSurveyId, CancellationToken cancellationToken)
     {
-        var selected = await _db.PreSurveys
-            .Where(x =>
-                x.Id == preSurveyId &&
-                x.Status == PreSurveyStatus.Draft &&
-                x.GeometryVersion == geometryVersion &&
-                _db.SolarSimulations.Any(s =>
-                    s.Id == simulationId &&
-                    s.PreSurveyId == preSurveyId &&
-                    s.PreSurveyGeometryVersion == geometryVersion))
-            .ExecuteUpdateAsync(s => s.SetProperty(x => x.SelectedSimulationId, simulationId), cancellationToken);
+        var strategy = _db.Database.CreateExecutionStrategy();
 
-        return selected == 1 ? SelectSimulationOutcome.Selected : await ExplainAsync(preSurveyId, cancellationToken);
+        return strategy.ExecuteAsync(
+            cancellationToken,
+            async token =>
+            {
+                await using var transaction = await _db.Database.BeginTransactionAsync(token);
+
+                var locked = await _db.PreSurveys
+                    .Where(x => x.Id == preSurveyId && x.Status == PreSurveyStatus.Draft)
+                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.SelectedSimulationId, (Guid?)null), token);
+                if (locked == 0)
+                {
+                    return ClearSelectionOutcome.NotDraft;
+                }
+
+                await _db.SelectedSimulations.Where(x => x.PreSurveyId == preSurveyId).ExecuteDeleteAsync(token);
+                await transaction.CommitAsync(token);
+                return ClearSelectionOutcome.Cleared;
+            });
     }
-
-    public async Task<IReadOnlyList<SimulationSummary>> ListAsync(Guid preSurveyId, CancellationToken cancellationToken)
-        => await _db.SolarSimulations
-            .AsNoTracking()
-            .Where(x => x.PreSurveyId == preSurveyId)
-            .OrderByDescending(x => x.CreatedAt)
-            .ThenByDescending(x => x.Id)
-            .Select(x => new SimulationSummary(
-                x.Id,
-                x.PreSurveyGeometryVersion,
-                x.Status,
-                x.EnergyStatus,
-                x.ClimateStatus,
-                x.MountingType,
-                x.ProductId,
-                x.ProductSku,
-                x.ProductName,
-                x.PanelCount,
-                x.InstalledCapacityKwp,
-                x.AnnualEnergyKwh,
-                x.CreatedAt))
-            .ToListAsync(cancellationToken);
-
-    public Task<SimulationEntity?> FindAsync(Guid preSurveyId, Guid simulationId, CancellationToken cancellationToken)
-        => _db.SolarSimulations
-            .AsNoTracking()
-            .FirstOrDefaultAsync(x => x.PreSurveyId == preSurveyId && x.Id == simulationId, cancellationToken);
 
     private async Task<SelectSimulationOutcome> ExplainAsync(Guid preSurveyId, CancellationToken cancellationToken)
     {

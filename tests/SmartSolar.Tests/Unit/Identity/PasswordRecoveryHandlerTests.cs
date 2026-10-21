@@ -16,7 +16,7 @@ public class ForgotPasswordHandlerTests
         => ctx.Publisher.PublishedOf<PasswordResetRequestedEvent>().Single().ResetUrl.Split("token=")[1];
 
     [Fact]
-    public async Task Eligible_account_gets_a_reset_token_stored_as_a_hash()
+    public async Task An_eligible_account_gets_a_hashed_reset_token_and_the_reset_email()
     {
         await using var ctx = new IdentityTestContext();
         var user = await ctx.SeedActiveUserAsync("person@example.com", Password);
@@ -25,25 +25,13 @@ public class ForgotPasswordHandlerTests
             .HandleAsync(new ForgotPasswordCommand("Person@Example.com "), CancellationToken.None);
 
         Assert.True(result.Accepted);
-        var token = await ctx.Db.AuthActionTokens.SingleAsync();
-        Assert.Equal(AuthActionTokenType.PasswordReset, token.Type);
-        Assert.Equal(user.Id, token.UserId);
-        Assert.Equal(SecureTokenFactory.Hash(RawTokenFrom(ctx)), token.TokenHash);
-        Assert.NotEqual(RawTokenFrom(ctx), token.TokenHash);
-    }
-
-    [Fact]
-    public async Task Publishes_the_reset_event_after_persisting()
-    {
-        await using var ctx = new IdentityTestContext();
-        await ctx.SeedActiveUserAsync("person@example.com", Password);
-
-        await ctx.CreateForgotPasswordHandler()
-            .HandleAsync(new ForgotPasswordCommand("person@example.com"), CancellationToken.None);
-
         var published = Assert.Single(ctx.Publisher.PublishedOf<PasswordResetRequestedEvent>());
         Assert.Equal("person@example.com", published.Email);
         Assert.StartsWith(ctx.FrontendOptions.PasswordResetUrl, published.ResetUrl);
+        var token = await ctx.Db.AuthActionTokens.SingleAsync();
+        Assert.Equal((AuthActionTokenType.PasswordReset, user.Id), (token.Type, token.UserId));
+        Assert.Equal(SecureTokenFactory.Hash(RawTokenFrom(ctx)), token.TokenHash);
+        Assert.NotEqual(RawTokenFrom(ctx), token.TokenHash);
     }
 
     [Fact]
@@ -83,42 +71,27 @@ public class ForgotPasswordHandlerTests
         Assert.Equal(verification.TokenHash, stored.TokenHash);
     }
 
-    [Theory]
-    [InlineData("missing@example.com")]
-    [InlineData("oauth@example.com")]
-    [InlineData("suspended@example.com")]
-    public async Task Ineligible_accounts_produce_no_token_and_no_event(string email)
-    {
-        await using var ctx = new IdentityTestContext();
-        await ctx.SeedOauthOnlyActiveUserAsync("oauth@example.com");
-        await ctx.SeedActiveUserAsync("suspended@example.com", Password, UserStatus.Suspended);
-
-        var result = await ctx.CreateForgotPasswordHandler()
-            .HandleAsync(new ForgotPasswordCommand(email), CancellationToken.None);
-
-        Assert.True(result.Accepted);
-        Assert.Equal(0, await ctx.Db.AuthActionTokens.CountAsync());
-        Assert.Empty(ctx.Publisher.Published);
-    }
-
     [Fact]
-    public async Task Every_account_state_returns_the_same_result()
+    public async Task Every_account_state_gets_the_same_answer_and_only_an_eligible_account_gets_a_token()
     {
         await using var ctx = new IdentityTestContext();
         await ctx.SeedActiveUserAsync("active@example.com", Password);
         await ctx.SeedOauthOnlyActiveUserAsync("oauth@example.com");
+        await ctx.SeedActiveUserAsync("suspended@example.com", Password, UserStatus.Suspended);
         var handler = ctx.CreateForgotPasswordHandler();
 
         var results = new[]
         {
             await handler.HandleAsync(new ForgotPasswordCommand("active@example.com"), CancellationToken.None),
             await handler.HandleAsync(new ForgotPasswordCommand("oauth@example.com"), CancellationToken.None),
+            await handler.HandleAsync(new ForgotPasswordCommand("suspended@example.com"), CancellationToken.None),
             await handler.HandleAsync(new ForgotPasswordCommand("missing@example.com"), CancellationToken.None)
         };
 
         Assert.All(results, r => Assert.True(r.Accepted));
         Assert.Single(results.Select(r => r.ToString()).Distinct());
         Assert.Equal(1, await ctx.Db.AuthActionTokens.CountAsync());
+        Assert.Single(ctx.Publisher.Published);
     }
 
     [Fact]
@@ -153,13 +126,15 @@ public class ResetPasswordHandlerTests
     }
 
     [Fact]
-    public async Task Valid_token_changes_the_password_and_marks_the_token_used()
+    public async Task A_valid_token_changes_the_password_once_and_ends_every_session()
     {
         await using var ctx = new IdentityTestContext();
         var (_, userId, rawToken) = await WithResetToken(ctx);
+        var stolen = ctx.SecureTokens.Create();
+        await ctx.SeedRefreshTokenAsync(userId, stolen.TokenHash, DateTimeOffset.UtcNow.AddDays(7));
+        var handler = ctx.CreateResetPasswordHandler();
 
-        var result = await ctx.CreateResetPasswordHandler()
-            .HandleAsync(new ResetPasswordCommand(rawToken, NewPassword), CancellationToken.None);
+        var result = await handler.HandleAsync(new ResetPasswordCommand(rawToken, NewPassword), CancellationToken.None);
 
         Assert.Equal(ResetPasswordOutcome.Succeeded, result.Outcome);
         ctx.Db.ChangeTracker.Clear();
@@ -167,50 +142,12 @@ public class ResetPasswordHandlerTests
         Assert.True(ctx.PasswordHasher.VerifyPassword(user, user.PasswordHash!, NewPassword));
         Assert.False(ctx.PasswordHasher.VerifyPassword(user, user.PasswordHash!, Password));
         Assert.NotNull((await ctx.Db.AuthActionTokens.SingleAsync()).UsedAt);
-    }
-
-    [Fact]
-    public async Task The_new_password_works_for_login_afterwards()
-    {
-        await using var ctx = new IdentityTestContext();
-        var (_, _, rawToken) = await WithResetToken(ctx);
-        await ctx.CreateResetPasswordHandler()
-            .HandleAsync(new ResetPasswordCommand(rawToken, NewPassword), CancellationToken.None);
-        ctx.Db.ChangeTracker.Clear();
-
-        var login = await ctx.CreateLoginHandler()
-            .HandleAsync(new LoginCommand("person@example.com", NewPassword), CancellationToken.None);
-
-        Assert.Equal(LoginOutcome.Succeeded, login.Outcome);
-    }
-
-    [Fact]
-    public async Task Existing_refresh_tokens_are_revoked()
-    {
-        await using var ctx = new IdentityTestContext();
-        var (_, userId, rawToken) = await WithResetToken(ctx);
-        var stolen = ctx.SecureTokens.Create();
-        await ctx.SeedRefreshTokenAsync(userId, stolen.TokenHash, DateTimeOffset.UtcNow.AddDays(7));
-
-        await ctx.CreateResetPasswordHandler()
-            .HandleAsync(new ResetPasswordCommand(rawToken, NewPassword), CancellationToken.None);
-
-        ctx.Db.ChangeTracker.Clear();
         Assert.All(await ctx.Db.RefreshTokens.ToListAsync(), t => Assert.NotNull(t.RevokedAt));
-    }
+        Assert.Equal(LoginOutcome.Succeeded, (await ctx.CreateLoginHandler().HandleAsync(new LoginCommand("person@example.com", NewPassword), CancellationToken.None)).Outcome);
 
-    [Fact]
-    public async Task A_used_token_is_rejected_on_replay()
-    {
-        await using var ctx = new IdentityTestContext();
-        var (_, _, rawToken) = await WithResetToken(ctx);
-        var handler = ctx.CreateResetPasswordHandler();
-        await handler.HandleAsync(new ResetPasswordCommand(rawToken, NewPassword), CancellationToken.None);
+        // The token is single use.
         ctx.Db.ChangeTracker.Clear();
-
-        var replay = await handler.HandleAsync(
-            new ResetPasswordCommand(rawToken, "yet another password"), CancellationToken.None);
-
+        var replay = await handler.HandleAsync(new ResetPasswordCommand(rawToken, "yet another password"), CancellationToken.None);
         Assert.Equal(ResetPasswordOutcome.InvalidOrExpiredToken, replay.Outcome);
     }
 
@@ -266,10 +203,12 @@ public class ChangePasswordHandlerTests
     private const string NewPassword = "a brand new passphrase";
 
     [Fact]
-    public async Task Correct_current_password_changes_it()
+    public async Task The_correct_current_password_changes_it_and_ends_every_session()
     {
         await using var ctx = new IdentityTestContext();
         var user = await ctx.SeedActiveUserAsync("person@example.com", Password);
+        var session = ctx.SecureTokens.Create();
+        await ctx.SeedRefreshTokenAsync(user.Id, session.TokenHash, DateTimeOffset.UtcNow.AddDays(7));
 
         var result = await ctx.CreateChangePasswordHandler()
             .HandleAsync(new ChangePasswordCommand(user.Id, Password, NewPassword), CancellationToken.None);
@@ -279,6 +218,8 @@ public class ChangePasswordHandlerTests
         var stored = await ctx.Db.UserAccounts.SingleAsync();
         Assert.True(ctx.PasswordHasher.VerifyPassword(stored, stored.PasswordHash!, NewPassword));
         Assert.DoesNotContain(NewPassword, stored.PasswordHash!);
+        Assert.All(await ctx.Db.RefreshTokens.ToListAsync(), t => Assert.NotNull(t.RevokedAt));
+        Assert.Equal(LoginOutcome.Succeeded, (await ctx.CreateLoginHandler().HandleAsync(new LoginCommand("person@example.com", NewPassword), CancellationToken.None)).Outcome);
     }
 
     [Fact]
@@ -294,21 +235,6 @@ public class ChangePasswordHandlerTests
         Assert.Equal(ChangePasswordOutcome.InvalidCurrentPassword, result.Outcome);
         ctx.Db.ChangeTracker.Clear();
         Assert.Equal(before, (await ctx.Db.UserAccounts.SingleAsync()).PasswordHash);
-    }
-
-    [Fact]
-    public async Task Existing_refresh_tokens_are_revoked()
-    {
-        await using var ctx = new IdentityTestContext();
-        var user = await ctx.SeedActiveUserAsync("person@example.com", Password);
-        var session = ctx.SecureTokens.Create();
-        await ctx.SeedRefreshTokenAsync(user.Id, session.TokenHash, DateTimeOffset.UtcNow.AddDays(7));
-
-        await ctx.CreateChangePasswordHandler()
-            .HandleAsync(new ChangePasswordCommand(user.Id, Password, NewPassword), CancellationToken.None);
-
-        ctx.Db.ChangeTracker.Clear();
-        Assert.All(await ctx.Db.RefreshTokens.ToListAsync(), t => Assert.NotNull(t.RevokedAt));
     }
 
     [Theory]
@@ -336,20 +262,5 @@ public class ChangePasswordHandlerTests
             .HandleAsync(new ChangePasswordCommand(Guid.NewGuid(), Password, NewPassword), CancellationToken.None);
 
         Assert.Equal(ChangePasswordOutcome.AccountNotActive, result.Outcome);
-    }
-
-    [Fact]
-    public async Task The_new_password_works_for_login_afterwards()
-    {
-        await using var ctx = new IdentityTestContext();
-        var user = await ctx.SeedActiveUserAsync("person@example.com", Password);
-        await ctx.CreateChangePasswordHandler()
-            .HandleAsync(new ChangePasswordCommand(user.Id, Password, NewPassword), CancellationToken.None);
-        ctx.Db.ChangeTracker.Clear();
-
-        var login = await ctx.CreateLoginHandler()
-            .HandleAsync(new LoginCommand("person@example.com", NewPassword), CancellationToken.None);
-
-        Assert.Equal(LoginOutcome.Succeeded, login.Outcome);
     }
 }

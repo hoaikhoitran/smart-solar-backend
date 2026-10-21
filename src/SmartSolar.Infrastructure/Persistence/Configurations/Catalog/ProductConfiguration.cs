@@ -97,10 +97,8 @@ public sealed class ProductConfiguration
                 value => FromDatabase(value))
             .IsRequired();
 
-        builder.Property(x => x.ImageUrl)
-            .HasColumnName("image_url")
-            .HasMaxLength(1000)
-            .IsRequired(false);
+        // product.image_url (nullable) is no longer mapped: the gallery lives in
+        // product_image. The column is kept until the approved cleanup drops it.
 
         builder.Property(x => x.CreatedAt)
             .HasColumnName("created_at")

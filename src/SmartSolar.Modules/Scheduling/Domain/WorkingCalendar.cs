@@ -2,6 +2,12 @@ using SmartSolar.Modules.Scheduling.Options;
 
 namespace SmartSolar.Modules.Scheduling.Domain;
 
+/// <summary>
+/// The admin-editable booking limits (<c>scheduling.bookingHorizonDays</c>, <c>scheduling.minimumBookingLeadMinutes</c>), taken from the
+/// current <see cref="SystemSettings.SchedulingPolicySnapshot"/> by every caller: the calendar itself holds only infrastructure settings.
+/// </summary>
+public sealed record BookingLimits(int HorizonDays, int MinimumLeadMinutes);
+
 /// <summary>A candidate appointment interval, in UTC, with its local date.</summary>
 public sealed record AppointmentWindow(DateOnly LocalDate, DateTimeOffset StartsAtUtc, DateTimeOffset EndsAtUtc, TimeOnly LocalStart, TimeOnly LocalEnd);
 
@@ -23,7 +29,6 @@ public sealed class WorkingCalendar
         TimeZone = TimeZoneInfo.FindSystemTimeZoneById(options.TimeZoneId);
         _periods = ParsePeriods(options.WorkingHours);
         _workingDays = ParseDays(options.WorkingDays);
-        DefaultEarliestBaseDeparture = ParseTime(options.EarliestBaseDeparture, "Scheduling:EarliestBaseDeparture");
         Duration = TimeSpan.FromMinutes(options.AppointmentDurationMinutes);
         Interval = TimeSpan.FromMinutes(options.SlotIntervalMinutes);
     }
@@ -32,7 +37,6 @@ public sealed class WorkingCalendar
     public TimeZoneInfo TimeZone { get; }
     public TimeSpan Duration { get; }
     public TimeSpan Interval { get; }
-    public TimeOnly DefaultEarliestBaseDeparture { get; }
     public IReadOnlyList<(TimeOnly Start, TimeOnly End)> Periods => _periods;
     public IReadOnlySet<DayOfWeek> WorkingDays => _workingDays;
 
@@ -118,12 +122,11 @@ public sealed class WorkingCalendar
             ? week.Where(p => p.Day == date.DayOfWeek).OrderBy(p => p.Start).Select(p => (p.Start, p.End)).ToList()
             : DefaultPeriodsFor(date);
 
-    /// <summary>Fills the resolved working intervals and the earliest base departure for <paramref name="date"/>.</summary>
+    /// <summary>Fills the resolved working intervals for <paramref name="date"/>.</summary>
     public TechnicianDayState Resolve(TechnicianDayState day, DateOnly date)
         => day with
         {
             WorkingIntervals = PeriodsFor(day, date).Select(p => new WorkingInterval(ToUtc(date, p.Start), ToUtc(date, p.End))).ToList(),
-            EarliestBaseDepartureUtc = ToUtc(date, day.EarliestBaseDepartureOverride ?? DefaultEarliestBaseDeparture),
         };
 
     /// <summary>Every start time of the default schedule on that date (past ones included).</summary>
@@ -150,34 +153,43 @@ public sealed class WorkingCalendar
     public IReadOnlyList<AppointmentWindow> CandidateWindows(DateOnly date, IEnumerable<TechnicianDayState> technicians)
         => CandidateWindows(date, technicians.SelectMany(t => PeriodsFor(t, date)).Distinct());
 
-    /// <summary>First and last local date customers may book, relative to now.</summary>
-    public (DateOnly First, DateOnly Last) BookingRange(DateTimeOffset nowUtc)
+    /// <summary>First and last local date customers may book, relative to now (<see cref="BookingLimits.HorizonDays"/> days including today).</summary>
+    public (DateOnly First, DateOnly Last) BookingRange(DateTimeOffset nowUtc, BookingLimits limits)
     {
         var today = LocalDateOf(nowUtc);
-        return (today, today.AddDays(Math.Max(1, Options.BookingHorizonDays) - 1));
+        return (today, today.AddDays(Math.Max(1, limits.HorizonDays) - 1));
     }
 
     /// <summary>Default-schedule bookable windows on a date (kept for callers without technician data).</summary>
-    public IReadOnlyList<AppointmentWindow> BookableWindows(DateOnly date, DateTimeOffset nowUtc) => Bookable(CandidateWindows(date), date, nowUtc);
+    public IReadOnlyList<AppointmentWindow> BookableWindows(DateOnly date, DateTimeOffset nowUtc, BookingLimits limits)
+        => Bookable(CandidateWindows(date), date, nowUtc, limits);
 
     /// <summary>
     /// The windows inside the booking range that start no earlier than now plus the minimum lead
     /// time. Never returns past start times.
     /// </summary>
-    public IReadOnlyList<AppointmentWindow> Bookable(IReadOnlyList<AppointmentWindow> windows, DateOnly date, DateTimeOffset nowUtc)
+    public IReadOnlyList<AppointmentWindow> Bookable(IReadOnlyList<AppointmentWindow> windows, DateOnly date, DateTimeOffset nowUtc, BookingLimits limits)
     {
-        var (first, last) = BookingRange(nowUtc);
+        var (first, last) = BookingRange(nowUtc, limits);
         if (date < first || date > last) return [];
-        var earliest = nowUtc + TimeSpan.FromMinutes(Math.Max(0, Options.MinimumBookingLeadMinutes));
+        var earliest = nowUtc + TimeSpan.FromMinutes(Math.Max(0, limits.MinimumLeadMinutes));
         return windows.Where(w => w.StartsAtUtc > earliest).ToList();
     }
 
+    /// <summary>True when an arbitrary start (not necessarily on the slot grid) is bookable now: after the minimum lead, inside the horizon.</summary>
+    public bool IsBookableStart(DateTimeOffset startUtc, DateTimeOffset nowUtc, BookingLimits limits)
+    {
+        var (first, last) = BookingRange(nowUtc, limits);
+        var date = LocalDateOf(startUtc);
+        return date >= first && date <= last && startUtc > nowUtc + TimeSpan.FromMinutes(Math.Max(0, limits.MinimumLeadMinutes));
+    }
+
     /// <summary>Maps a client-supplied start (any offset) to a bookable default-schedule window, or explains why not.</summary>
-    public bool TryResolveBookable(DateTimeOffset requestedStart, DateTimeOffset nowUtc, out AppointmentWindow? window, out string? reason)
-        => TryResolveBookable(requestedStart, nowUtc, CandidateWindows(LocalDateOf(requestedStart)), out window, out reason);
+    public bool TryResolveBookable(DateTimeOffset requestedStart, DateTimeOffset nowUtc, BookingLimits limits, out AppointmentWindow? window, out string? reason)
+        => TryResolveBookable(requestedStart, nowUtc, limits, CandidateWindows(LocalDateOf(requestedStart)), out window, out reason);
 
     /// <summary>Maps a client-supplied start to one of <paramref name="candidates"/> (the technicians' union grid).</summary>
-    public bool TryResolveBookable(DateTimeOffset requestedStart, DateTimeOffset nowUtc, IReadOnlyList<AppointmentWindow> candidates,
+    public bool TryResolveBookable(DateTimeOffset requestedStart, DateTimeOffset nowUtc, BookingLimits limits, IReadOnlyList<AppointmentWindow> candidates,
         out AppointmentWindow? window, out string? reason)
     {
         var date = LocalDateOf(requestedStart);
@@ -190,7 +202,7 @@ public sealed class WorkingCalendar
             return false;
         }
 
-        if (!Bookable([match], date, nowUtc).Contains(match))
+        if (!Bookable([match], date, nowUtc, limits).Contains(match))
         {
             reason = "The start time is in the past or outside the booking horizon.";
             return false;

@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using SmartSolar.Modules.PreSurvey.Entities;
+using SmartSolar.Modules.PreSurvey.Enums;
 
 namespace SmartSolar.Infrastructure.Persistence.Configurations.PreSurveys;
 
@@ -10,7 +11,9 @@ public sealed class SurveyRequestConfiguration
     public void Configure(
         EntityTypeBuilder<SurveyRequest> builder)
     {
-        builder.ToTable("survey_request");
+        // Backstop for the redesign: Assigned/Reviewing are retired, so an outdated instance cannot write them.
+        builder.ToTable("survey_request", t => t.HasCheckConstraint("ck_survey_request_status",
+            $"status IN ({string.Join(", ", Enum.GetNames<SurveyRequestStatus>().Select(n => $"'{n}'"))})"));
 
         builder.HasKey(x => x.Id);
 

@@ -1,3 +1,5 @@
+using SmartSolar.Modules.Catalog.ProductImages;
+
 namespace SmartSolar.Modules.Catalog.ManageProducts;
 
 /// <summary>
@@ -34,11 +36,15 @@ public interface IProductDetails
 
     /// <summary>Raw JSON text; must be a JSON object when present.</summary>
     string? Spec { get; }
-
-    string? ImageUrl { get; }
 }
 
-/// <summary>A new product; <paramref name="Status"/> defaults to ACTIVE when omitted.</summary>
+/// <summary>
+/// A new product; <paramref name="Status"/> defaults to ACTIVE when omitted.
+/// <paramref name="Images"/> seeds the gallery (the first image is primary).
+/// <paramref name="ImageUrl"/> is the deprecated single-image field: used as the
+/// only (primary) image when <paramref name="Images"/> is empty, and otherwise it
+/// must equal the first image's URL.
+/// </summary>
 public sealed record CreateProductCommand(
     string Sku,
     string ProductType,
@@ -55,9 +61,13 @@ public sealed record CreateProductCommand(
     int? WarrantyMonth,
     string? Spec,
     string? ImageUrl,
-    string? Status) : IProductDetails;
+    string? Status,
+    IReadOnlyList<ProductImageInput>? Images = null) : IProductDetails;
 
-/// <summary>Replaces the editable fields. Status changes go through <see cref="ChangeProductStatusCommand"/>.</summary>
+/// <summary>
+/// Replaces the editable fields. Status changes go through <see cref="ChangeProductStatusCommand"/>;
+/// the gallery is managed only through the image operations.
+/// </summary>
 public sealed record UpdateProductCommand(
     Guid ProductId,
     string Sku,
@@ -73,7 +83,6 @@ public sealed record UpdateProductCommand(
     decimal? WidthMm,
     decimal? HeightMm,
     int? WarrantyMonth,
-    string? Spec,
-    string? ImageUrl) : IProductDetails;
+    string? Spec) : IProductDetails;
 
 public sealed record ChangeProductStatusCommand(Guid ProductId, string Status);

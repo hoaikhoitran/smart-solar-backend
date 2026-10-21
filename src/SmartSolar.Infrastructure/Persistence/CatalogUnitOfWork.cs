@@ -60,7 +60,10 @@ public sealed class CatalogUnitOfWork : ICatalogUnitOfWork
                 cancellationToken);
 
     public Task<Product?> FindProductForUpdateAsync(Guid productId, CancellationToken cancellationToken)
-        => _db.Products.FirstOrDefaultAsync(p => p.Id == productId && p.DeletedAt == null, cancellationToken);
+        // Images are loaded (read-only for these writes) so the response carries the gallery.
+        => _db.Products
+            .Include(p => p.Images)
+            .FirstOrDefaultAsync(p => p.Id == productId && p.DeletedAt == null, cancellationToken);
 
     public void AddProduct(Product product) => _db.Products.Add(product);
 
@@ -72,7 +75,8 @@ public sealed class CatalogUnitOfWork : ICatalogUnitOfWork
         }
         catch (DbUpdateException ex) when (IsUniqueViolation(ex))
         {
-            // sku is the only unique column besides the generated primary key.
+            // sku is the only unique product column besides the generated primary key;
+            // gallery images inserted with a new product are de-duplicated by validation.
             throw new DuplicateSkuException(ex);
         }
     }

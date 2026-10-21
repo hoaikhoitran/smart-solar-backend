@@ -52,6 +52,15 @@ public static class SimulationErrorCodes
     public const string SourceChanged = "SIMULATION_SOURCE_CHANGED";
     public const string SimulationNotFound = "SIMULATION_NOT_FOUND";
     public const string AccessDenied = "SIMULATION_ACCESS_DENIED";
+
+    /// <summary>The temporary result is no longer cached (TTL elapsed) and is not the stored selection.</summary>
+    public const string SimulationExpired = "SIMULATION_EXPIRED";
+
+    /// <summary>The result cache (Redis) could not be reached; distinct from expiry.</summary>
+    public const string CacheUnavailable = "SIMULATION_CACHE_UNAVAILABLE";
+
+    /// <summary>A concurrent selection for the same pre-survey won; reload and retry.</summary>
+    public const string SelectionConflict = "SIMULATION_SELECTION_CONFLICT";
 }
 
 /// <summary>Warning codes returned with every simulation so the frontend can show limitations.</summary>

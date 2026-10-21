@@ -1,0 +1,494 @@
+commune_code,legacy_commune_code,legacy_commune_name,legacy_district_code,legacy_district_name,legacy_province_code,legacy_province_name,merge_type,source_note
+25747,25741,Phường Hiệp Thành,718,Thành phố Thủ Dầu Một,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25747,25747,Phường Phú Cường,718,Thành phố Thủ Dầu Một,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25747,25753,Phường Phú Thọ,718,Thành phố Thủ Dầu Một,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25747,25756,Phường Chánh Nghĩa,718,Thành phố Thủ Dầu Một,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25747,25774,Phường Chánh Mỹ,718,Thành phố Thủ Dầu Một,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25750,25741,Phường Hiệp Thành,718,Thành phố Thủ Dầu Một,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25750,25744,Phường Phú Lợi,718,Thành phố Thủ Dầu Một,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25750,25750,Phường Phú Hòa,718,Thành phố Thủ Dầu Một,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25760,25760,Phường Hòa Phú,718,Thành phố Thủ Dầu Một,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25760,25762,Phường Phú Mỹ,718,Thành phố Thủ Dầu Một,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25760,25763,Phường Phú Tân,718,Thành phố Thủ Dầu Một,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25760,25924,Phường Phú Chánh,723,Thành phố Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25768,25765,Phường Tân An,718,Thành phố Thủ Dầu Một,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25768,25768,Phường Hiệp An,718,Thành phố Thủ Dầu Một,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25768,25855,Xã Phú An,721,Thành phố Bến Cát,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25771,25759,Phường Định Hòa,718,Thành phố Thủ Dầu Một,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25771,25768,Phường Hiệp An,718,Thành phố Thủ Dầu Một,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25771,25771,Phường Tương Bình Hiệp,718,Thành phố Thủ Dầu Một,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25771,25774,Phường Chánh Mỹ,718,Thành phố Thủ Dầu Một,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25777,25777,Thị trấn Dầu Tiếng,720,Huyện Dầu Tiếng,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25777,25789,Xã Định An,720,Huyện Dầu Tiếng,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25777,25795,Xã Định Thành,720,Huyện Dầu Tiếng,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25777,25798,Xã Định Hiệp,720,Huyện Dầu Tiếng,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25780,25780,Xã Minh Hòa,720,Huyện Dầu Tiếng,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25780,25783,Xã Minh Thạnh,720,Huyện Dầu Tiếng,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25780,25786,Xã Minh Tân,720,Huyện Dầu Tiếng,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25792,25783,Xã Minh Thạnh,720,Huyện Dầu Tiếng,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25792,25786,Xã Minh Tân,720,Huyện Dầu Tiếng,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25792,25792,Xã Long Hòa,720,Huyện Dầu Tiếng,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25792,25804,Xã Long Tân,720,Huyện Dầu Tiếng,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25807,25798,Xã Định Hiệp,720,Huyện Dầu Tiếng,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25807,25801,Xã An Lập,720,Huyện Dầu Tiếng,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25807,25807,Xã Thanh An,720,Huyện Dầu Tiếng,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25807,25810,Xã Thanh Tuyền,720,Huyện Dầu Tiếng,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25813,25813,Phường Mỹ Phước,721,Thành phố Bến Cát,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25813,25825,Xã Tân Hưng,719,Huyện Bàu Bàng,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25813,25834,Xã Lai Hưng,719,Huyện Bàu Bàng,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25819,25816,Xã Trừ Văn Thố,719,Huyện Bàu Bàng,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25819,25819,Xã Cây Trường II,719,Huyện Bàu Bàng,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25819,25822,Thị trấn Lai Uyên,719,Huyện Bàu Bàng,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25822,25822,Thị trấn Lai Uyên,719,Huyện Bàu Bàng,74,Tỉnh Bình Dương,PARTIAL,"Đổi tên, đổi loại hình từ một phần thị trấn Lai Uyên"
+25837,25831,Xã Hưng Hòa,719,Huyện Bàu Bàng,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25837,25837,Phường Chánh Phú Hòa,721,Thành phố Bến Cát,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25840,25813,Phường Mỹ Phước,721,Thành phố Bến Cát,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25840,25828,Xã Long Nguyên,719,Huyện Bàu Bàng,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25840,25840,Phường An Điền,721,Thành phố Bến Cát,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25843,25801,Xã An Lập,720,Huyện Dầu Tiếng,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25843,25810,Xã Thanh Tuyền,720,Huyện Dầu Tiếng,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25843,25843,Phường An Tây,721,Thành phố Bến Cát,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25846,25846,Phường Thới Hòa,721,Thành phố Bến Cát,74,Tỉnh Bình Dương,UNCHANGED,Giữ nguyên
+25849,25849,Phường Hòa Lợi,721,Thành phố Bến Cát,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25849,25852,Phường Tân Định,721,Thành phố Bến Cát,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25858,25858,Thị trấn Phước Vĩnh,722,Huyện Phú Giáo,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25858,25870,Xã An Bình,722,Huyện Phú Giáo,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25858,25876,Xã Tam Lập,722,Huyện Phú Giáo,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25864,25864,Xã Phước Sang,722,Huyện Phú Giáo,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25864,25865,Xã An Thái,722,Huyện Phú Giáo,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25864,25873,Xã Tân Hiệp,722,Huyện Phú Giáo,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25867,25861,Xã An Linh,722,Huyện Phú Giáo,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25867,25867,Xã An Long,722,Huyện Phú Giáo,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25867,25879,Xã Tân Long,722,Huyện Phú Giáo,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25882,25876,Xã Tam Lập,722,Huyện Phú Giáo,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25882,25882,Xã Vĩnh Hòa,722,Huyện Phú Giáo,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25882,25885,Xã Phước Hòa,722,Huyện Phú Giáo,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25888,25888,Phường Uyên Hưng,723,Thành phố Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25888,25903,Xã Tân Lập,726,Huyện Bắc Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25888,25918,Xã Tân Mỹ,726,Huyện Bắc Tân Uyên,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25888,25930,Xã Bạch Đằng,723,Thành phố Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25891,25891,Phường Tân Phước Khánh,723,Thành phố Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25891,25933,Phường Tân Vĩnh Hiệp,723,Thành phố Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25891,25936,Phường Thạnh Phước,723,Thành phố Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25891,25937,Xã Thạnh Hội,723,Thành phố Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25891,25939,Phường Thái Hòa,723,Thành phố Tân Uyên,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25906,25894,Xã Tân Định,726,Huyện Bắc Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25906,25906,Thị trấn Tân Thành,726,Huyện Bắc Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25906,25907,Xã Đất Cuốc,726,Huyện Bắc Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25909,25908,Xã Hiếu Liêm,726,Huyện Bắc Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25909,25909,Xã Lạc An,726,Huyện Bắc Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25909,25918,Xã Tân Mỹ,726,Huyện Bắc Tân Uyên,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25909,25927,Xã Thường Tân,726,Huyện Bắc Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25912,25900,Thị trấn Tân Bình,726,Huyện Bắc Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25912,25912,Phường Vĩnh Tân,723,Thành phố Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25915,25897,Xã Bình Mỹ,726,Huyện Bắc Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25915,25915,Phường Hội Nghĩa,723,Thành phố Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25920,25920,Phường Tân Hiệp,723,Thành phố Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25920,25921,Phường Khánh Bình,723,Thành phố Tân Uyên,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25942,25942,Phường Dĩ An,724,Thành phố Dĩ An,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25942,25948,Phường Tân Đông Hiệp,724,Thành phố Dĩ An,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25942,25960,Phường An Bình,724,Thành phố Dĩ An,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25945,25939,Phường Thái Hòa,723,Thành phố Tân Uyên,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25945,25945,Phường Tân Bình,724,Thành phố Dĩ An,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25945,25948,Phường Tân Đông Hiệp,724,Thành phố Dĩ An,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25951,25951,Phường Bình An,724,Thành phố Dĩ An,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25951,25954,Phường Bình Thắng,724,Thành phố Dĩ An,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25951,25957,Phường Đông Hòa,724,Thành phố Dĩ An,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25966,25966,Phường Lái Thiêu,725,Thành phố Thuận An,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25966,25984,Phường Bình Nhâm,725,Thành phố Thuận An,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25966,25990,Phường Vĩnh Phú,725,Thành phố Thuận An,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25969,25969,Phường Bình Chuẩn,725,Thành phố Thuận An,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25969,25972,Phường Thuận Giao,725,Thành phố Thuận An,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25975,25969,Phường Bình Chuẩn,725,Thành phố Thuận An,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+25975,25975,Phường An Phú,725,Thành phố Thuận An,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25978,25963,Phường An Thạnh,725,Thành phố Thuận An,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25978,25978,Phường Hưng Định,725,Thành phố Thuận An,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25978,25981,Xã An Sơn,725,Thành phố Thuận An,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25987,25987,Phường Bình Hòa,725,Thành phố Thuận An,74,Tỉnh Bình Dương,WHOLE,Nhập toàn bộ
+25987,25990,Phường Vĩnh Phú,725,Thành phố Thuận An,74,Tỉnh Bình Dương,PARTIAL,Nhập một phần
+26506,26506,Phường 1,747,Thành phố Vũng Tàu,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26506,26508,Phường Thắng Tam,747,Thành phố Vũng Tàu,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26506,26509,Phường 2,747,Thành phố Vũng Tàu,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26506,26512,Phường 3,747,Thành phố Vũng Tàu,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26506,26515,Phường 4,747,Thành phố Vũng Tàu,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26506,26518,Phường 5,747,Thành phố Vũng Tàu,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26506,26521,Phường Thắng Nhì,747,Thành phố Vũng Tàu,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26526,26524,Phường 7,747,Thành phố Vũng Tàu,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26526,26526,Phường Nguyễn An Ninh,747,Thành phố Vũng Tàu,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26526,26527,Phường 8,747,Thành phố Vũng Tàu,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26526,26530,Phường 9,747,Thành phố Vũng Tàu,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26536,26533,Phường Thắng Nhất,747,Thành phố Vũng Tàu,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26536,26535,Phường Rạch Dừa,747,Thành phố Vũng Tàu,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26536,26536,Phường 10,747,Thành phố Vũng Tàu,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26542,26539,Phường 11,747,Thành phố Vũng Tàu,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26542,26542,Phường 12,747,Thành phố Vũng Tàu,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26545,26545,Xã Long Sơn,747,Thành phố Vũng Tàu,77,Tỉnh Bà Rịa - Vũng Tàu,UNCHANGED,Giữ nguyên
+26560,26548,Phường Phước Hưng,748,Thành phố Bà Rịa,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26560,26554,Phường Phước Nguyên,748,Thành phố Bà Rịa,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26560,26557,Phường Long Toàn,748,Thành phố Bà Rịa,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26560,26560,Phường Phước Trung,748,Thành phố Bà Rịa,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26566,26563,Phường Long Hương,748,Thành phố Bà Rịa,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26566,26566,Phường Kim Dinh,748,Thành phố Bà Rịa,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26566,26567,Xã Tân Hưng,748,Thành phố Bà Rịa,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26572,26558,Phường Long Tâm,748,Thành phố Bà Rịa,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26572,26569,Xã Long Phước,748,Thành phố Bà Rịa,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26572,26572,Xã Hòa Long,748,Thành phố Bà Rịa,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26575,26575,Thị trấn Ngãi Giao,750,Huyện Châu Đức,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26575,26578,Xã Bình Ba,750,Huyện Châu Đức,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26575,26581,Xã Suối Nghệ,750,Huyện Châu Đức,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26584,26584,Xã Xuân Sơn,750,Huyện Châu Đức,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26584,26587,Xã Sơn Bình,750,Huyện Châu Đức,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26584,26611,Xã Suối Rao,750,Huyện Châu Đức,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26590,26590,Xã Bình Giã,750,Huyện Châu Đức,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26590,26593,Xã Bình Trung,750,Huyện Châu Đức,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26590,26605,Xã Quảng Thành,750,Huyện Châu Đức,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26596,26596,Xã Xà Bang,750,Huyện Châu Đức,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26596,26599,Xã Cù Bị,750,Huyện Châu Đức,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26608,26574,Xã Bàu Chinh,750,Huyện Châu Đức,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26608,26602,Xã Láng Lớn,750,Huyện Châu Đức,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26608,26608,Thị trấn Kim Long,750,Huyện Châu Đức,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26617,26614,Xã Đá Bạc,750,Huyện Châu Đức,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26617,26617,Xã Nghĩa Thành,750,Huyện Châu Đức,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26620,26620,Thị trấn Phước Bửu,751,Huyện Xuyên Mộc,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26620,26623,Xã Phước Thuận,751,Huyện Xuyên Mộc,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26620,26626,Xã Phước Tân,751,Huyện Xuyên Mộc,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26632,26629,Xã Xuyên Mộc,751,Huyện Xuyên Mộc,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26632,26632,Xã Bông Trang,751,Huyện Xuyên Mộc,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26632,26653,Xã Bưng Riềng,751,Huyện Xuyên Mộc,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26638,26635,Xã Tân Lâm,751,Huyện Xuyên Mộc,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26638,26638,Xã Bàu Lâm,751,Huyện Xuyên Mộc,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26641,26641,Xã Hòa Bình,751,Huyện Xuyên Mộc,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26641,26644,Xã Hòa Hưng,751,Huyện Xuyên Mộc,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26641,26650,Xã Hòa Hội,751,Huyện Xuyên Mộc,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26647,26647,Xã Hòa Hiệp,751,Huyện Xuyên Mộc,77,Tỉnh Bà Rịa - Vũng Tàu,UNCHANGED,Giữ nguyên
+26656,26656,Xã Bình Châu,751,Huyện Xuyên Mộc,77,Tỉnh Bà Rịa - Vũng Tàu,UNCHANGED,Giữ nguyên
+26659,26659,Thị trấn Long Điền,753,Huyện Long Đất,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26659,26668,Xã Tam An,753,Huyện Long Đất,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26662,26662,Thị trấn Long Hải,753,Huyện Long Đất,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26662,26674,Xã Phước Tỉnh,753,Huyện Long Đất,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26662,26677,Xã Phước Hưng,753,Huyện Long Đất,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26680,26680,Thị trấn Đất Đỏ,753,Huyện Long Đất,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26680,26683,Xã Phước Long Thọ,753,Huyện Long Đất,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26680,26695,Xã Long Tân,753,Huyện Long Đất,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26680,26698,Xã Láng Dài,753,Huyện Long Đất,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26686,26686,Xã Phước Hội,753,Huyện Long Đất,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26686,26689,Thị trấn Phước Hải,753,Huyện Long Đất,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26704,26704,Phường Phú Mỹ,754,Thành phố Phú Mỹ,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26704,26719,Phường Mỹ Xuân,754,Thành phố Phú Mỹ,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26710,26707,Phường Tân Hòa,754,Thành phố Phú Mỹ,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26710,26710,Phường Tân Hải,754,Thành phố Phú Mỹ,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26713,26713,Phường Phước Hòa,754,Thành phố Phú Mỹ,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26713,26716,Phường Tân Phước,754,Thành phố Phú Mỹ,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26725,26722,Xã Sông Xoài,754,Thành phố Phú Mỹ,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26725,26725,Phường Hắc Dịch,754,Thành phố Phú Mỹ,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26728,26728,Xã Châu Pha,754,Thành phố Phú Mỹ,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26728,26731,Xã Tóc Tiên,754,Thành phố Phú Mỹ,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Nhập toàn bộ
+26732,,,755,Huyện Côn Đảo,77,Tỉnh Bà Rịa - Vũng Tàu,WHOLE,Sắp xếp toàn bộ huyện Côn Đảo thành đặc khu Côn Đảo
+26737,26734,Phường Tân Định,760,Quận 1,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26737,26737,Phường Đa Kao,760,Quận 1,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+26740,26737,Phường Đa Kao,760,Quận 1,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+26740,26740,Phường Bến Nghé,760,Quận 1,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26740,26746,Phường Nguyễn Thái Bình,760,Quận 1,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+26743,26743,Phường Bến Thành,760,Quận 1,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26743,26746,Phường Nguyễn Thái Bình,760,Quận 1,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+26743,26749,Phường Phạm Ngũ Lão,760,Quận 1,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26743,26752,Phường Cầu Ông Lãnh,760,Quận 1,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+26758,26752,Phường Cầu Ông Lãnh,760,Quận 1,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+26758,26755,Phường Cô Giang,760,Quận 1,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26758,26758,Phường Nguyễn Cư Trinh,760,Quận 1,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26758,26761,Phường Cầu Kho,760,Quận 1,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26767,26767,Phường Thạnh Lộc,761,Quận 12,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26767,26779,Phường An Phú Đông,761,Quận 12,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26773,26764,Phường Thạnh Xuân,761,Quận 12,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26773,26773,Phường Thới An,761,Quận 12,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26782,26770,Phường Hiệp Thành,761,Quận 12,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26782,26782,Phường Tân Thới Hiệp,761,Quận 12,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26785,26776,Phường Tân Chánh Hiệp,761,Quận 12,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26785,26785,Phường Trung Mỹ Tây,761,Quận 12,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26791,26787,Phường Tân Hưng Thuận,761,Quận 12,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26791,26788,Phường Đông Hưng Thuận,761,Quận 12,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26791,26791,Phường Tân Thới Nhất,761,Quận 12,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26800,26794,Phường Linh Xuân,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26800,26800,Phường Linh Trung,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26800,26818,Phường Linh Tây,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+26803,26797,Phường Bình Chiểu,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26803,26803,Phường Tam Bình,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26803,26806,Phường Tam Phú,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26809,26809,Phường Hiệp Bình Phước,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26809,26812,Phường Hiệp Bình Chánh,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26809,26821,Phường Linh Đông,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+26824,26815,Phường Linh Chiểu,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26824,26818,Phường Linh Tây,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+26824,26821,Phường Linh Đông,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+26824,26824,Phường Bình Thọ,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26824,26827,Phường Trường Thọ,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26833,26830,Phường Long Bình,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26833,26833,Phường Long Thạnh Mỹ,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,PARTIAL,"Nhập một phần diện tích, toàn bộ dân số"
+26842,26833,Phường Long Thạnh Mỹ,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần diện tích
+26842,26836,Phường Tân Phú,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26842,26839,Phường Hiệp Phú,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26842,26842,Phường Tăng Nhơn Phú A,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26842,26845,Phường Tăng Nhơn Phú B,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26848,26848,Phường Phước Long B,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26848,26851,Phường Phước Long A,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26848,26863,Phường Phước Bình,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26857,26854,Phường Trường Thạnh,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26857,26857,Phường Long Phước,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26860,26860,Phường Long Trường,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26860,26866,Phường Phú Hữu,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26876,26876,Phường 6,764,Quận Gò Vấp,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26876,26887,Phường 5,764,Quận Gò Vấp,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26878,26872,Phường 15,764,Quận Gò Vấp,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26878,26878,Phường 16,764,Quận Gò Vấp,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26882,26881,Phường 12,764,Quận Gò Vấp,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26882,26882,Phường 14,764,Quận Gò Vấp,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26884,26875,Phường 17,764,Quận Gò Vấp,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26884,26884,Phường 10,764,Quận Gò Vấp,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26890,26890,Phường 1,764,Quận Gò Vấp,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26890,26902,Phường 3,764,Quận Gò Vấp,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26898,26898,Phường 8,764,Quận Gò Vấp,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26898,26899,Phường 11,764,Quận Gò Vấp,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26905,26905,Phường 13,765,Quận Bình Thạnh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26905,26908,Phường 11,765,Quận Bình Thạnh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26905,26923,Phường 5,765,Quận Bình Thạnh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26911,26911,Phường 27,765,Quận Bình Thạnh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26911,26962,Phường 28,765,Quận Bình Thạnh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26929,26914,Phường 26,765,Quận Bình Thạnh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26929,26917,Phường 12,765,Quận Bình Thạnh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26929,26929,Phường 14,765,Quận Bình Thạnh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26944,26926,Phường 7,765,Quận Bình Thạnh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26944,26941,Phường 2,765,Quận Bình Thạnh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26944,26944,Phường 1,765,Quận Bình Thạnh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26944,26950,Phường 17,765,Quận Bình Thạnh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26956,26920,Phường 25,765,Quận Bình Thạnh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26956,26953,Phường 19,765,Quận Bình Thạnh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26956,26956,Phường 22,765,Quận Bình Thạnh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26968,26968,Phường 4,766,Quận Tân Bình,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26968,26986,Phường 7,766,Quận Tân Bình,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26968,26989,Phường 5,766,Quận Tân Bình,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26977,26965,Phường 2,766,Quận Tân Bình,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26977,26977,Phường 1,766,Quận Tân Bình,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26977,26980,Phường 3,766,Quận Tân Bình,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26983,26971,Phường 12,766,Quận Tân Bình,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26983,26983,Phường 11,766,Quận Tân Bình,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26983,26992,Phường 10,766,Quận Tân Bình,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26995,26995,Phường 6,766,Quận Tân Bình,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26995,26998,Phường 8,766,Quận Tân Bình,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+26995,27001,Phường 9,766,Quận Tân Bình,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27004,26974,Phường 13,766,Quận Tân Bình,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27004,27004,Phường 14,766,Quận Tân Bình,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27004,27007,Phường 15,766,Quận Tân Bình,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27007,27007,Phường 15,766,Quận Tân Bình,79,Thành phố Hồ Chí Minh,PARTIAL,Đổi tên từ một phần Phường 15
+27013,27013,Phường Tây Thạnh,767,Quận Tân Phú,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27013,27016,Phường Sơn Kỳ,767,Quận Tân Phú,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27019,27010,Phường Tân Sơn Nhì,767,Quận Tân Phú,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27019,27016,Phường Sơn Kỳ,767,Quận Tân Phú,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27019,27019,Phường Tân Quý,767,Quận Tân Phú,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27019,27022,Phường Tân Thành,767,Quận Tân Phú,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27022,27019,Phường Tân Quý,767,Quận Tân Phú,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27022,27022,Phường Tân Thành,767,Quận Tân Phú,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27022,27025,Phường Phú Thọ Hòa,767,Quận Tân Phú,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27028,27028,Phường Phú Thạnh,767,Quận Tân Phú,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27028,27037,Phường Hiệp Tân,767,Quận Tân Phú,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27028,27040,Phường Tân Thới Hòa,767,Quận Tân Phú,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27031,27022,Phường Tân Thành,767,Quận Tân Phú,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27031,27031,Phường Phú Trung,767,Quận Tân Phú,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27031,27034,Phường Hòa Thạnh,767,Quận Tân Phú,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27031,27040,Phường Tân Thới Hòa,767,Quận Tân Phú,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27043,27043,Phường 4,768,Quận Phú Nhuận,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27043,27046,Phường 5,768,Quận Phú Nhuận,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27043,27049,Phường 9,768,Quận Phú Nhuận,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27058,27052,Phường 7,768,Quận Phú Nhuận,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27058,27058,Phường 1,768,Quận Phú Nhuận,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27058,27061,Phường 2,768,Quận Phú Nhuận,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27058,27076,Phường 15,768,Quận Phú Nhuận,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27073,27064,Phường 8,768,Quận Phú Nhuận,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27073,27070,Phường 10,768,Quận Phú Nhuận,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27073,27073,Phường 11,768,Quận Phú Nhuận,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27073,27076,Phường 15,768,Quận Phú Nhuận,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27073,27085,Phường 13,768,Quận Phú Nhuận,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27094,27088,Phường Thảo Điền,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27094,27091,Phường An Phú,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27094,27094,Phường An Khánh,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27094,27115,Phường An Lợi Đông,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27094,27118,Phường Thủ Thiêm,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27097,27091,Phường An Phú,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27097,27097,Phường Bình Trưng Đông,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27097,27100,Phường Bình Trưng Tây,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27112,27109,Phường Cát Lái,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27112,27112,Phường Thạnh Mỹ Lợi,769,Thành phố Thủ Đức,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27139,27139,Phường Võ Thị Sáu,770,Quận 3,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27139,27148,Phường 4,770,Quận 3,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27142,27127,Phường 14,770,Quận 3,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27142,27130,Phường 12,770,Quận 3,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27142,27133,Phường 11,770,Quận 3,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27142,27142,Phường 9,770,Quận 3,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27154,27148,Phường 4,770,Quận 3,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27154,27151,Phường 5,770,Quận 3,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27154,27154,Phường 3,770,Quận 3,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27154,27157,Phường 2,770,Quận 3,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27154,27160,Phường 1,770,Quận 3,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27163,27163,Phường 15,771,Quận 10,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27163,27166,Phường 13,771,Quận 10,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27163,27169,Phường 14,771,Quận 10,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27163,27172,Phường 12,771,Quận 10,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27169,27169,Phường 14,771,Quận 10,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27169,27187,Phường 8,771,Quận 10,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27169,27202,Phường 6,771,Quận 10,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27190,27178,Phường 10,771,Quận 10,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27190,27181,Phường 9,771,Quận 10,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27190,27184,Phường 1,771,Quận 10,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27190,27190,Phường 2,771,Quận 10,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27190,27193,Phường 4,771,Quận 10,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27211,27211,Phường 5,772,Quận 11,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27211,27214,Phường 14,772,Quận 11,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27226,27208,Phường 15,772,Quận 11,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27226,27226,Phường 11,772,Quận 11,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27226,27229,Phường 8,772,Quận 11,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27232,27220,Phường 3,772,Quận 11,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27232,27229,Phường 8,772,Quận 11,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27232,27232,Phường 10,772,Quận 11,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27238,27238,Phường 7,772,Quận 11,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27238,27247,Phường 1,772,Quận 11,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27238,27253,Phường 16,772,Quận 11,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27259,27259,Phường 13,773,Quận 4,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27259,27277,Phường 18,773,Quận 4,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27259,27289,Phường 16,773,Quận 4,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27259,27295,Phường 15,773,Quận 4,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27265,27265,Phường 9,773,Quận 4,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27265,27271,Phường 8,773,Quận 4,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27265,27283,Phường 4,773,Quận 4,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27265,27292,Phường 2,773,Quận 4,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27265,27295,Phường 15,773,Quận 4,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27286,27283,Phường 4,773,Quận 4,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27286,27286,Phường 3,773,Quận 4,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27286,27292,Phường 2,773,Quận 4,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27286,27298,Phường 1,773,Quận 4,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27301,27301,Phường 4,774,Quận 5,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27301,27307,Phường 2,774,Quận 5,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27301,27325,Phường 1,774,Quận 5,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27316,27304,Phường 9,774,Quận 5,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27316,27316,Phường 7,774,Quận 5,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27316,27334,Phường 5,774,Quận 5,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27343,27310,Phường 12,774,Quận 5,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27343,27328,Phường 11,774,Quận 5,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27343,27331,Phường 14,774,Quận 5,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27343,27343,Phường 13,774,Quận 5,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27349,27346,Phường 14,775,Quận 6,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27349,27349,Phường 13,775,Quận 6,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27349,27358,Phường 12,775,Quận 6,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27364,27364,Phường 11,775,Quận 6,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27364,27385,Phường 10,775,Quận 6,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27364,27430,Phường 16,776,Quận 8,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27367,27352,Phường 9,775,Quận 6,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27367,27367,Phường 2,775,Quận 6,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27373,27373,Phường 1,775,Quận 6,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27373,27376,Phường 8,775,Quận 6,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27373,27382,Phường 7,775,Quận 6,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27418,27397,Phường Rạch Ông,776,Quận 8,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27418,27403,Phường Hưng Phú,776,Quận 8,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27418,27409,Phường 4,776,Quận 8,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27418,27418,Phường 5,776,Quận 8,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27424,27418,Phường 5,776,Quận 8,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27424,27424,Phường 6,776,Quận 8,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27424,27433,Phường 7,776,Quận 8,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27424,27625,Xã An Phú Tây,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27427,27415,Phường Xóm Củi,776,Quận 8,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27427,27421,Phường 14,776,Quận 8,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27427,27427,Phường 15,776,Quận 8,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27427,27430,Phường 16,776,Quận 8,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27439,27016,Phường Sơn Kỳ,767,Quận Tân Phú,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần diện tích
+27439,27436,Phường Bình Hưng Hòa,777,Quận Bình Tân,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27439,27439,Phường Bình Hưng Hòa A,777,Quận Bình Tân,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27442,27442,Phường Bình Hưng Hòa B,777,Quận Bình Tân,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27442,27448,Phường Bình Trị Đông A,777,Quận Bình Tân,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27442,27454,Phường Tân Tạo,777,Quận Bình Tân,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27448,27439,Phường Bình Hưng Hòa A,777,Quận Bình Tân,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27448,27445,Phường Bình Trị Đông,777,Quận Bình Tân,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27448,27448,Phường Bình Trị Đông A,777,Quận Bình Tân,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27457,27454,Phường Tân Tạo,777,Quận Bình Tân,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27457,27457,Phường Tân Tạo A,777,Quận Bình Tân,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27457,27616,Xã Tân Kiên,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27460,27451,Phường Bình Trị Đông B,777,Quận Bình Tân,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27460,27460,Phường An Lạc,777,Quận Bình Tân,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27460,27463,Phường An Lạc A,777,Quận Bình Tân,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27475,27472,Phường Tân Kiểng,778,Quận 7,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27475,27475,Phường Tân Hưng,778,Quận 7,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27475,27481,Phường Tân Quy,778,Quận 7,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27475,27490,Phường Tân Phong,778,Quận 7,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27478,27466,Phường Tân Thuận Đông,778,Quận 7,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27478,27469,Phường Tân Thuận Tây,778,Quận 7,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27478,27478,Phường Bình Thuận,778,Quận 7,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27484,27484,Phường Phú Thuận,778,Quận 7,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27484,27493,Phường Phú Mỹ,778,Quận 7,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27487,27487,Phường Tân Phú,778,Quận 7,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27487,27493,Phường Phú Mỹ,778,Quận 7,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27496,27496,Thị trấn Củ Chi,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27496,27529,Xã Phước Hiệp,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27496,27532,Xã Tân An Hội,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27508,27499,Xã Phú Mỹ Hưng,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27508,27502,Xã An Phú,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27508,27508,Xã An Nhơn Tây,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27511,27511,Xã Nhuận Đức,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27511,27514,Xã Phạm Văn Cội,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27511,27520,Xã Trung Lập Hạ,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27526,27505,Xã Trung Lập Thượng,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27526,27526,Xã Phước Thạnh,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27526,27538,Xã Thái Mỹ,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27541,27517,Xã Phú Hòa Đông,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27541,27541,Xã Tân Thạnh Tây,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27541,27547,Xã Tân Thạnh Đông,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27544,27523,Xã Trung An,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27544,27544,Xã Hòa Phú,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27544,27550,Xã Bình Mỹ,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27553,27535,Xã Phước Vĩnh An,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27553,27553,Xã Tân Phú Trung,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27553,27556,Xã Tân Thông Hội,783,Huyện Củ Chi,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27559,27559,Thị trấn Hóc Môn,784,Huyện Hóc Môn,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27559,27562,Xã Tân Hiệp,784,Huyện Hóc Môn,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27559,27580,Xã Tân Xuân,784,Huyện Hóc Môn,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27568,27565,Xã Nhị Bình,784,Huyện Hóc Môn,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27568,27568,Xã Đông Thạnh,784,Huyện Hóc Môn,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27568,27574,Xã Thới Tam Thôn,784,Huyện Hóc Môn,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27577,27571,Xã Tân Thới Nhì,784,Huyện Hóc Môn,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27577,27577,Xã Xuân Thới Sơn,784,Huyện Hóc Môn,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27577,27583,Xã Xuân Thới Đông,784,Huyện Hóc Môn,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27592,27586,Xã Trung Chánh,784,Huyện Hóc Môn,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27592,27589,Xã Xuân Thới Thượng,784,Huyện Hóc Môn,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27592,27592,Xã Bà Điểm,784,Huyện Hóc Môn,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27595,27430,Phường 16,776,Quận 8,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27595,27457,Phường Tân Tạo A,777,Quận Bình Tân,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27595,27595,Thị trấn Tân Túc,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27595,27613,Xã Tân Nhựt,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27595,27616,Xã Tân Kiên,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27601,27598,Xã Phạm Văn Hai,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27601,27601,Xã Vĩnh Lộc A,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27604,27454,Phường Tân Tạo,777,Quận Bình Tân,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27604,27598,Xã Phạm Văn Hai,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27604,27604,Xã Vĩnh Lộc B,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27610,27607,Xã Bình Lợi,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27610,27610,Xã Lê Minh Xuân,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27619,27433,Phường 7,776,Quận 8,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27619,27619,Xã Bình Hưng,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27619,27622,Xã Phong Phú,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27628,27628,Xã Hưng Long,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27628,27631,Xã Đa Phước,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27628,27640,Xã Qui Đức,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27637,27625,Xã An Phú Tây,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27637,27634,Xã Tân Quý Tây,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27637,27637,Xã Bình Chánh,785,Huyện Bình Chánh,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27655,27643,Thị trấn Nhà Bè,786,Huyện Nhà Bè,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27655,27646,Xã Phước Kiển,786,Huyện Nhà Bè,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27655,27649,Xã Phước Lộc,786,Huyện Nhà Bè,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27655,27655,Xã Phú Xuân,786,Huyện Nhà Bè,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27658,27652,Xã Nhơn Đức,786,Huyện Nhà Bè,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27658,27658,Xã Long Thới,786,Huyện Nhà Bè,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27658,27661,Xã Hiệp Phước,786,Huyện Nhà Bè,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27664,27664,Thị trấn Cần Thạnh,787,Huyện Cần Giờ,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27664,27679,Xã Long Hòa,787,Huyện Cần Giờ,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27667,27667,Xã Bình Khánh,787,Huyện Cần Giờ,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27667,27670,Xã Tam Thôn Hiệp,787,Huyện Cần Giờ,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27667,27673,Xã An Thới Đông,787,Huyện Cần Giờ,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27673,27673,Xã An Thới Đông,787,Huyện Cần Giờ,79,Thành phố Hồ Chí Minh,PARTIAL,Nhập một phần
+27673,27682,Xã Lý Nhơn,787,Huyện Cần Giờ,79,Thành phố Hồ Chí Minh,WHOLE,Nhập toàn bộ
+27676,27676,Xã Thạnh An,787,Huyện Cần Giờ,79,Thành phố Hồ Chí Minh,UNCHANGED,Giữ nguyên

@@ -8,7 +8,7 @@ using SmartSolar.Modules.Identity.Constants;
 
 namespace SmartSolar.Api.Extensions;
 
-public static class RateLimitingExtensions
+public static partial class RateLimitingExtensions
 {
     public const string RegisterPolicy = "auth-register";
     public const string VerifyEmailPolicy = "auth-verify-email";
@@ -105,8 +105,8 @@ public static class RateLimitingExtensions
     }
 
     /// <summary>
-    /// Per-user limits for scheduling endpoints that may call the routing provider (slot listing,
-    /// technician availability, booking changes). Protects the Vietmap quota.
+    /// Per-user limits for scheduling endpoints that evaluate technician eligibility (slot listing,
+    /// availability, open jobs) and for booking / acceptance changes.
     /// </summary>
     public static IServiceCollection AddSchedulingRateLimiting(this IServiceCollection services, IConfiguration configuration)
     {

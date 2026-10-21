@@ -20,3 +20,6 @@ public sealed record CreateSimulationRequest(
     decimal? PanelAzimuthDegree,
     InstallationSpacingRequest? Installation,
     decimal? SystemLossPercent);
+
+/// <summary>expectedGeometryVersion is the surface version the customer is looking at (from GET .../surface).</summary>
+public sealed record SelectSimulationRequest(int? ExpectedGeometryVersion);
