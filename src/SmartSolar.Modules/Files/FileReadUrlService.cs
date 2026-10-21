@@ -7,6 +7,13 @@ namespace SmartSolar.Modules.Files;
 /// <summary>A presigned read URL handed to an authorized caller. No bucket, key, version id or credential is exposed besides the URL itself.</summary>
 public sealed record FileReadUrl(string Url, DateTimeOffset ExpiresAt, StorageUrlDisposition Disposition, string ContentType, string FileName);
 
+/// <summary>A read URL for one attached file (survey attachment, after-sales evidence), identified by its attachment id.</summary>
+public sealed record AttachedFileUrlView(Guid Id, string Url, DateTimeOffset ExpiresAt, string Disposition, string ContentType, string FileName)
+{
+    public static AttachedFileUrlView From(Guid id, FileReadUrl url)
+        => new(id, url.Url, url.ExpiresAt, url.Disposition == StorageUrlDisposition.Attachment ? "attachment" : "inline", url.ContentType, url.FileName);
+}
+
 /// <summary>
 /// Issues short-lived presigned GET URLs for stored files AFTER the calling module has authorized the caller for the
 /// file. The location always comes from the <see cref="StoredFile"/> row (never from the client); only VERIFIED files of

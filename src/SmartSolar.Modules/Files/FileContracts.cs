@@ -88,6 +88,19 @@ public interface IStorageUrlSigner
     Task<StorageUrlResult> CreateReadUrlAsync(StorageObjectLocation location, StorageUrlRequest request, CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// Issues presigned PUT URLs so the frontend uploads bytes straight to storage. The location (allowed bucket, a key the backend
+/// generated) never comes from the client. The URL is a bearer credential: never log it, never persist it.
+/// </summary>
+public interface IStorageUploadUrlSigner
+{
+    /// <summary>False when no provider is configured: every request answers <see cref="StorageUrlStatus.NotConfigured"/>.</summary>
+    bool IsConfigured { get; }
+
+    /// <summary>The upload must send exactly <paramref name="contentType"/> as its Content-Type header (it is part of the signature).</summary>
+    Task<StorageUrlResult> CreateUploadUrlAsync(StorageObjectLocation location, string contentType, TimeSpan timeToLive, CancellationToken cancellationToken);
+}
+
 public interface IFileStore
 {
     Task<StoredFile?> FindAsync(Guid fileId, CancellationToken cancellationToken);

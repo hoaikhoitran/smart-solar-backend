@@ -179,6 +179,49 @@ public class CatalogEndpointsTests
         Assert.Equal(1134m, body.GetProperty("data").GetProperty("widthMm").GetDecimal());
     }
 
+    private static object InverterBody(string sku, object spec) => new
+    {
+        sku,
+        productType = "INVERTER",
+        category = "INVERTER",
+        name = "Hybrid inverter 5 kW",
+        brand = "Huawei",
+        model = "SUN2000-5K",
+        unit = "PCS",
+        unitPrice = 15_000_000m,
+        currency = "VND",
+        warrantyMonth = 120,
+        spec
+    };
+
+    [Fact]
+    public async Task Admins_create_inverters_that_sales_can_find_and_invalid_inverter_specs_are_rejected()
+    {
+        // Arrange
+        using var factory = new AuthApiFactory();
+        var admin = ClientFor(factory, RoleCodes.Admin);
+        var spec = new { ratedAcPowerW = 5000, maxDcInputPowerW = 7500, maxDcVoltageV = 600, mpptCount = 2, efficiencyPercent = 97.5, phase = "SINGLE_PHASE" };
+
+        // Act
+        var created = await admin.PostAsJsonAsync("/api/admin/products", InverterBody("INV-5K", spec));
+        var invalid = await admin.PostAsJsonAsync("/api/admin/products", InverterBody("INV-BAD", new { ratedAcPowerW = -5000, phase = "TWO_PHASE" }));
+        var list = await ClientFor(factory, RoleCodes.Sales).GetAsync("/api/products?productType=INVERTER");
+
+        // Assert
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var data = (await BodyOf(created)).GetProperty("data");
+        Assert.Equal("INVERTER", data.GetProperty("productType").GetString());
+        Assert.Equal(5000, data.GetProperty("spec").GetProperty("ratedAcPowerW").GetInt32());
+
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+        var invalidBody = await BodyOf(invalid);
+        AssertFailure(invalidBody, AuthErrorCodes.ValidationFailed);
+        Assert.True(invalidBody.GetProperty("error").GetProperty("details").TryGetProperty("Spec", out _));
+
+        var items = (await BodyOf(list)).GetProperty("data").GetProperty("items");
+        Assert.Equal("INV-5K", Assert.Single(items.EnumerateArray()).GetProperty("sku").GetString());
+    }
+
     [Fact]
     public async Task An_unknown_product_returns_not_found_in_the_envelope()
     {

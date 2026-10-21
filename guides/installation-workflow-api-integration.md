@@ -13,20 +13,24 @@ Mutations of versioned aggregates send the last seen `revision`; a stale value �
 
 ## Files
 
-The FE uploads to S3 itself (pre-signed upload is outside this API), then registers the reference.
+The FE asks the backend for a presigned PUT URL (`POST /api/files/presigned-upload`), uploads the bytes straight to S3,
+then registers the object key. Step-by-step guide with `fetch` examples, S3 CORS and errors:
+[file-upload-api-integration.md](file-upload-api-integration.md).
 
 | Purpose | Key prefix | Types | Max | SHA-256 verified |
 |---|---|---|---|---|
-| `ONSITE_SURVEY_EVIDENCE` | `onsite-surveys/{userId}/` | jpeg, png, webp, pdf | 15 MB | no |
+| `ONSITE_SURVEY_EVIDENCE` | `onsite-surveys/{userId}/` | jpeg, png, webp, pdf | 15 MB | yes |
 | `QUOTATION_DOCUMENT` | `quotations/{userId}/` | pdf | 20 MB | yes |
 | `CONTRACT_DOCUMENT` | `contracts/official/{userId}/` | pdf | 20 MB | yes |
 | `SIGNED_CONTRACT` | `contracts/signed/{userId}/` | pdf | 20 MB | yes |
-| `INSTALLATION_EVIDENCE` | `installations/{userId}/` | jpeg, png, webp | 15 MB | no |
+| `INSTALLATION_EVIDENCE` | `installations/{userId}/` | jpeg, png, webp | 15 MB | yes |
 | `KNOWLEDGE_DOCUMENT` | `knowledge/{userId}/` | pdf, docx, txt, md | 50 MB | yes |
 | `PROJECT_DOCUMENT` | `project-documents/{userId}/` | pdf, jpeg, png | 20 MB | yes |
+| `SERVICE_EVIDENCE` | `after-sales/{userId}/` | jpeg, png, webp | 15 MB | yes |
 
 | Method | Path | Body / notes |
 |---|---|---|
+| POST | `/api/files/presigned-upload` | `{ purpose, fileName, contentType, sizeBytes }` → 200 `{ uploadUrl, method: "PUT", bucket, objectKey, headers, expiresAt }` (role must upload that purpose) |
 | POST | `/api/files` | `{ purpose, bucket?, objectKey, fileName, contentType, sizeBytes, checksumSha256? }` → 201 `{ fileId, status: VERIFIED \| PENDING_VERIFICATION \| REJECTED, … }` |
 | POST | `/api/files/{fileId}/verify` | retry verification of a pending file |
 | GET | `/api/files/{fileId}` | owner or staff |

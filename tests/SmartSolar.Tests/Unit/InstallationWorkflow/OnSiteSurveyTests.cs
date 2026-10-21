@@ -1,4 +1,6 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using SmartSolar.Infrastructure.Persistence;
 using SmartSolar.Modules.Common.Results;
 using SmartSolar.Modules.Files;
 using SmartSolar.Modules.OnSiteSurveys;
@@ -292,5 +294,38 @@ public sealed class OnSiteSurveyTests
         Assert.Null(appointment.CompletedAt);
         Assert.Equal(OnSiteSurveyStatuses.InProgress, (await ctx.Db.OnSiteSurveyReports.AsNoTracking().SingleAsync()).Status);
         Assert.Equal(SurveyRequestStatus.Scheduled, (await ctx.Db.SurveyRequests.AsNoTracking().SingleAsync(r => r.Id == s.Request.Request.Id)).Status);
+    }
+
+    [Fact]
+    public async Task Attachment_photos_are_viewable_only_by_the_appointment_technician_and_the_request_staff()
+    {
+        // Arrange: a completed survey with one verified roof photo.
+        var ctx = InstallationWorkflowTestContext.Create();
+        await using var _ = ctx;
+        var s = await ctx.ConfirmedSurveyAsync();
+        var attachmentId = Assert.Single((await CompleteAsync(ctx, s)).Attachments).AttachmentId;
+        var readUrls = new FileReadUrlService(new FakeStorageUrlSigner(ctx.Clock), ctx.Storage, ctx.StorageOptions, ctx.Clock, NullLogger<FileReadUrlService>.Instance);
+        var urls = new OnSiteSurveyAttachmentUrlHandlers(ctx.OnSite(), new FileStore(ctx.Db), readUrls);
+        var stranger = await ctx.Scheduling.SeedTechnicianAsync("Stranger", District7);
+        var otherSales = await ctx.Scheduling.Inner.SeedSalesUserAsync();
+        var requestId = s.Request.Request.Id;
+
+        // Act
+        var technician = await urls.ForTechnicianAsync(s.Technician.Id, s.AppointmentId, attachmentId, StorageUrlDisposition.Inline, CancellationToken.None);
+        var owner = await urls.ForStaffAsync(requestId, s.Sales.Id, false, id => id == s.Sales.Id, attachmentId, StorageUrlDisposition.Inline, CancellationToken.None);
+        var manager = await urls.ForStaffAsync(requestId, Guid.NewGuid(), true, _ => false, attachmentId, StorageUrlDisposition.Attachment, CancellationToken.None);
+
+        // Assert: the people who can read the survey get a URL; anyone else gets "not found".
+        Assert.True(technician.Succeeded, technician.Message);
+        Assert.StartsWith(FakeStorageUrlSigner.Host, technician.Value!.Url);
+        Assert.Equal((attachmentId, "inline", FilePolicies.Jpeg), (technician.Value.Id, technician.Value.Disposition, technician.Value.ContentType));
+        Assert.True(owner.Succeeded, owner.Message);
+        Assert.Equal("attachment", manager.Value!.Disposition);
+        Assert.Equal(OnSiteSurveyErrorCodes.AppointmentNotFound,
+            (await urls.ForTechnicianAsync(stranger.Id, s.AppointmentId, attachmentId, StorageUrlDisposition.Inline, CancellationToken.None)).ErrorCode);
+        Assert.Equal(OnSiteSurveyErrorCodes.ReportNotFound,
+            (await urls.ForStaffAsync(requestId, otherSales.Id, false, id => id == otherSales.Id, attachmentId, StorageUrlDisposition.Inline, CancellationToken.None)).ErrorCode);
+        Assert.Equal(OnSiteSurveyErrorCodes.AttachmentNotFound,
+            (await urls.ForTechnicianAsync(s.Technician.Id, s.AppointmentId, Guid.NewGuid(), StorageUrlDisposition.Inline, CancellationToken.None)).ErrorCode);
     }
 }

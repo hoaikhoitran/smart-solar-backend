@@ -14,7 +14,8 @@ namespace SmartSolar.Api.Controllers;
 [Route("api/technicians/me/appointments/{appointmentId:guid}/onsite-survey")]
 [Authorize(Roles = RoleCodes.Technician)]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
-public sealed class TechnicianOnSiteSurveyController(OnSiteSurveyHandlers handlers) : OperationResultControllerBase
+public sealed class TechnicianOnSiteSurveyController(OnSiteSurveyHandlers handlers, OnSiteSurveyAttachmentUrlHandlers attachmentUrls)
+    : OperationResultControllerBase
 {
     [HttpGet]
     [EnableRateLimiting(RateLimitingExtensions.OnSiteSurveyReadPolicy)]
@@ -40,6 +41,17 @@ public sealed class TechnicianOnSiteSurveyController(OnSiteSurveyHandlers handle
         => CurrentUserId() is { } user
             ? Respond(await handlers.AddAttachmentAsync(new AddOnSiteSurveyAttachmentCommand(user, appointmentId, request.FileId, request.Category ?? "", request.Caption), cancellationToken))
             : UnauthorizedFailure();
+
+    /// <summary>A short-lived presigned GET URL for one attachment; <c>disposition</c> is <c>inline</c> (default) or <c>attachment</c>.</summary>
+    [HttpGet("attachments/{attachmentId:guid}/url")]
+    [EnableRateLimiting(RateLimitingExtensions.OnSiteSurveyReadPolicy)]
+    public async Task<IActionResult> AttachmentUrl(Guid appointmentId, Guid attachmentId, [FromQuery] string? disposition, CancellationToken cancellationToken)
+    {
+        NoStore();
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (ParseDisposition(disposition) is not { } parsed) return Invalid("disposition", "'disposition' must be inline or attachment.");
+        return Respond(await attachmentUrls.ForTechnicianAsync(user, appointmentId, attachmentId, parsed, cancellationToken));
+    }
 
     [HttpDelete("attachments/{attachmentId:guid}")]
     [EnableRateLimiting(RateLimitingExtensions.OnSiteSurveyWritePolicy)]
@@ -75,7 +87,8 @@ public sealed class TechnicianOnSiteSurveyController(OnSiteSurveyHandlers handle
 [Route("api/survey-requests/{surveyRequestId:guid}/onsite-survey")]
 [Authorize(Roles = $"{RoleCodes.Sales},{RoleCodes.Manager},{RoleCodes.Admin}")]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
-public sealed class StaffOnSiteSurveyController(OnSiteSurveyHandlers handlers) : OperationResultControllerBase
+public sealed class StaffOnSiteSurveyController(OnSiteSurveyHandlers handlers, OnSiteSurveyAttachmentUrlHandlers attachmentUrls)
+    : OperationResultControllerBase
 {
     [HttpGet]
     [EnableRateLimiting(RateLimitingExtensions.OnSiteSurveyReadPolicy)]
@@ -84,5 +97,17 @@ public sealed class StaffOnSiteSurveyController(OnSiteSurveyHandlers handlers) :
         if (CurrentUserId() is not { } user) return UnauthorizedFailure();
         var manager = IsInRole(RoleCodes.Manager) || IsInRole(RoleCodes.Admin);
         return Respond(await handlers.GetForStaffAsync(surveyRequestId, user, manager, owner => owner == user, cancellationToken));
+    }
+
+    /// <summary>A short-lived presigned GET URL for one attachment (same access as reading the survey).</summary>
+    [HttpGet("attachments/{attachmentId:guid}/url")]
+    [EnableRateLimiting(RateLimitingExtensions.OnSiteSurveyReadPolicy)]
+    public async Task<IActionResult> AttachmentUrl(Guid surveyRequestId, Guid attachmentId, [FromQuery] string? disposition, CancellationToken cancellationToken)
+    {
+        NoStore();
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (ParseDisposition(disposition) is not { } parsed) return Invalid("disposition", "'disposition' must be inline or attachment.");
+        var manager = IsInRole(RoleCodes.Manager) || IsInRole(RoleCodes.Admin);
+        return Respond(await attachmentUrls.ForStaffAsync(surveyRequestId, user, manager, owner => owner == user, attachmentId, parsed, cancellationToken));
     }
 }

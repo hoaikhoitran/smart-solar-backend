@@ -1,5 +1,8 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using SmartSolar.Infrastructure.Persistence;
 using SmartSolar.Modules.AfterSales;
+using SmartSolar.Modules.Files;
 using SmartSolar.Modules.Common.Results;
 using SmartSolar.Modules.Installations;
 using SmartSolar.Modules.Payments;
@@ -281,5 +284,53 @@ public sealed class FaultRequestTests
         var audit = await ctx.Db.AfterSalesEvents.AsNoTracking().SingleAsync(e => e.SubjectId == pending.Id && e.EventType == "ASSET_CORRECTED");
         Assert.Contains("HW-INV-NEW |", audit.Detail);
         Assert.Contains("HW-INV-NEW2", audit.Detail);
+    }
+
+    [Fact]
+    public async Task Visit_photos_must_be_the_technicians_own_verified_files()
+    {
+        // Arrange: an open visit; one photo still pending verification, one verified photo uploaded by the customer.
+        await using var ctx = Create();
+        var h = await ctx.HandedOverAsync();
+        var request = await ctx.FaultAsync(h);
+        var visitId = await ctx.VisitStartedAsync(h, request.RequestId, Later(3));
+        var pending = await ctx.Installation.UnverifiedFileAsync(h.TechnicianId, FilePurposes.ServiceEvidence);
+        var customersPhoto = await ctx.Installation.VerifiedFileAsync(h.CustomerId, FilePurposes.ServiceEvidence);
+
+        // Act
+        var withPending = await ctx.Technician().AddEvidenceAsync(h.TechnicianId, visitId, pending, null, None);
+        var withForeign = await ctx.Technician().AddEvidenceAsync(h.TechnicianId, visitId, customersPhoto, null, None);
+
+        // Assert
+        Assert.Equal(FileErrorCodes.NotVerified, withPending.ErrorCode);
+        Assert.Equal(FileErrorCodes.NotOwned, withForeign.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Evidence_photos_are_viewable_by_the_customer_the_visit_technician_and_managers_only()
+    {
+        // Arrange: VisitStartedAsync adds one verified technician photo; the technician's visit view lists it.
+        await using var ctx = Create();
+        var h = await ctx.HandedOverAsync();
+        var request = await ctx.FaultAsync(h);
+        var visitId = await ctx.VisitStartedAsync(h, request.RequestId, Later(3));
+        var evidenceId = Assert.Single((await ctx.Technician().GetAsync(h.TechnicianId, visitId, None)).Value!.Evidence).EvidenceId;
+        var readUrls = new FileReadUrlService(new FakeStorageUrlSigner(ctx.Clock), ctx.Installation.Storage, ctx.Installation.StorageOptions, ctx.Clock,
+            NullLogger<FileReadUrlService>.Instance);
+        var urls = new AfterSalesEvidenceUrlHandlers(ctx.Data(), new FileStore(ctx.Db), readUrls);
+        var inline = SmartSolar.Modules.Files.StorageUrlDisposition.Inline;
+
+        // Act
+        var customer = await urls.ForCustomerAsync(h.CustomerId, request.RequestId, evidenceId, inline, None);
+        var technician = await urls.ForTechnicianAsync(h.TechnicianId, visitId, evidenceId, inline, None);
+        var manager = await urls.ForStaffAsync(request.RequestId, evidenceId, inline, None);
+
+        // Assert: allowed callers get a URL for that photo; other users and other ids get "not found".
+        Assert.All(new[] { customer, technician, manager }, r => Assert.True(r.Succeeded, r.Message));
+        Assert.Equal(evidenceId, customer.Value!.Id);
+        Assert.StartsWith(FakeStorageUrlSigner.Host, customer.Value.Url);
+        Assert.Equal(AfterSalesErrorCodes.RequestNotFound, (await urls.ForCustomerAsync(Guid.NewGuid(), request.RequestId, evidenceId, inline, None)).ErrorCode);
+        Assert.Equal(AfterSalesErrorCodes.VisitNotFound, (await urls.ForTechnicianAsync(Guid.NewGuid(), visitId, evidenceId, inline, None)).ErrorCode);
+        Assert.Equal(AfterSalesErrorCodes.EvidenceNotFound, (await urls.ForStaffAsync(request.RequestId, Guid.NewGuid(), inline, None)).ErrorCode);
     }
 }

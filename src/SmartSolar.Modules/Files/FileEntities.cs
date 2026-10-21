@@ -81,6 +81,9 @@ public static class FileErrorCodes
 
     /// <summary>The verified object (or its pinned version) no longer exists in storage. 410.</summary>
     public const string ObjectMissing = "FILE_OBJECT_MISSING";
+
+    /// <summary>The caller's role may not upload files of this purpose. 403.</summary>
+    public const string UploadNotAllowed = "FILE_UPLOAD_NOT_ALLOWED";
 }
 
 /// <summary>Presigned URL outcomes that are not file-specific (both 503).</summary>
