@@ -8,6 +8,7 @@ namespace SmartSolar.Modules.Catalog.Constants;
 public static class ProductTypes
 {
     public const string SolarPanel = "SOLAR_PANEL";
+    public const string Inverter = "INVERTER";
 
     /// <summary>Product types are compared and stored upper-cased.</summary>
     public static string Normalize(string productType) => productType.Trim().ToUpperInvariant();
