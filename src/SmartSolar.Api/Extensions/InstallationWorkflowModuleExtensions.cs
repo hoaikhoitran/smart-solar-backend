@@ -15,6 +15,7 @@ public static class InstallationWorkflowModuleExtensions
         services.AddSingleton(ConfigurationBinding.Bind<OnSiteSurveyOptions>(configuration, OnSiteSurveyOptions.SectionName));
         services.AddScoped<IOnSiteSurveyUnitOfWork, OnSiteSurveyUnitOfWork>();
         services.AddScoped<OnSiteSurveyHandlers>();
+        services.AddScoped<OnSiteSurveyAttachmentUrlHandlers>();
 
         services.AddSingleton(ConfigurationBinding.Bind<SmartSolar.Modules.Quotations.QuotationOptions>(configuration, SmartSolar.Modules.Quotations.QuotationOptions.SectionName));
         services.AddScoped<SmartSolar.Modules.Quotations.IQuotationUnitOfWork, QuotationUnitOfWork>();

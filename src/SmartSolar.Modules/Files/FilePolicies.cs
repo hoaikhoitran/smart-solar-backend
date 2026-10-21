@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using SmartSolar.Modules.Identity.Constants;
 
 namespace SmartSolar.Modules.Files;
 
@@ -91,6 +92,33 @@ public static partial class FilePolicies
         [FilePurposes.ProjectDocument] = new(FilePurposes.ProjectDocument, "project-documents/", [Pdf, Jpeg, Png], 20 * Mb, true),
         [FilePurposes.ServiceEvidence] = new(FilePurposes.ServiceEvidence, "after-sales/", [Jpeg, Png, Webp], 15 * Mb, true),
     };
+
+    /// <summary>
+    /// Roles that may request an upload URL for each purpose: the roles whose endpoints later attach files of that purpose.
+    /// Attaching still checks the uploader, the business object and its state.
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, string[]> UploaderRoles = new Dictionary<string, string[]>
+    {
+        [FilePurposes.OnSiteSurveyEvidence] = [RoleCodes.Technician],
+        [FilePurposes.InstallationEvidence] = [RoleCodes.Technician],
+        [FilePurposes.ServiceEvidence] = [RoleCodes.Technician, RoleCodes.Customer],
+        [FilePurposes.QuotationDocument] = [RoleCodes.Sales],
+        [FilePurposes.ContractDocument] = [RoleCodes.Sales],
+        [FilePurposes.SignedContract] = [RoleCodes.Customer],
+        [FilePurposes.ProjectDocument] = [RoleCodes.Manager, RoleCodes.Admin],
+        [FilePurposes.KnowledgeDocument] = [RoleCodes.Admin],
+    };
+
+    /// <summary>Declared content type, file name extension and size against the purpose; null when they are acceptable.</summary>
+    public static (string Code, string Message)? CheckTypeAndSize(FilePurposePolicy policy, string declaredContentType, string fileName, long sizeBytes)
+    {
+        if (!policy.AllowedContentTypes.Contains(declaredContentType) || !ExtensionMatches(declaredContentType, fileName))
+            return (FileErrorCodes.TypeNotAllowed,
+                $"Allowed types for {policy.Purpose}: {string.Join(", ", policy.AllowedContentTypes)} with a matching file extension.");
+        if (sizeBytes <= 0 || sizeBytes > policy.MaxSizeBytes)
+            return (FileErrorCodes.TooLarge, $"Files for {policy.Purpose} must be between 1 byte and {policy.MaxSizeBytes} bytes.");
+        return null;
+    }
 
     private static readonly IReadOnlyDictionary<string, string[]> Extensions = new Dictionary<string, string[]>
     {

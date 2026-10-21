@@ -16,7 +16,7 @@ public sealed record ReplacementInput(Guid ReplacedAssetId, string? Manufacturer
 
 public sealed record TechnicianVisitView(Guid VisitId, Guid RequestId, string RequestNumber, string RequestKind, string Purpose, string Status, string? AssignmentStatus,
     DateTimeOffset StartsAt, DateTimeOffset EndsAt, bool CustomerConfirmationRequired, DateTimeOffset? CustomerConfirmedAt, string? SiteAddress, string Description,
-    IReadOnlyList<ServiceItemView> Items, IReadOnlyList<AssetView> Assets, bool WaitingOnSite);
+    IReadOnlyList<ServiceItemView> Items, IReadOnlyList<AssetView> Assets, bool WaitingOnSite, IReadOnlyList<ServiceEvidenceView> Evidence);
 
 /// <summary>
 /// Technician side: accept or decline an assigned visit, start it, add verified photos, report the diagnosis (or no fault), optionally
@@ -428,7 +428,9 @@ public sealed class TechnicianServiceHandlers(IAfterSalesUnitOfWork data, FileSe
             await data.GetSiteAddressAsync(request.PropertySiteId, token), request.Description,
             (await data.ListItemsAsync(request.Id, false, token)).Select(AfterSalesViews.Item).ToList(),
             (await data.ListAssetsAsync(request.ProjectId, false, token)).Select(AfterSalesViews.Asset).ToList(),
-            VisitStatuses.IsWaitingOnSite(visit));
+            VisitStatuses.IsWaitingOnSite(visit),
+            (await data.ListEvidenceAsync(request.Id, token))
+                .Select(e => new ServiceEvidenceView(e.Id, e.VisitId, e.FileId, e.Caption, TimeZoneInfo.ConvertTime(e.AddedAt, zone))).ToList());
     }
 
     private static OperationResult<bool> Bad(string message) => OperationResult<bool>.Fail(AfterSalesErrorCodes.InvalidState, message);

@@ -31,15 +31,18 @@ public static class FileStorageModuleExtensions
         {
             services.AddSingleton<IStorageObjectVerifier, S3StorageObjectVerifier>();
             services.AddSingleton<IStorageUrlSigner, S3StorageUrlSigner>();
+            services.AddSingleton<IStorageUploadUrlSigner, S3StorageUploadUrlSigner>();
         }
         else
         {
             services.AddSingleton<IStorageObjectVerifier, DisabledStorageObjectVerifier>();
             services.AddSingleton<IStorageUrlSigner, DisabledStorageUrlSigner>();
+            services.AddSingleton<IStorageUploadUrlSigner, DisabledStorageUploadUrlSigner>();
         }
         services.AddScoped<IFileStore, FileStore>();
         services.AddScoped<FileService>();
         services.AddScoped<FileReadUrlService>();
+        services.AddScoped<FileUploadUrlService>();
         return services;
     }
 }

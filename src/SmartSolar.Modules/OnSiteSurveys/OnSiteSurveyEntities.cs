@@ -106,4 +106,5 @@ public static class OnSiteSurveyErrorCodes
     public const string NotCompleted = "ONSITE_SURVEY_NOT_COMPLETED";
     public const string StaleRevision = "ONSITE_SURVEY_STALE_REVISION";
     public const string EvidenceRequired = "ONSITE_SURVEY_EVIDENCE_REQUIRED";
+    public const string AttachmentNotFound = "ONSITE_SURVEY_ATTACHMENT_NOT_FOUND";
 }

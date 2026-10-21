@@ -17,8 +17,22 @@ namespace SmartSolar.Api.Controllers;
 [Route("api/files")]
 [Authorize]
 [RequireFeature(FeatureOptions.InstallationWorkflow, FeatureOptions.KnowledgeBase)]
-public sealed class FilesController(FileService files) : OperationResultControllerBase
+public sealed class FilesController(FileService files, FileUploadUrlService uploads) : OperationResultControllerBase
 {
+    /// <summary>
+    /// Step 1 of an upload: a short-lived presigned PUT URL for a new object key under the caller's own prefix. Then PUT the
+    /// bytes to that URL with the returned headers (no Bearer token), and register the key with POST /api/files.
+    /// </summary>
+    [HttpPost("presigned-upload")]
+    [EnableRateLimiting(RateLimitingExtensions.FilesWritePolicy)]
+    public async Task<IActionResult> PresignedUpload([FromBody] PresignedUploadRequest request, CancellationToken cancellationToken)
+    {
+        NoStore();
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        return Respond(await uploads.CreateAsync(new CreateUploadUrlCommand(user, IsInRole, request.Purpose ?? "", request.FileName ?? "",
+            request.ContentType ?? "", request.SizeBytes), cancellationToken));
+    }
+
     [HttpPost]
     [EnableRateLimiting(RateLimitingExtensions.FilesWritePolicy)]
     public async Task<IActionResult> Register([FromBody] RegisterFileRequest request, CancellationToken cancellationToken)

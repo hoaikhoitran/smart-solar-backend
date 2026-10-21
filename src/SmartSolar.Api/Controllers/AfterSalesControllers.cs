@@ -23,7 +23,8 @@ public sealed class CustomerAfterSalesController(
     ServiceCustomerHandlers requests,
     ServiceQuotationHandlers quotations,
     ServicePackageHandlers packages,
-    PaymentService payments) : OperationResultControllerBase
+    PaymentService payments,
+    AfterSalesEvidenceUrlHandlers evidenceUrls) : OperationResultControllerBase
 {
     [HttpGet("installations/{projectId:guid}/warranty")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
@@ -55,6 +56,17 @@ public sealed class CustomerAfterSalesController(
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> Get(Guid requestId, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await requests.GetAsync(user, requestId, cancellationToken)) : UnauthorizedFailure();
+
+    /// <summary>A short-lived presigned GET URL for one evidence photo of the customer's own request (ids come from the request's <c>evidence</c>).</summary>
+    [HttpGet("requests/{requestId:guid}/evidence/{evidenceId:guid}/url")]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
+    public async Task<IActionResult> EvidenceUrl(Guid requestId, Guid evidenceId, [FromQuery] string? disposition, CancellationToken cancellationToken)
+    {
+        NoStore();
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (ParseDisposition(disposition) is not { } parsed) return Invalid("disposition", "'disposition' must be inline or attachment.");
+        return Respond(await evidenceUrls.ForCustomerAsync(user, requestId, evidenceId, parsed, cancellationToken));
+    }
 
     [HttpPost("requests/{requestId:guid}/cancel")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
@@ -164,7 +176,7 @@ public sealed class CustomerAfterSalesController(
 [Route("api/technicians/me/after-sales/visits")]
 [Authorize(Roles = RoleCodes.Technician)]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
-public sealed class TechnicianAfterSalesController(TechnicianServiceHandlers visits) : OperationResultControllerBase
+public sealed class TechnicianAfterSalesController(TechnicianServiceHandlers visits, AfterSalesEvidenceUrlHandlers evidenceUrls) : OperationResultControllerBase
 {
     [HttpGet]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
@@ -175,6 +187,17 @@ public sealed class TechnicianAfterSalesController(TechnicianServiceHandlers vis
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> Get(Guid visitId, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await visits.GetAsync(user, visitId, cancellationToken)) : UnauthorizedFailure();
+
+    /// <summary>A short-lived presigned GET URL for one evidence photo of the visit's request (ids come from the visit's <c>evidence</c>).</summary>
+    [HttpGet("{visitId:guid}/evidence/{evidenceId:guid}/url")]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
+    public async Task<IActionResult> EvidenceUrl(Guid visitId, Guid evidenceId, [FromQuery] string? disposition, CancellationToken cancellationToken)
+    {
+        NoStore();
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (ParseDisposition(disposition) is not { } parsed) return Invalid("disposition", "'disposition' must be inline or attachment.");
+        return Respond(await evidenceUrls.ForTechnicianAsync(user, visitId, evidenceId, parsed, cancellationToken));
+    }
 
     [HttpPost("{visitId:guid}/respond")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
@@ -297,8 +320,8 @@ public sealed class SalesAfterSalesController(SalesTaskHandlers tasks, ServiceQu
 [Route("api/manager/after-sales")]
 [Authorize(Roles = $"{RoleCodes.Manager},{RoleCodes.Admin}")]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
-public sealed class ManagerAfterSalesController(ServiceManagerHandlers requests, ServicePackageHandlers packages, SalesTaskHandlers tasks, RefundHandlers refunds)
-    : OperationResultControllerBase
+public sealed class ManagerAfterSalesController(ServiceManagerHandlers requests, ServicePackageHandlers packages, SalesTaskHandlers tasks, RefundHandlers refunds,
+    AfterSalesEvidenceUrlHandlers evidenceUrls) : OperationResultControllerBase
 {
     [HttpGet("requests")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
@@ -308,6 +331,16 @@ public sealed class ManagerAfterSalesController(ServiceManagerHandlers requests,
     [HttpGet("requests/{requestId:guid}")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> Get(Guid requestId, CancellationToken cancellationToken) => Respond(await requests.GetAsync(requestId, cancellationToken));
+
+    /// <summary>A short-lived presigned GET URL for one evidence photo of any request.</summary>
+    [HttpGet("requests/{requestId:guid}/evidence/{evidenceId:guid}/url")]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
+    public async Task<IActionResult> EvidenceUrl(Guid requestId, Guid evidenceId, [FromQuery] string? disposition, CancellationToken cancellationToken)
+    {
+        NoStore();
+        if (ParseDisposition(disposition) is not { } parsed) return Invalid("disposition", "'disposition' must be inline or attachment.");
+        return Respond(await evidenceUrls.ForStaffAsync(requestId, evidenceId, parsed, cancellationToken));
+    }
 
     [HttpPost("requests/{requestId:guid}/visits")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationSchedulingPolicy)]

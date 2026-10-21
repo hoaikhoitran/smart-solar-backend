@@ -719,6 +719,7 @@ public static class AfterSalesErrorCodes
     public const string RequestNotFound = "SERVICE_REQUEST_NOT_FOUND";
     public const string ItemNotFound = "SERVICE_ITEM_NOT_FOUND";
     public const string VisitNotFound = "SERVICE_VISIT_NOT_FOUND";
+    public const string EvidenceNotFound = "SERVICE_EVIDENCE_NOT_FOUND";
     public const string QuotationNotFound = "SERVICE_QUOTATION_NOT_FOUND";
     public const string PackageNotFound = "SERVICE_PACKAGE_NOT_FOUND";
     public const string SubscriptionNotFound = "SERVICE_SUBSCRIPTION_NOT_FOUND";

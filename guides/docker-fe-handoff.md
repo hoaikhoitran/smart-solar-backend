@@ -36,8 +36,10 @@ The database is the shared development PostgreSQL configured in `.env`
   answers — good enough to build the UI, not representative of production.
 * Payments need PayOS sandbox credentials (`Providers__PayOS__*`). Without them,
   `POST …/payments` returns `503 PAYMENT_PROVIDER_NOT_CONFIGURED`.
-* File uploads need an S3 bucket the FE can upload to (`Storage__*`). With `Storage__S3__Enabled=false`
-  registered files stay `PENDING_VERIFICATION` and cannot be used by Installation Flow actions.
+* File uploads need a private, versioned S3 bucket (`Storage__*`), a bucket CORS rule for the FE origin and a backend
+  credential with `s3:PutObject` (see [file-upload-api-integration.md](file-upload-api-integration.md)). With
+  `Storage__S3__Enabled=false`, `POST /api/files/presigned-upload` answers `503 STORAGE_NOT_CONFIGURED` and registered
+  files stay `PENDING_VERIFICATION` (they cannot be used by any flow).
 
 ## 3. Choosing image versions
 

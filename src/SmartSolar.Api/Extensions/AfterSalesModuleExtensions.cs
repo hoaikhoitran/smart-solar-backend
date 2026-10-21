@@ -21,6 +21,7 @@ public static class AfterSalesModuleExtensions
         services.AddScoped<ServiceCustomerHandlers>();
         services.AddScoped<ServiceManagerHandlers>();
         services.AddScoped<TechnicianServiceHandlers>();
+        services.AddScoped<AfterSalesEvidenceUrlHandlers>();
         services.AddScoped<ServiceQuotationHandlers>();
         services.AddScoped<ServicePackageHandlers>();
         services.AddScoped<SalesTaskHandlers>();

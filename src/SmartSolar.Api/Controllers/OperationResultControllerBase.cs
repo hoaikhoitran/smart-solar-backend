@@ -63,7 +63,7 @@ public abstract class OperationResultControllerBase : ControllerBase
                 or "RAG_MESSAGE_TOO_LONG" or "PAYMENT_AMOUNT_NOT_SUPPORTED" or "AFTER_SALES_REASON_REQUIRED" or "CONTRACT_WARRANTY_REQUIRED"
             || code.StartsWith("SYSTEM_SETTING_", StringComparison.Ordinal))
             return StatusCodes.Status400BadRequest;
-        if (code is CommonErrorCodes.Forbidden or "FILE_NOT_OWNED") return StatusCodes.Status403Forbidden;
+        if (code is CommonErrorCodes.Forbidden or "FILE_NOT_OWNED" or "FILE_UPLOAD_NOT_ALLOWED") return StatusCodes.Status403Forbidden;
         // Same codes and status as survey booking: the site cannot be served until its location / zone data is fixed.
         if (code is "SITE_LOCATION_REQUIRED" or "NO_ZONE_COVERAGE" or "ZONE_NOT_SERVICEABLE"
             or "ADMINISTRATIVE_LOCATION_UNKNOWN" or "ADMINISTRATIVE_LOCATION_SUPERSEDED" or "ADMINISTRATIVE_LOCATION_OUT_OF_SERVICE_AREA")
