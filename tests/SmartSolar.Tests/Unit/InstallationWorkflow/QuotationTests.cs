@@ -222,6 +222,58 @@ public sealed class QuotationTests
         Assert.Equal(0m, removed.Value.EquipmentSubtotal);
     }
 
+    private static async Task<Modules.Catalog.Entities.Product> InverterAsync(InstallationWorkflowTestContext ctx, string model, decimal price)
+    {
+        var inverter = PreSurveyTestContext.NewPanelProduct($"INV-{model}", ratedPowerW: null, widthMm: null, heightMm: null,
+            productType: Modules.Catalog.Constants.ProductTypes.Inverter, spec: "{\"ratedAcPowerW\":5000,\"phase\":\"SINGLE_PHASE\"}");
+        inverter.Name = $"Inverter {model}";
+        inverter.Brand = "Huawei";
+        inverter.Model = model;
+        inverter.UnitPrice = price;
+        ctx.Db.Products.Add(inverter);
+        await ctx.Db.SaveChangesAsync();
+        ctx.Db.ChangeTracker.Clear();
+        return inverter;
+    }
+
+    [Fact]
+    public async Task Sales_quotes_several_inverter_models_and_the_lines_keep_their_catalog_snapshot()
+    {
+        // Arrange: two active inverter models in the catalog.
+        var ctx = InstallationWorkflowTestContext.Create();
+        await using var _ = ctx;
+        var s = await ctx.QuotableSurveyAsync();
+        var small = await InverterAsync(ctx, "SUN2000-5K", 15_000_000m);
+        var large = await InverterAsync(ctx, "SUN2000-10K", 30_000_000m);
+        var q = ctx.Quotations();
+        var draft = (await q.CreateAsync(s.Sales.Id, s.Request.Request.Id, Header(ctx), CancellationToken.None)).Value!;
+
+        // Act: Sales picks both models with their own quantities, then changes the quantity of the first line.
+        draft = (await q.AddLineAsync(s.Sales.Id, draft.QuotationId, draft.Revision, new QuotationLineInput(small.Id, null, null, 2m, null, null), CancellationToken.None)).Value!;
+        draft = (await q.AddLineAsync(s.Sales.Id, draft.QuotationId, draft.Revision, new QuotationLineInput(large.Id, null, null, 1m, null, null), CancellationToken.None)).Value!;
+        draft = (await q.UpdateLineAsync(s.Sales.Id, draft.QuotationId, draft.Lines[0].LineId, draft.Revision, 3m, null, null, CancellationToken.None)).Value!;
+        var issued = await q.IssueAsync(s.Sales.Id, draft.QuotationId, draft.Revision, CancellationToken.None);
+
+        // Assert: catalog prices are used and totals are computed by the server.
+        Assert.True(issued.Succeeded, issued.Message);
+        var lines = issued.Value!.Lines;
+        Assert.Equal(new[] { ("SUN2000-5K", 3m, 15_000_000m, 45_000_000m), ("SUN2000-10K", 1m, 30_000_000m, 30_000_000m) },
+            lines.Select(l => (l.Model!, l.Quantity, l.UnitPrice, l.LineTotal)));
+        Assert.Equal(75_000_000m, issued.Value.EquipmentSubtotal);
+        Assert.Equal(75_000_000m + 6_000_000m, issued.Value.Subtotal);   // + labor 5,000,000 and transport 1,000,000
+        Assert.Equal(issued.Value.Subtotal + QuotationPricing.Round(issued.Value.Subtotal * 0.08m), issued.Value.TotalAmount);
+
+        // A later catalog change (name and price) does not touch the quotation.
+        var row = await ctx.Db.Products.SingleAsync(p => p.Id == small.Id);
+        row.Name = "Renamed inverter";
+        row.UnitPrice = 1m;
+        await ctx.Db.SaveChangesAsync();
+        ctx.Db.ChangeTracker.Clear();
+        var reloaded = (await q.GetForCustomerAsync(s.Request.Customer.Id, issued.Value.QuotationId, CancellationToken.None)).Value!;
+        Assert.Equal(("Inverter SUN2000-5K", 15_000_000m, (decimal?)15_000_000m), (reloaded.Lines[0].Name, reloaded.Lines[0].UnitPrice, reloaded.Lines[0].CatalogUnitPrice));
+        Assert.Equal(issued.Value.TotalAmount, reloaded.TotalAmount);
+    }
+
     [Theory]
     [InlineData("ux_quotation_one_live", true)]
     [InlineData("ux_quotation_one_draft", true)]

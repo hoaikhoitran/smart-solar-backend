@@ -100,10 +100,23 @@ public abstract class ProductDetailsValidator<T> : AbstractValidator<T>
                 }
             })
             .When(x => x.Spec is not null && BeJsonObject(x.Spec));
+
+        RuleFor(x => x.Spec)
+            .Custom((spec, context) =>
+            {
+                foreach (var error in InverterSpecRules.Validate(spec!))
+                {
+                    context.AddFailure(nameof(IProductDetails.Spec), error);
+                }
+            })
+            .When(x => IsInverter(x.ProductType) && x.Spec is not null && BeJsonObject(x.Spec));
     }
 
     private static bool IsSolarPanel(string? productType)
         => productType is not null && ProductTypes.Normalize(productType) == ProductTypes.SolarPanel;
+
+    private static bool IsInverter(string? productType)
+        => productType is not null && ProductTypes.Normalize(productType) == ProductTypes.Inverter;
 
     private static bool BeJsonObject(string? spec)
     {

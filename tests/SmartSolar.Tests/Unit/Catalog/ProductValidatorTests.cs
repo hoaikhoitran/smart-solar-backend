@@ -40,6 +40,60 @@ public class ProductValidatorTests
         Assert.Empty(ErrorsFor(ValidPanel()));
     }
 
+    private static CreateProductCommand ValidInverter(string? spec = null) => ValidPanel() with
+    {
+        Sku = "INV-5K",
+        ProductType = "INVERTER",
+        Category = "INVERTER",
+        Name = "Hybrid inverter 5 kW",
+        Brand = "Huawei",
+        Model = "SUN2000-5K",
+        RatedPowerW = null,
+        WidthMm = null,
+        HeightMm = null,
+        WarrantyMonth = 120,
+        Spec = spec ?? """{"ratedAcPowerW":5000,"maxDcInputPowerW":7500,"maxDcVoltageV":600,"mpptCount":2,"efficiencyPercent":97.5,"phase":"SINGLE_PHASE"}""",
+    };
+
+    private static List<string> MessagesFor(CreateProductCommand command)
+        => new CreateProductCommandValidator().Validate(command).Errors.Select(e => e.ErrorMessage).ToList();
+
+    [Fact]
+    public void A_complete_inverter_is_valid_without_panel_dimensions()
+    {
+        Assert.Empty(ErrorsFor(ValidInverter()));
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("""{"phase":"THREE_PHASE","warrantyNote":"free-form keys are kept"}""")]
+    public void Inverter_spec_fields_are_optional(string spec)
+    {
+        Assert.Empty(ErrorsFor(ValidInverter(spec)));
+    }
+
+    [Theory]
+    [InlineData("""{"ratedAcPowerW":-5000}""", "spec.ratedAcPowerW")]
+    [InlineData("""{"maxDcInputPowerW":0}""", "spec.maxDcInputPowerW")]
+    [InlineData("""{"maxDcVoltageV":"600"}""", "spec.maxDcVoltageV")]
+    [InlineData("""{"mpptCount":1.5}""", "spec.mpptCount")]
+    [InlineData("""{"mpptCount":0}""", "spec.mpptCount")]
+    [InlineData("""{"efficiencyPercent":120}""", "spec.efficiencyPercent")]
+    [InlineData("""{"phase":"TWO_PHASE"}""", "spec.phase")]
+    public void Invalid_inverter_spec_values_are_rejected(string spec, string field)
+    {
+        var messages = MessagesFor(ValidInverter(spec));
+
+        Assert.Contains(messages, m => m.Contains(field));
+    }
+
+    [Fact]
+    public void Inverter_rules_do_not_apply_to_solar_panels()
+    {
+        Assert.Empty(ErrorsFor(ValidPanel() with { Spec = """{"ratedAcPowerW":-1}""" }));
+        Assert.Contains("RatedPowerW", ErrorsFor(ValidPanel() with { RatedPowerW = null }));   // panel rules unchanged
+    }
+
     [Fact]
     public void Required_fields_are_reported()
     {
