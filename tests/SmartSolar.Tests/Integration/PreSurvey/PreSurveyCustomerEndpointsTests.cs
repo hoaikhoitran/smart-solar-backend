@@ -418,4 +418,75 @@ public class PreSurveyCustomerEndpointsTests
         Assert.Equal(PreSurveyStatus.Draft, (await factory.ReloadPreSurveyAsync(draft.Id)).Status);
         Assert.Empty(await factory.SurveyRequestsAsync());
     }
+
+    // ---------- GET /api/customers/me/sites and /pre-surveys ----------
+
+    [Fact]
+    public async Task Customer_lists_require_a_customer_token_and_valid_paging()
+    {
+        // Arrange
+        using var factory = new AuthApiFactory();
+        var (_, sales) = await factory.SeedUserClientAsync(RoleCodes.Sales);
+        var (_, customer) = await factory.SeedUserClientAsync(RoleCodes.Customer);
+
+        // Act / Assert
+        Assert.Equal(HttpStatusCode.Unauthorized, (await factory.CreateClient().GetAsync("/api/customers/me/sites")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await sales.GetAsync("/api/customers/me/pre-surveys")).StatusCode);
+        var invalid = await customer.GetAsync("/api/customers/me/pre-surveys?status=OPEN&pageSize=500&sortBy=name");
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+        await AssertFailureAsync(invalid, PreSurveyErrorCodes.ValidationFailed);
+        var details = (await BodyOf(invalid)).GetProperty("error").GetProperty("details");
+        Assert.True(details.TryGetProperty("status", out _));
+        Assert.True(details.TryGetProperty("sortBy", out _));
+        Assert.Equal(HttpStatusCode.BadRequest, (await customer.GetAsync("/api/customers/me/sites?page=0")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Customer_lists_return_only_the_callers_sites_and_drafts()
+    {
+        // Arrange: the caller has one site with a draft; another customer has a site too.
+        using var factory = new AuthApiFactory();
+        var (user, client) = await factory.SeedUserClientAsync(RoleCodes.Customer);
+        var customer = await factory.SeedAsync(PreSurveyTestContext.NewCustomer(user.Id));
+        var site = await factory.SeedAsync(PreSurveyTestContext.NewPropertySite(customer.Id, "My roof"));
+        var draft = await factory.SeedAsync(PreSurveyTestContext.NewPreSurvey(site.Id));
+        var (other, _) = await factory.SeedUserClientAsync(RoleCodes.Customer);
+        var otherCustomer = await factory.SeedAsync(PreSurveyTestContext.NewCustomer(other.Id));
+        await factory.SeedAsync(PreSurveyTestContext.NewPropertySite(otherCustomer.Id, "Not mine"));
+
+        // Act
+        var sites = (await BodyOf(await client.GetAsync("/api/customers/me/sites"))).GetProperty("data");
+        var drafts = (await BodyOf(await client.GetAsync("/api/customers/me/pre-surveys?status=DRAFT"))).GetProperty("data");
+
+        // Assert
+        Assert.Equal(1, sites.GetProperty("totalItems").GetInt32());
+        Assert.Equal("My roof", sites.GetProperty("items")[0].GetProperty("name").GetString());
+        var item = drafts.GetProperty("items")[0];
+        Assert.Equal((draft.Id, "DRAFT"), (item.GetProperty("preSurveyId").GetGuid(), item.GetProperty("status").GetString()));
+        Assert.True(item.TryGetProperty("revision", out _));
+        Assert.True(item.TryGetProperty("geometryVersion", out _));
+    }
+
+    [Fact]
+    public async Task Enums_are_read_as_strings_or_numbers_and_written_as_upper_snake_strings()
+    {
+        // Arrange
+        using var factory = new AuthApiFactory();
+        var (user, client) = await factory.SeedUserClientAsync(RoleCodes.Customer);
+        await factory.SeedAsync(PreSurveyTestContext.NewCustomer(user.Id));
+
+        // Act: a string enum value in the request (older clients may still send the number).
+        var created = await client.PostAsJsonAsync(SitesUrl, new
+        {
+            name = "Carport", province = "Ho Chi Minh", district = "District 1", ward = "Ben Nghe", streetLine = "1 Le Loi",
+            latitude = 10.77m, longitude = 106.70m, installationSurfaceType = "CARPORT", surfaceMaterial = "Steel",
+        });
+        var sites = (await BodyOf(await client.GetAsync("/api/customers/me/sites"))).GetProperty("data").GetProperty("items");
+
+        // Assert
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        await using var db = factory.CreateDbContext();
+        Assert.Equal(InstallationSurfaceType.Carport, (await db.PropertySites.AsNoTracking().SingleAsync()).InstallationSurfaceType);
+        Assert.Equal("CARPORT", sites[0].GetProperty("installationSurfaceType").GetString());
+    }
 }

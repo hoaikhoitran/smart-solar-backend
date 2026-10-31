@@ -28,7 +28,7 @@ public static class ComponentStatusCodes
 public static class AlgorithmVersions
 {
     /// <summary>Bump when layout, footprint, shading or energy-mapping logic changes, so fingerprints change.</summary>
-    public const string Current = "layout-v2";
+    public const string Current = "layout-v2+shading-v1";
 
     /// <summary>Version of the canonical fingerprint document.</summary>
     public const string Fingerprint = "fp-v1";
@@ -80,6 +80,9 @@ public static class SimulationWarningCodes
     public const string ShadeSpacingNotEvaluated = "SHADE_SPACING_NOT_EVALUATED";
     public const string RowGapBelowShadeEstimate = "ROW_GAP_BELOW_SHADE_ESTIMATE";
     public const string ObstacleShadingNotModeled = "OBSTACLE_SHADING_NOT_MODELED";
+    public const string ShadingNotApplied = "SHADING_NOT_APPLIED";
+    public const string ShadingBaselineDiffers = "SHADING_BASELINE_DIFFERS";
+    public const string SunPositionCheckDeviation = "SUN_POSITION_CHECK_DEVIATION";
     public const string DeclaredAreaDiffers = "DECLARED_AREA_DIFFERS";
     public const string LocationMissing = "LOCATION_MISSING";
     public const string FlushMountThermalAssumption = "FLUSH_MOUNT_THERMAL_ASSUMPTION";

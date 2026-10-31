@@ -28,6 +28,9 @@ public sealed record CatalogManifest(
 
 public sealed record CatalogCommuneRow(int Line, string ProvinceCode, string Code, string Name, string UnitType);
 
+/// <summary>One verified commune reference point (WGS 84 degrees, at most 6 decimals) with its source.</summary>
+public sealed record CatalogReferencePointRow(int Line, string CommuneCode, decimal Latitude, decimal Longitude, string Source);
+
 public sealed record CatalogLegacyRow(
     int Line,
     string CommuneCode,
@@ -50,13 +53,16 @@ public sealed record CatalogDatasetFiles(string ManifestJson, IReadOnlyDictionar
     public const string CommunesFileName = "communes.csv";
     public const string LegacyMapFileName = "legacy-commune-map.csv";
 
+    /// <summary>Optional: verified commune reference points (commune_code, latitude, longitude, source). Absent = no coordinates.</summary>
+    public const string ReferencePointsFileName = "commune-reference-points.csv";
+
     /// <summary>Reads manifest.json, communes.csv and legacy-commune-map.csv of <paramref name="directory"/> (missing CSVs are left out and reported by the validator).</summary>
     public static async Task<CatalogDatasetFiles> LoadAsync(string directory, CancellationToken cancellationToken)
     {
         var manifestPath = Path.Combine(directory, ManifestFileName);
         if (!File.Exists(manifestPath)) throw new FileNotFoundException($"'{ManifestFileName}' was not found in the dataset directory.", manifestPath);
         var files = new Dictionary<string, byte[]>(StringComparer.Ordinal);
-        foreach (var name in new[] { CommunesFileName, LegacyMapFileName })
+        foreach (var name in new[] { CommunesFileName, LegacyMapFileName, ReferencePointsFileName })
         {
             var path = Path.Combine(directory, name);
             if (File.Exists(path)) files[name] = await File.ReadAllBytesAsync(path, cancellationToken);

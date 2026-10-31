@@ -15,8 +15,16 @@ namespace SmartSolar.Api.Controllers;
 [Route("api")]
 [Authorize(Roles = $"{RoleCodes.Manager},{RoleCodes.Admin}")]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
-public sealed class ManagerInstallationsController(InstallationHandlers handlers, InstallationEvidenceHandlers evidence) : OperationResultControllerBase
+public sealed class ManagerInstallationsController(InstallationHandlers handlers, InstallationEvidenceHandlers evidence, EnergyMonitoringHandlers monitoring)
+    : OperationResultControllerBase
 {
+    /// <summary>Energy monitoring of a project: SIMULATED expected production only (no measured data source yet; alerts NOT_CONFIGURED).</summary>
+    [HttpGet("installation-projects/{projectId:guid}/energy-monitoring")]
+    [ProducesResponseType(typeof(ApiResponse<EnergyMonitoringView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
+    public async Task<IActionResult> EnergyMonitoring(Guid projectId, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await monitoring.GetAsync(user, true, projectId, cancellationToken)) : UnauthorizedFailure();
+
     /// <summary>Contracts whose full payment is verified and that have no installation project yet.</summary>
     [HttpGet("installations/ready-contracts")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
@@ -84,6 +92,21 @@ public sealed class ManagerInstallationsController(InstallationHandlers handlers
         return Respond(await handlers.ReturnToReworkAsync(user, projectId, revision, request.Reason, cancellationToken));
     }
 
+    /// <summary>
+    /// Manager (only) approves, with a reason, that the installed panels / inverters differ from the accepted quotation (see
+    /// <c>equipment.differences</c>). The customer must then agree before the handover.
+    /// </summary>
+    [HttpPost("installation-projects/{projectId:guid}/equipment-substitution/approve")]
+    [Authorize(Roles = RoleCodes.Manager)]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
+    public async Task<IActionResult> ApproveSubstitution(Guid projectId, [FromBody] SubstitutionApprovalRequest request, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (request.ExpectedRevision is not { } revision) return Invalid("expectedRevision", "'expectedRevision' is required.");
+        if (request.Reason is { } reason && reason.Trim().Length > 400) return Invalid("reason", "'reason' must be at most 400 characters.");
+        return Respond(await handlers.ApproveSubstitutionAsync(user, projectId, revision, request.Reason, cancellationToken));
+    }
+
     [HttpPut("installation-projects/{projectId:guid}/checklist/{itemId:guid}")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
     public async Task<IActionResult> Checklist(Guid projectId, Guid itemId, [FromBody] ChecklistRequest request, CancellationToken cancellationToken)
@@ -93,6 +116,7 @@ public sealed class ManagerInstallationsController(InstallationHandlers handlers
             : UnauthorizedFailure();
 
     /// <summary>Evidence photo metadata (no storage locations). See <c>…/evidence/{evidenceId}/url</c> for a short-lived read URL.</summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<System.Collections.Generic.IReadOnlyList<SmartSolar.Modules.Installations.InstallationEvidenceFileView>>), StatusCodes.Status200OK)]
     [HttpGet("installation-projects/{projectId:guid}/evidence")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> EvidenceList(Guid projectId, CancellationToken cancellationToken)
@@ -102,6 +126,7 @@ public sealed class ManagerInstallationsController(InstallationHandlers handlers
     /// A presigned GET URL (valid for <c>Storage:S3:PresignedUrlTtlSeconds</c>) for one evidence photo; <c>disposition</c> is
     /// <c>inline</c> (default) or <c>attachment</c>. Sent with <c>Cache-Control: no-store</c>.
     /// </summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Installations.InstallationEvidenceUrlView>), StatusCodes.Status200OK)]
     [HttpGet("installation-projects/{projectId:guid}/evidence/{evidenceId:guid}/url")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> EvidenceUrl(Guid projectId, Guid evidenceId, [FromQuery] string? disposition, CancellationToken cancellationToken)
@@ -157,6 +182,7 @@ public sealed class TechnicianInstallationsController(InstallationHandlers handl
         => CurrentUserId() is { } user ? Respond(await handlers.AddEvidenceAsync(user, projectId, request.FileId, request.Caption, cancellationToken)) : UnauthorizedFailure();
 
     /// <summary>Evidence photo metadata (no storage locations). See <c>…/evidence/{evidenceId}/url</c> for a short-lived read URL.</summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<System.Collections.Generic.IReadOnlyList<SmartSolar.Modules.Installations.InstallationEvidenceFileView>>), StatusCodes.Status200OK)]
     [HttpGet("{projectId:guid}/evidence")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> EvidenceList(Guid projectId, CancellationToken cancellationToken)
@@ -166,6 +192,7 @@ public sealed class TechnicianInstallationsController(InstallationHandlers handl
     /// A presigned GET URL (valid for <c>Storage:S3:PresignedUrlTtlSeconds</c>) for one evidence photo; <c>disposition</c> is
     /// <c>inline</c> (default) or <c>attachment</c>. Sent with <c>Cache-Control: no-store</c>.
     /// </summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Installations.InstallationEvidenceUrlView>), StatusCodes.Status200OK)]
     [HttpGet("{projectId:guid}/evidence/{evidenceId:guid}/url")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> EvidenceUrl(Guid projectId, Guid evidenceId, [FromQuery] string? disposition, CancellationToken cancellationToken)
@@ -195,8 +222,16 @@ public sealed class TechnicianInstallationsController(InstallationHandlers handl
 [Route("api/customers/me/installation-projects")]
 [Authorize(Roles = RoleCodes.Customer)]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
-public sealed class CustomerInstallationsController(InstallationHandlers handlers, InstallationEvidenceHandlers evidence) : OperationResultControllerBase
+public sealed class CustomerInstallationsController(InstallationHandlers handlers, InstallationEvidenceHandlers evidence, EnergyMonitoringHandlers monitoring)
+    : OperationResultControllerBase
 {
+    /// <summary>Energy monitoring of the customer's own project: SIMULATED expected production only, never presented as measured.</summary>
+    [HttpGet("{projectId:guid}/energy-monitoring")]
+    [ProducesResponseType(typeof(ApiResponse<EnergyMonitoringView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
+    public async Task<IActionResult> EnergyMonitoring(Guid projectId, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await monitoring.GetAsync(user, false, projectId, cancellationToken)) : UnauthorizedFailure();
+
     [HttpGet]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> List(CancellationToken cancellationToken)
@@ -208,6 +243,7 @@ public sealed class CustomerInstallationsController(InstallationHandlers handler
         => CurrentUserId() is { } user ? Respond(await handlers.GetForCustomerAsync(user, projectId, cancellationToken)) : UnauthorizedFailure();
 
     /// <summary>Evidence photo metadata (no storage locations). See <c>…/evidence/{evidenceId}/url</c> for a short-lived read URL.</summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<System.Collections.Generic.IReadOnlyList<SmartSolar.Modules.Installations.InstallationEvidenceFileView>>), StatusCodes.Status200OK)]
     [HttpGet("{projectId:guid}/evidence")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> EvidenceList(Guid projectId, CancellationToken cancellationToken)
@@ -217,6 +253,7 @@ public sealed class CustomerInstallationsController(InstallationHandlers handler
     /// A presigned GET URL (valid for <c>Storage:S3:PresignedUrlTtlSeconds</c>) for one evidence photo; <c>disposition</c> is
     /// <c>inline</c> (default) or <c>attachment</c>. Sent with <c>Cache-Control: no-store</c>.
     /// </summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Installations.InstallationEvidenceUrlView>), StatusCodes.Status200OK)]
     [HttpGet("{projectId:guid}/evidence/{evidenceId:guid}/url")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> EvidenceUrl(Guid projectId, Guid evidenceId, [FromQuery] string? disposition, CancellationToken cancellationToken)
@@ -236,6 +273,12 @@ public sealed class CustomerInstallationsController(InstallationHandlers handler
         if (decision is not ("ACCEPT" or "REQUEST_REWORK")) return Invalid("decision", "'decision' must be ACCEPT or REQUEST_REWORK.");
         return Respond(await handlers.DecideAcceptanceAsync(user, projectId, decision == "ACCEPT", request.Reason, cancellationToken));
     }
+
+    /// <summary>Agrees to the Manager-approved equipment substitution of the completion waiting for acceptance (then accept or ask for rework).</summary>
+    [HttpPost("{projectId:guid}/equipment-substitution/approve")]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
+    public async Task<IActionResult> ApproveSubstitution(Guid projectId, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await handlers.CustomerApproveSubstitutionAsync(user, projectId, cancellationToken)) : UnauthorizedFailure();
 
     [HttpGet("{projectId:guid}/handover")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]

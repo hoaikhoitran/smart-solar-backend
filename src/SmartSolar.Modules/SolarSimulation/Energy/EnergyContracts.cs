@@ -76,12 +76,55 @@ public sealed record PvEnergyResult(PvEnergyEstimate? Estimate, ProviderFailure?
     public static PvEnergyResult Fail(string code, string message) => new(null, new ProviderFailure(code, message));
 }
 
+/// <summary>
+/// PVGIS seriescalc request for the SAME system as <see cref="PvEnergyRequest"/> (location, kWp, losses, tilt, azimuth,
+/// mounting place) over the years <see cref="StartYear"/>–<see cref="EndYear"/>.
+/// </summary>
+public sealed record PvHourlyRequest(
+    decimal Latitude,
+    decimal Longitude,
+    decimal PeakPowerKwp,
+    decimal SystemLossPercent,
+    decimal TiltDegree,
+    decimal CompassAzimuthDegree,
+    string MountingPlace,
+    int StartYear,
+    int EndYear);
+
+/// <summary>
+/// One PVGIS hourly row (pvcalculation=1, components=1). <see cref="HourStartUtc"/> is the start of the UTC hour the row
+/// belongs to (PVGIS "time" with the minutes dropped). Units: W for <see cref="PowerW"/> (the whole system, unshaded
+/// reference), W/m² for the plane-of-array components Gb(i), Gd(i), Gr(i), degrees for the sun height H_sun.
+/// </summary>
+public sealed record PvHourlyRecord(
+    DateTimeOffset HourStartUtc,
+    int MinuteOfTimestamp,
+    double PowerW,
+    double BeamW,
+    double DiffuseW,
+    double ReflectedW,
+    double SunHeightDegree);
+
+public sealed record PvHourlySeries(IReadOnlyList<PvHourlyRecord> Records, PvProviderMetadata Provider);
+
+public sealed record PvHourlyResult(PvHourlySeries? Series, ProviderFailure? Failure)
+{
+    public bool Succeeded => Series is not null;
+
+    public static PvHourlyResult Success(PvHourlySeries series) => new(series, null);
+
+    public static PvHourlyResult Fail(string code, string message) => new(null, new ProviderFailure(code, message));
+}
+
 public interface IPvEnergyEstimator
 {
     PvEnergySettings Settings { get; }
 
     /// <summary>Never throws for provider problems; returns a failure instead. Honors cancellation.</summary>
     Task<PvEnergyResult> EstimateAsync(PvEnergyRequest request, CancellationToken cancellationToken);
+
+    /// <summary>Hourly PV power and plane-of-array irradiance components (PVGIS seriescalc). Never throws for provider problems.</summary>
+    Task<PvHourlyResult> GetHourlySeriesAsync(PvHourlyRequest request, CancellationToken cancellationToken);
 }
 
 public sealed record ClimateSettings(string Provider, string ApiTag, int StartYear, int EndYear, string Community, IReadOnlyList<string> Parameters);

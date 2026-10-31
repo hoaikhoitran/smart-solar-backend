@@ -4,7 +4,14 @@ namespace SmartSolar.Modules.AdministrativeUnits;
 
 public sealed record ProvinceView(string Code, string Name, string UnitType);
 
-public sealed record CommuneView(string Code, string Name, string UnitType, string ProvinceCode);
+/// <summary>
+/// An official commune. <see cref="ReferencePoint"/> is its approximate administrative reference point (null when no
+/// verified source was imported); it is not a rooftop location and must not replace a site's measured coordinates.
+/// </summary>
+public sealed record CommuneView(string Code, string Name, string UnitType, string ProvinceCode, CommuneReferencePointView? ReferencePoint = null);
+
+/// <summary>WGS 84 degrees; <see cref="Kind"/> is always COMMUNE_REFERENCE_POINT.</summary>
+public sealed record CommuneReferencePointView(decimal Latitude, decimal Longitude, string Source, string Kind = "COMMUNE_REFERENCE_POINT");
 
 public sealed record LegacyUnitView(string? Code, string Name);
 
@@ -70,7 +77,10 @@ public sealed class AdministrativeUnitQueries(IAdministrativeCatalogReader reade
         var key = VietnameseText.Normalize(q);
         var today = AdministrativeCatalogClock.Today(time);
         var communes = await reader.ListActiveCommunesAsync(province, key.Length == 0 ? null : key, type, today, cancellationToken);
-        return OperationResult<IReadOnlyList<CommuneView>>.Ok(communes.Select(c => new CommuneView(c.Code, c.Name, c.UnitType, c.ProvinceCode)).ToList());
+        return OperationResult<IReadOnlyList<CommuneView>>.Ok(communes.Select(c => new CommuneView(c.Code, c.Name, c.UnitType, c.ProvinceCode,
+            c.ReferenceLatitude is { } lat && c.ReferenceLongitude is { } lon && c.ReferencePointSource is { } source
+                ? new CommuneReferencePointView(lat, lon, source)
+                : null)).ToList());
     }
 
     /// <summary>

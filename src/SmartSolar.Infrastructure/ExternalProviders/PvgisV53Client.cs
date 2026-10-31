@@ -96,6 +96,113 @@ public sealed class PvgisV53Client : IPvEnergyEstimator
         }
     }
 
+    /// <summary>
+    /// PVGIS 5.3 seriescalc with pvcalculation=1 and components=1: hourly P (W), Gb(i), Gd(i), Gr(i) (W/m²) and H_sun (°) for the
+    /// same system parameters as PVcalc. Timestamps are UTC. Not cached here (the whole simulation result is cached instead).
+    /// </summary>
+    public async Task<PvHourlyResult> GetHourlySeriesAsync(PvHourlyRequest request, CancellationToken cancellationToken)
+    {
+        var aspect = Math.Round((decimal)AzimuthConvention.ToPvgisAspect((double)request.CompassAzimuthDegree), 2);
+        var url = "seriescalc"
+            + $"?lat={JsonReading.Invariant(Math.Round(request.Latitude, 4))}&lon={JsonReading.Invariant(Math.Round(request.Longitude, 4))}"
+            + $"&pvcalculation=1&components=1&peakpower={JsonReading.Invariant(Math.Round(request.PeakPowerKwp, 3))}"
+            + $"&loss={JsonReading.Invariant(request.SystemLossPercent)}"
+            + $"&angle={JsonReading.Invariant(request.TiltDegree)}&aspect={JsonReading.Invariant(aspect)}"
+            + $"&mountingplace={request.MountingPlace}&pvtechchoice={_options.Technology}"
+            + $"&usehorizon={(_options.UseHorizon ? 1 : 0)}&startyear={request.StartYear}&endyear={request.EndYear}&outputformat=json";
+
+        try
+        {
+            using var response = await _http.GetAsync(url, cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                var failure = MapHttpFailure(response.StatusCode, body).Failure!;
+                return PvHourlyResult.Fail(failure.Code, failure.Message);
+            }
+
+            using var document = JsonDocument.Parse(body);
+            var series = ParseHourly(document.RootElement, request, aspect);
+            if (series is null)
+            {
+                _logger.LogWarning("PVGIS seriescalc returned a response without valid hourly P, Gb(i), Gd(i), Gr(i) and H_sun values.");
+                return PvHourlyResult.Fail(ProviderFailureCodes.ResponseInvalid, "PVGIS hourly response is missing or has invalid hourly values.");
+            }
+            return PvHourlyResult.Success(series);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return PvHourlyResult.Fail(ProviderFailureCodes.Timeout, "PVGIS did not respond in time.");
+        }
+        catch (TimeoutRejectedException)
+        {
+            return PvHourlyResult.Fail(ProviderFailureCodes.Timeout, "PVGIS did not respond in time.");
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogWarning(ex, "PVGIS seriescalc request failed.");
+            return PvHourlyResult.Fail(ProviderFailureCodes.Unavailable, "PVGIS could not be reached.");
+        }
+        catch (JsonException)
+        {
+            _logger.LogWarning("PVGIS seriescalc returned malformed JSON.");
+            return PvHourlyResult.Fail(ProviderFailureCodes.ResponseInvalid, "PVGIS returned malformed JSON.");
+        }
+    }
+
+    /// <summary>Parses outputs.hourly; null when any row is incomplete, non-finite or negative (never turned into zero energy).</summary>
+    private PvHourlySeries? ParseHourly(JsonElement root, PvHourlyRequest request, decimal aspect)
+    {
+        if (JsonReading.Path(root, "outputs", "hourly") is not { ValueKind: JsonValueKind.Array } hours) return null;
+
+        var records = new List<PvHourlyRecord>();
+        foreach (var item in hours.EnumerateArray())
+        {
+            // "time" is "YYYYMMDD:HHMM" in UTC; the row belongs to the UTC hour HH.
+            var time = JsonReading.String(JsonReading.Path(item, "time"));
+            if (time is not { Length: 13 } || time[8] != ':'
+                || !int.TryParse(time[..4], out var year) || !int.TryParse(time[4..6], out var month) || !int.TryParse(time[6..8], out var day)
+                || !int.TryParse(time[9..11], out var hour) || !int.TryParse(time[11..13], out var minute)
+                || month is < 1 or > 12 || hour is < 0 or > 23 || minute is < 0 or > 59 || day < 1 || day > DateTime.DaysInMonth(year, month))
+                return null;
+
+            var power = Number(item, "P");
+            var beam = Number(item, "Gb(i)");
+            var diffuse = Number(item, "Gd(i)");
+            var reflected = Number(item, "Gr(i)");
+            var sunHeight = Number(item, "H_sun");
+            if (power is not >= 0 || beam is not >= 0 || diffuse is not >= 0 || reflected is not >= 0 || sunHeight is null) return null;
+
+            records.Add(new PvHourlyRecord(new DateTimeOffset(year, month, day, hour, 0, 0, TimeSpan.Zero), minute,
+                power.Value, beam.Value, diffuse.Value, reflected.Value, sunHeight.Value));
+        }
+        if (records.Count == 0) return null;
+
+        var meteo = JsonReading.Path(root, "inputs", "meteo_data");
+        var metadata = new PvProviderMetadata(
+            "PVGIS",
+            _options.ProviderVersion,
+            meteo is { } m1 ? JsonReading.String(JsonReading.Path(m1, "radiation_db")) : null,
+            meteo is { } m2 ? JsonReading.String(JsonReading.Path(m2, "meteo_db")) : null,
+            meteo is { } m3 ? JsonReading.Int(JsonReading.Path(m3, "year_min")) ?? request.StartYear : request.StartYear,
+            meteo is { } m4 ? JsonReading.Int(JsonReading.Path(m4, "year_max")) ?? request.EndYear : request.EndYear,
+            meteo is { } m5 ? JsonReading.String(JsonReading.Path(m5, "horizon_db")) : null,
+            request.MountingPlace,
+            _options.Technology,
+            _options.UseHorizon,
+            Math.Round(request.PeakPowerKwp, 3),
+            request.SystemLossPercent,
+            request.TiltDegree,
+            aspect,
+            DateTimeOffset.UtcNow);
+        return new PvHourlySeries(records, metadata);
+    }
+
+    private static double? Number(JsonElement item, string name)
+        => JsonReading.Path(item, name) is { ValueKind: JsonValueKind.Number } value && value.TryGetDouble(out var number) && double.IsFinite(number)
+            ? number
+            : null;
+
     private PvEnergyResult MapHttpFailure(HttpStatusCode status, string body)
     {
         var message = TryReadMessage(body);

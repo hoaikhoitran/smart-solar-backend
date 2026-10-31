@@ -120,7 +120,66 @@ public sealed record EnergyDocument(
     string? PrimaryMountingPlace,
     IReadOnlyList<EnergyScenarioDocument> Scenarios,
     IReadOnlyList<string> Assumptions,
-    string Disclaimer);
+    string Disclaimer,
+    decimal? AnnualEnergyBeforeShadingKwh = null,
+    decimal? AnnualEnergyAfterShadingKwh = null);
+
+public static class ShadingMethods
+{
+    /// <summary>Sun position + 3D ray casting + PVGIS hourly irradiance, linear direct-beam loss (see <see cref="ShadingDocument"/>).</summary>
+    public const string RayCast3dPvgisHourlyLinear = "RAY_CAST_3D_PVGIS_HOURLY_LINEAR";
+}
+
+/// <summary>Why the shading estimate is not SUCCEEDED (or, for SUCCEEDED, why no ray casting was needed).</summary>
+public static class ShadingReasons
+{
+    public const string Disabled = "DISABLED";
+    public const string NoPanels = "NO_PANELS";
+    public const string LocationMissing = "LOCATION_MISSING";
+    public const string EnergyUnavailable = "ENERGY_UNAVAILABLE";
+    /// <summary>SUCCEEDED with zero loss: nothing can cast a shadow on the panels (no obstacles; flush panels or a single rack panel).</summary>
+    public const string NoOccluders = "NO_OCCLUDERS";
+    public const string ObstacleHeightMissing = "OBSTACLE_HEIGHT_MISSING";
+    public const string ComputationLimit = "COMPUTATION_LIMIT";
+    public const string HourlyDataFailed = "HOURLY_DATA_FAILED";
+}
+
+/// <summary>Irradiance-weighted annual direct shaded fraction of one panel (0..1); <see cref="Index"/> is the placement index.</summary>
+public sealed record ShadingPanelDocument(int Index, double AnnualDirectShadedFraction);
+
+/// <summary>One calendar month of the typical year, before and after the shading estimate (kWh).</summary>
+public sealed record ShadingMonthDocument(int Month, decimal EnergyBeforeShadingKwh, decimal EnergyAfterShadingKwh, decimal EnergyLossKwh, decimal LossPercent);
+
+/// <summary>
+/// Linear irradiance-based shading estimate for nearby obstacles and rack rows (the authoritative calculation; a Three.js
+/// shadow map is only a visualisation). Energies are typical-year kWh. <see cref="Panels"/> lists every placement index.
+/// <see cref="HourlyReferenceAnnualEnergyKwh"/> is the unshaded mean annual energy of the PVGIS hourly series used, shown to
+/// compare with the PVGIS typical-year baseline; <see cref="SunHeightCheckDeviationDegree"/> is the mean difference between
+/// SmartSolar's sun height and PVGIS H_sun at the PVGIS timestamps (a UTC / sun-position consistency check).
+/// </summary>
+public sealed record ShadingDocument(
+    string Status,
+    string? Reason,
+    ProviderFailure? Failure,
+    string Method,
+    string SunPositionAlgorithm,
+    int TimeStepMinutes,
+    int? StartYear,
+    int? EndYear,
+    int? YearCount,
+    decimal? AnnualLossPercent,
+    decimal? AnnualEnergyLossKwh,
+    decimal? AnnualEnergyBeforeShadingKwh,
+    decimal? AnnualEnergyAfterShadingKwh,
+    int? ShadedPanelCount,
+    double ShadedPanelThresholdPercent,
+    IReadOnlyList<ShadingPanelDocument> Panels,
+    IReadOnlyList<ShadingMonthDocument> Monthly,
+    decimal? HourlyReferenceAnnualEnergyKwh,
+    double? SunHeightCheckDeviationDegree,
+    int SamplesPerPanel,
+    double DirectionBinDegree,
+    IReadOnlyList<string> Limitations);
 
 public sealed record ClimateDocument(
     string Status,
@@ -202,7 +261,8 @@ public sealed record SimulationDetail(
     IReadOnlyList<SimulationWarning> Warnings,
     IReadOnlyList<string> Limitations,
     DateTimeOffset? ExpiresAt = null,
-    string Source = SimulationSources.Cache);
+    string Source = SimulationSources.Cache,
+    ShadingDocument? Shading = null);
 
 /// <summary>A cached (temporary) result in the list; it disappears from the list when it expires.</summary>
 public sealed record SimulationListItem(
@@ -298,7 +358,8 @@ public static class SimulationLimitations
         "Climate values are NASA POWER historical averages for the stated period, shown as context only.",
         "The layout is a best-found preliminary result, not a proven optimum.",
         $"Rack row shading is an advisory estimate for the recorded design window ({shadingWindow}), not proof of year-round shade-free operation.",
-        "Shading from obstacles and from row ends is not modeled.",
+        "Obstacle and rack-row shading is a linear irradiance-based estimate (direct beam only); electrical mismatch, bypass diodes, string layout and diffuse-sky obstruction are not modeled.",
+        "Objects outside the drawn surface (neighbouring buildings, trees) are not modeled; PVGIS accounts for the terrain horizon only.",
         "Structural, mounting-system, building code and fire code requirements are not checked.",
         "Installation spacing values are in millimetres; each value states its source.",
     ];

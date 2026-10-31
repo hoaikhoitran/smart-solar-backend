@@ -58,10 +58,15 @@ public sealed class PostgresInstallationWorkflowConcurrencyTests
 
         await using var check = database.NewContext();
         var status = (await check.Quotations.SingleAsync(q => q.Id == issued.QuotationId)).Status;
-        Assert.Contains(status, new[] { QuotationStatuses.Accepted, QuotationStatuses.RevisionRequested });
+        var outcomeEvents = await check.QuotationEvents.AsNoTracking()
+            .Where(e => e.QuotationId == issued.QuotationId && (e.EventType == "ACCEPTED" || e.EventType == "REVISION_REQUESTED")).ToListAsync();
+        // Every racer's outcome and the stored state, so a failure is diagnosable from the test output alone.
+        var evidence = $"stored={status}; events=[{string.Join(", ", outcomeEvents.Select(e => $"{e.EventType}@{e.CreatedAt:O}"))}]; results=[{string.Join(" | ",
+            results.Select((r, i) => $"{(i % 2 == 0 ? "accept" : "revise")}:{(r.Succeeded ? "OK " + r.Value!.Status : r.ErrorCode + " " + r.Message)}"))}]";
+        Assert.True(status is QuotationStatuses.Accepted or QuotationStatuses.RevisionRequested, evidence);
         // Every success reports the same final state (repeats of the winner are idempotent).
-        Assert.All(results.Where(r => r.Succeeded), r => Assert.Equal(status, r.Value!.Status));
-        Assert.Equal(1, await check.QuotationEvents.CountAsync(e => e.QuotationId == issued.QuotationId && (e.EventType == "ACCEPTED" || e.EventType == "REVISION_REQUESTED")));
+        Assert.True(results.Where(r => r.Succeeded).All(r => r.Value!.Status == status), evidence);
+        Assert.True(outcomeEvents.Count == 1, evidence);
     }
 
     [PostgresFact]
@@ -169,7 +174,10 @@ public sealed class PostgresInstallationWorkflowConcurrencyTests
             Assign(i % 2 == 0 ? a.Id : b.Id, At(8, 0, wed), At(12, 0, wed), project.Revision), None));
 
         Assert.Single(results, r => r.Succeeded);
-        Assert.All(results.Where(r => !r.Succeeded), r => Assert.Equal(InstallationErrorCodes.StaleRevision, r.ErrorCode));
+        // A loser either finds the project revision moved (STALE) or, when it asked for the same technician as the winner, finds that
+        // technician already busy in the interval (SCHEDULE_CONFLICT) before reaching the revision check; which one depends on lock timing.
+        // Both refuse without writing; the invariants below are what must hold.
+        Assert.All(results.Where(r => !r.Succeeded), r => Assert.Contains(r.ErrorCode, new[] { InstallationErrorCodes.StaleRevision, SmartSolar.Modules.Scheduling.Domain.EligibilityReasons.ScheduleConflict }));
         await using var check = database.NewContext();
         Assert.Equal(1, await check.InstallationAssignments.CountAsync(x => x.ProjectId == project.ProjectId));
         Assert.Equal(project.Revision + 1, (await check.InstallationProjects.SingleAsync(p => p.Id == project.ProjectId)).Revision);

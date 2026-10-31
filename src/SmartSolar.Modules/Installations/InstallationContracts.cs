@@ -9,6 +9,12 @@ public sealed record PaidContractSource(Guid ContractId, string ContractNumber, 
 public sealed record InstallationSiteInfo(Guid PropertySiteId, string PropertyName, string Province, string? District, string? Ward, string? StreetLine,
     decimal? Latitude, decimal? Longitude, string CustomerName, string? CustomerPhone);
 
+/// <summary>The catalog facts an installed asset is checked against.</summary>
+public sealed record AssetCatalogProduct(Guid ProductId, string ProductType, int? WarrantyMonths);
+
+/// <summary>A SOLAR_PANEL or INVERTER product and its quantity in the contract's accepted quotation.</summary>
+public sealed record ContractedEquipment(Guid ProductId, string ProductType, string Name, decimal Quantity);
+
 public interface IInstallationUnitOfWork : ITransactionalUnitOfWork
 {
     Task<PaidContractSource?> GetContractAsync(Guid contractId, CancellationToken cancellationToken);
@@ -34,6 +40,25 @@ public interface IInstallationUnitOfWork : ITransactionalUnitOfWork
     Task<IReadOnlyList<InstallationEvent>> GetEventsAsync(Guid projectId, CancellationToken cancellationToken);
     Task<bool> IsEvidenceFileUsedAsync(Guid fileId, CancellationToken cancellationToken);
     Task<bool> SerialExistsAsync(string manufacturer, string serialNumber, CancellationToken cancellationToken);
+
+    /// <summary>The customer's selected simulation summary of the survey request (null when none was selected).</summary>
+    Task<SimulatedProductionView?> GetSelectedSimulationAsync(Guid surveyRequestId, CancellationToken cancellationToken);
+
+    /// <summary>Catalog facts of the given products that are not deleted (type and manufacturer warranty); missing ids are absent.</summary>
+    /// <summary>Panels and inverters of the accepted quotation the contract was made from (its lines are immutable since issue).</summary>
+    Task<IReadOnlyList<ContractedEquipment>> GetContractedEquipmentAsync(Guid contractId, CancellationToken cancellationToken);
+
+    /// <summary>The accepted quotation the contract was made from.</summary>
+    Task<Guid> GetContractQuotationIdAsync(Guid contractId, CancellationToken cancellationToken);
+
+    /// <summary>The project's CUSTOMER_APPROVAL_PENDING or APPROVED substitution (at most one: partial unique index).</summary>
+    Task<EquipmentSubstitution?> GetActiveSubstitutionAsync(Guid projectId, bool track, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<EquipmentSubstitution>> ListSubstitutionsAsync(Guid projectId, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<EquipmentSubstitutionItem>> GetSubstitutionItemsAsync(IReadOnlyCollection<Guid> substitutionIds, CancellationToken cancellationToken);
+
+    Task<IReadOnlyDictionary<Guid, AssetCatalogProduct>> GetAssetProductsAsync(IReadOnlyCollection<Guid> productIds, CancellationToken cancellationToken);
     Task<IReadOnlyDictionary<Guid, string>> GetUserNamesAsync(IReadOnlyCollection<Guid> userIds, CancellationToken cancellationToken);
     Task<ZoneSummary?> GetZoneSummaryAsync(Guid zoneId, CancellationToken cancellationToken);
 

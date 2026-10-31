@@ -20,6 +20,12 @@ public sealed class OnSiteSurveyUnitOfWork(AppDbContext db) : TransactionalUnitO
                 row.a.StartsAt, row.a.EndsAt, row.AssignedSaleId, row.Status.ToString(), row.a.PropertySiteId, row.Latitude, row.Longitude);
     }
 
+    public async Task<IReadOnlyList<SurveyCatalogProduct>> GetCatalogProductsAsync(IReadOnlyCollection<Guid> productIds, CancellationToken cancellationToken)
+        => await Db.Products.AsNoTracking()
+            .Where(p => productIds.Contains(p.Id) && p.DeletedAt == null)
+            .Select(p => new SurveyCatalogProduct(p.Id, p.ProductType, p.Unit, p.Status == SmartSolar.Modules.Catalog.Enums.ProductStatus.Active))
+            .ToListAsync(cancellationToken);
+
     public Task LockTechnicianAsync(Guid technicianUserId, CancellationToken cancellationToken)
         => LockTechnicianProfilesAsync([technicianUserId], cancellationToken);
 
@@ -64,6 +70,10 @@ public sealed class OnSiteSurveyUnitOfWork(AppDbContext db) : TransactionalUnitO
                 .SetProperty(a => a.CompletedAt, completedAt)
                 .SetProperty(a => a.UpdatedAt, completedAt)
                 .SetProperty(a => a.Revision, a => a.Revision + 1), cancellationToken) == 1;
+
+    public Task<bool> HasLiveContractAsync(Guid surveyRequestId, CancellationToken cancellationToken)
+        => Db.CustomerContracts.AsNoTracking()
+            .AnyAsync(c => c.SurveyRequestId == surveyRequestId && c.Status != SmartSolar.Modules.CustomerContracts.ContractStatuses.Superseded && c.Status != SmartSolar.Modules.CustomerContracts.ContractStatuses.Discarded, cancellationToken);
 
     public async Task<bool> TryCompleteSurveyRequestAsync(Guid surveyRequestId, CancellationToken cancellationToken)
         => await Db.SurveyRequests

@@ -183,7 +183,9 @@ public sealed class PostgresKnowledgeBaseConcurrencyTests
 
         // Ten simultaneous questions, each on its own DbContext (as two API replicas would be).
         var answers = await RaceAsync(database, 10, (db, i) =>
-            new ChatService(new KnowledgeUnitOfWork(db), rag, options, ctx.Clock, NullLogger<ChatService>.Instance).AskAsync(user, null, $"Question {i}", null, None));
+            // Staff audience: the seeded document is unclassified (internal); this test is about the per-user generation cap, not the audience.
+            new ChatService(new KnowledgeUnitOfWork(db), rag, options, ctx.Clock, NullLogger<ChatService>.Instance).AskAsync(user, null, $"Question {i}", null, None,
+                KnowledgeAudience.Staff));
 
         Assert.True(maxInFlight <= 2, $"{maxInFlight} generations ran at once.");
         Assert.InRange(answers.Count(a => a.Succeeded), 1, 10);

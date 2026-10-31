@@ -241,7 +241,7 @@ public class SurveyRequestsEndpointsTests
         Assert.Equal(request.PreSurveyId, body.GetProperty("preSurveyId").GetGuid());
         Assert.Equal(sale.Id, body.GetProperty("assignedSaleId").GetGuid());
         Assert.Equal("Detail Customer", body.GetProperty("customerName").GetString());
-        Assert.Equal((int)SurveyRequestStatus.Pending, body.GetProperty("status").GetInt32());
+        Assert.Equal("PENDING", body.GetProperty("status").GetString());   // enums are UPPER_SNAKE strings
     }
 
     [Fact]
@@ -332,6 +332,6 @@ public class SurveyRequestsEndpointsTests
         Assert.Equal("Flow Customer", detailBody.GetProperty("customerName").GetString());
         Assert.Equal(60m, detailBody.GetProperty("totalAreaM2").GetDecimal());
         Assert.Equal(sale.Id, detailBody.GetProperty("assignedSaleId").GetGuid());
-        Assert.Equal((int)SurveyRequestStatus.Pending, detailBody.GetProperty("status").GetInt32());
+        Assert.Equal("PENDING", detailBody.GetProperty("status").GetString());
     }
 }

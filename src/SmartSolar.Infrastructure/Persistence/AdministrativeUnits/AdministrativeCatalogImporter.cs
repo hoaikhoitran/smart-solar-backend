@@ -130,6 +130,21 @@ public sealed class AdministrativeCatalogImporter(AppDbContext db, TimeProvider 
         }
         await db.SaveChangesAsync(token);
 
+        // Verified reference points (optional file); communes not listed keep what they have.
+        if (report.ReferencePoints.Count > 0)
+        {
+            var pointCodes = report.ReferencePoints.Select(p => p.CommuneCode).ToList();
+            var targets = await db.AdministrativeCommunes.Where(c => pointCodes.Contains(c.Code)).ToDictionaryAsync(c => c.Code, StringComparer.Ordinal, token);
+            foreach (var point in report.ReferencePoints)
+            {
+                var commune = targets[point.CommuneCode];
+                commune.ReferenceLatitude = point.Latitude;
+                commune.ReferenceLongitude = point.Longitude;
+                commune.ReferencePointSource = point.Source;
+            }
+            await db.SaveChangesAsync(token);
+        }
+
         var codes = report.Communes.Select(c => c.Code).ToList();
         var legacy = (await db.AdministrativeLegacyCommuneMaps.Where(l => codes.Contains(l.CommuneCode)).ToListAsync(token))
             .ToDictionary(l => (l.CommuneCode, l.MatchKey));

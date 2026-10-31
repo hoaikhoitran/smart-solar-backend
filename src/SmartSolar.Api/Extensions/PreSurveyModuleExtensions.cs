@@ -25,6 +25,7 @@ public static class PreSurveyModuleExtensions
         services.AddScoped<SubmitPreSurveyHandler>();
         services.AddScoped<GetPendingSurveyRequestsHandler>();
         services.AddScoped<GetMySurveyRequestsHandler>();
+        services.AddScoped<SmartSolar.Modules.PreSurvey.ListMine.CustomerListingHandler>();
         services.AddScoped<GetSurveyRequestDetailHandler>();
         services.AddScoped<UpdatePreSurveySurfaceHandler>();
         services.AddScoped<GetPreSurveySurfaceHandler>();

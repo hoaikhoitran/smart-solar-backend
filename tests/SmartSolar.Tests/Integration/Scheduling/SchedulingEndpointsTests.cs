@@ -196,7 +196,7 @@ public sealed class SchedulingEndpointsTests
         await DataOf(await sales.PostAsync($"/api/survey-requests/{surveyRequestId}/claim", null));
         var detail = await DataOf(await sales.GetAsync($"/api/survey-requests/{surveyRequestId}"));
         Assert.Equal(sale.Id, detail.GetProperty("assignedSaleId").GetGuid());
-        Assert.Equal(4, detail.GetProperty("status").GetInt32());                                   // Scheduled
+        Assert.Equal("SCHEDULED", detail.GetProperty("status").GetString());                        // enums are UPPER_SNAKE strings
         Assert.Equal(technician.Id, detail.GetProperty("appointment").GetProperty("assignedTechnicianUserId").GetGuid());
         Assert.Equal(AppointmentStatuses.Accepted, detail.GetProperty("appointment").GetProperty("status").GetString());
     }

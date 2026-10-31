@@ -43,6 +43,7 @@ public sealed class TechnicianOnSiteSurveyController(OnSiteSurveyHandlers handle
             : UnauthorizedFailure();
 
     /// <summary>A short-lived presigned GET URL for one attachment; <c>disposition</c> is <c>inline</c> (default) or <c>attachment</c>.</summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Files.AttachedFileUrlView>), StatusCodes.Status200OK)]
     [HttpGet("attachments/{attachmentId:guid}/url")]
     [EnableRateLimiting(RateLimitingExtensions.OnSiteSurveyReadPolicy)]
     public async Task<IActionResult> AttachmentUrl(Guid appointmentId, Guid attachmentId, [FromQuery] string? disposition, CancellationToken cancellationToken)
@@ -79,7 +80,11 @@ public sealed class TechnicianOnSiteSurveyController(OnSiteSurveyHandlers handle
         r.RoofType, r.RoofMaterial, r.RoofLengthM, r.RoofWidthM, r.UsableAreaM2, r.TiltDegree, r.AzimuthDegree, r.RoofCondition,
         r.ElectricalCabinetNotes, r.ElectricalConnectionNotes, r.InstallationFeasibility, r.ProposedInverterLocation, r.ProposedPanelLayoutNotes,
         r.MeasuredLatitude, r.MeasuredLongitude, r.Notes,
-        r.Obstacles?.Select(o => new ObstacleInput(o.Kind ?? "", o.Description, o.HeightM, o.AreaM2)).ToList());
+        r.Obstacles?.Select(o => new ObstacleInput(o.Kind ?? "", o.Description, o.HeightM, o.AreaM2)).ToList(),
+        r.BillOfMaterials is { } bom
+            ? new BillOfMaterialsInput(bom.Materials?.Select(i => new BillOfMaterialsItem(i.ProductId, i.Quantity)).ToList(),
+                bom.ServiceItems?.Select(i => new BillOfMaterialsItem(i.ProductId, i.Quantity)).ToList(), bom.InstallationNotes)
+            : null);
 }
 
 /// <summary>Sales (owner of the request) and Managers/Admins: read the completed on-site survey.</summary>
@@ -100,6 +105,7 @@ public sealed class StaffOnSiteSurveyController(OnSiteSurveyHandlers handlers, O
     }
 
     /// <summary>A short-lived presigned GET URL for one attachment (same access as reading the survey).</summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Files.AttachedFileUrlView>), StatusCodes.Status200OK)]
     [HttpGet("attachments/{attachmentId:guid}/url")]
     [EnableRateLimiting(RateLimitingExtensions.OnSiteSurveyReadPolicy)]
     public async Task<IActionResult> AttachmentUrl(Guid surveyRequestId, Guid attachmentId, [FromQuery] string? disposition, CancellationToken cancellationToken)

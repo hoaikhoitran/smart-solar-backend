@@ -47,6 +47,14 @@ public sealed class AdminKnowledgeDocumentsController(KnowledgeDocumentHandlers 
     public async Task<IActionResult> UpdateMetadata(Guid documentId, [FromBody] UpdateKnowledgeMetadataRequest request, CancellationToken cancellationToken)
         => Respond(await handlers.UpdateMetadataAsync(documentId, request.Revision, request.Title ?? "", request.Category ?? "", request.Tags, cancellationToken));
 
+    /// <summary>Reclassifies who may retrieve the document (INTERNAL or CUSTOMER) with a reason; audited, effective immediately.</summary>
+    [HttpPut("{documentId:guid}/audience")]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminPublishPolicy)]
+    public async Task<IActionResult> SetAudience(Guid documentId, [FromBody] SetKnowledgeAudienceRequest request, CancellationToken cancellationToken)
+        => CurrentUserId() is { } admin
+            ? Respond(await handlers.SetAudienceAsync(admin, documentId, request.Revision, request.Audience, request.Reason, cancellationToken))
+            : UnauthorizedFailure();
+
     [HttpPost("{documentId:guid}/publish")]
     [EnableRateLimiting(RateLimitingExtensions.RagAdminPublishPolicy)]
     public async Task<IActionResult> Publish(Guid documentId, [FromBody] PublishKnowledgeVersionRequest request, CancellationToken cancellationToken)
@@ -156,7 +164,7 @@ public sealed class ChatController(ChatService chat) : OperationResultController
         if (CurrentUserId() is not { } user) return UnauthorizedFailure();
         if (string.IsNullOrWhiteSpace(request.Message)) return Invalid("message", "Message is required.");
         if (request.ClientMessageId is { Length: > 64 }) return Invalid("clientMessageId", "At most 64 characters.");
-        return Respond(await chat.AskAsync(user, request.SessionId, request.Message, request.ClientMessageId, cancellationToken));
+        return Respond(await chat.AskAsync(user, request.SessionId, request.Message, request.ClientMessageId, cancellationToken, Audience()));
     }
 
     [HttpGet("sessions")]
@@ -169,5 +177,11 @@ public sealed class ChatController(ChatService chat) : OperationResultController
     [HttpGet("sessions/{sessionId:guid}")]
     [EnableRateLimiting(RateLimitingExtensions.RagHistoryPolicy)]
     public async Task<IActionResult> GetSession(Guid sessionId, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await chat.GetSessionAsync(user, sessionId, cancellationToken)) : UnauthorizedFailure();
+        => CurrentUserId() is { } user ? Respond(await chat.GetSessionAsync(user, sessionId, cancellationToken, Audience())) : UnauthorizedFailure();
+
+    /// <summary>Staff roles read every published document; anyone else (customers, or a token without a staff role) only customer-visible ones.</summary>
+    private KnowledgeAudience Audience()
+        => IsInRole(RoleCodes.Admin) || IsInRole(RoleCodes.Manager) || IsInRole(RoleCodes.Sales) || IsInRole(RoleCodes.Technician)
+            ? KnowledgeAudience.Staff
+            : KnowledgeAudience.Customer;
 }

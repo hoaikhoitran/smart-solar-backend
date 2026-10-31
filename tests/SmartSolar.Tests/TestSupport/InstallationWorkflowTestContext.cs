@@ -42,7 +42,12 @@ public sealed class InstallationWorkflowTestContext : IAsyncDisposable
 
     public FileService Files(AppDbContext? db = null) => new(new FileStore(db ?? Db), Storage, StorageOptions, Clock, NullLogger<FileService>.Instance);
     public OnSiteSurveyHandlers OnSite() => new(new OnSiteSurveyUnitOfWork(Db), Files(), Scheduling.OnSiteOptions, Scheduling.Policies, Clock);
-    public SmartSolar.Modules.Quotations.QuotationHandlers Quotations(AppDbContext? db = null) => new(new QuotationUnitOfWork(db ?? Db), Files(db), new SmartSolar.Modules.Quotations.QuotationOptions(), Clock);
+    public SmartSolar.Modules.Quotations.QuotationOptions QuotationOptions { get; } = new();
+    public SmartSolar.Modules.Quotations.QuotationHandlers Quotations(AppDbContext? db = null) => new(new QuotationUnitOfWork(db ?? Db), Files(db), QuotationOptions, Clock);
+
+    /// <summary>The production wiring: completing the survey runs the automatic quotation.</summary>
+    public OnSiteSurveyHandlers OnSiteWithAutomaticQuotation(AppDbContext? db = null)
+        => new(new OnSiteSurveyUnitOfWork(db ?? Db), Files(db), Scheduling.OnSiteOptions, Scheduling.Policies, Clock, Quotations(db));
 
     public SmartSolar.Modules.CustomerContracts.ContractHandlers Contracts(AppDbContext? db = null) => new(new ContractUnitOfWork(db ?? Db), Files(db), Clock);
     public FakePayOsServer PayOs { get; } = new();

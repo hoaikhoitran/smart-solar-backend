@@ -19,7 +19,11 @@ public sealed record ContractView(
     string Status, string Currency, decimal TotalAmount, JsonElement PricingSnapshot, JsonElement CustomerSnapshot, string? Terms, string? CanonicalHash,
     ContractDocumentView? OfficialDocument, ContractDocumentView? SignedDocument, string? RejectionReason, DateTimeOffset? IssuedAt,
     DateTimeOffset? PublishedAt, DateTimeOffset? SignedAt, DateTimeOffset? PaidAt, int Revision,
-    IReadOnlyList<SignatureSubmissionView>? Submissions, IReadOnlyList<ContractEventView>? Events, int? WarrantyMonths = null);
+    IReadOnlyList<SignatureSubmissionView>? Submissions, IReadOnlyList<ContractEventView>? Events, int? WarrantyMonths = null,
+    ContractDiscardView? Discard = null);
+
+/// <summary>Staff-only record of a discarded draft (customers never see drafts, discarded or not).</summary>
+public sealed record ContractDiscardView(DateTimeOffset DiscardedAt, Guid DiscardedByUserId, string Reason);
 
 public enum ReviewDecision { Approve = 1, Reject = 2 }
 
@@ -46,8 +50,11 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
             return OperationResult<ContractView>.Fail(ContractErrorCodes.NotFound, "Quotation was not found.");
         if (quotation.Status != "ACCEPTED")
             return OperationResult<ContractView>.Fail(ContractErrorCodes.QuotationNotAccepted, "Contracts are created only from a quotation the customer accepted.");
-        if ((await unitOfWork.ListByQuotationAsync(quotationId, cancellationToken)).Any(c => c.Status != ContractStatuses.Superseded))
-            return OperationResult<ContractView>.Fail(ContractErrorCodes.AlreadyExists, "A contract already exists for this quotation; amend it instead.");
+        if (quotation.QuotationSurveyVersion != quotation.CurrentSurveyVersion)
+            return OperationResult<ContractView>.Fail(ContractErrorCodes.SurveyChanged,
+                $"The on-site survey was amended (version {quotation.QuotationSurveyVersion} → {quotation.CurrentSurveyVersion}) after this quotation was made; issue a revised quotation first.",
+                new { quotationSurveyVersion = quotation.QuotationSurveyVersion, currentSurveyVersion = quotation.CurrentSurveyVersion });
+        if (ExistingContractError(await unitOfWork.ListByQuotationAsync(quotationId, cancellationToken)) is { } existing) return existing.As<ContractView>();
         var warranty = await WarrantyMonthsAsync(warrantyMonths, null, cancellationToken);
         if (!warranty.Succeeded) return warranty.As<ContractView>();
 
@@ -60,8 +67,79 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
             CustomerSnapshot = quotation.CustomerSnapshotJson ?? "{}", Terms = Trim(terms, 8000) ?? quotation.Terms, WarrantyMonths = warranty.Value,
             CreatedAt = now, UpdatedAt = now,
         };
-        return await AddNewAsync(contract, salesUserId, "CREATED", $"from quotation {quotation.QuoteNumber} v{quotation.QuotationVersion}", cancellationToken);
+        // The checks above are a fast path; the decisive ones run again under the survey-request lock that withdrawal and closure also take,
+        // so a contract is never created for a request closed meanwhile, and a closure never misses a contract created meanwhile.
+        return await AddNewAsync(contract, salesUserId, "CREATED", $"from quotation {quotation.QuoteNumber} v{quotation.QuotationVersion}", cancellationToken,
+            async token =>
+            {
+                await unitOfWork.LockSurveyRequestAsync(quotation.SurveyRequestId, token);
+                if (await unitOfWork.IsSurveyRequestClosedAsync(quotation.SurveyRequestId, token))
+                    return Fail(ContractErrorCodes.RequestClosed, "The survey request was withdrawn or closed; no contract can be made for it.");
+                var fresh = await unitOfWork.GetQuotationAsync(quotationId, token);
+                if (fresh?.Status != "ACCEPTED")
+                    return Fail(ContractErrorCodes.QuotationNotAccepted, "The quotation is no longer accepted (it was cancelled or changed meanwhile).");
+                if (fresh.QuotationSurveyVersion != fresh.CurrentSurveyVersion)
+                    return Fail(ContractErrorCodes.SurveyChanged, "The on-site survey was amended meanwhile; issue a revised quotation first.");
+                if (ExistingContractError(await unitOfWork.ListByQuotationAsync(quotationId, token)) is { } existing) return existing;
+                return OperationResult<bool>.Ok(true);
+            });
     }
+
+    /// <summary>
+    /// The Sales owner explicitly discards an initial DRAFT (never issued) with a reason, so the request can then be closed. The row is kept as
+    /// DISCARDED with actor, time and reason; nothing paid, signed or issued is touched. Takes the survey-request lock first (same order as
+    /// closure and contract creation), then re-reads the contract; a concurrent issue or edit makes this stale, never half-applied. Repeating
+    /// it on a discarded contract returns it unchanged (no second event).
+    /// </summary>
+    public async Task<OperationResult<ContractView>> DiscardAsync(Guid salesUserId, Guid contractId, int revision, string? reason, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(reason) || reason.Trim().Length > 1000)
+            return OperationResult<ContractView>.Fail(ContractErrorCodes.DiscardReasonRequired, "A reason of at most 1000 characters is required.");
+        var contract = await unitOfWork.FindAsync(contractId, false, cancellationToken);
+        if (contract is null || await unitOfWork.GetAssignedSaleAsync(contract.SurveyRequestId, cancellationToken) != salesUserId) return NotFound();
+        try
+        {
+            var outcome = await unitOfWork.ExecuteInTransactionAsync<OperationResult<bool>>(async token =>
+            {
+                await unitOfWork.LockSurveyRequestAsync(contract.SurveyRequestId, token);
+                var c = await unitOfWork.FindAsync(contractId, true, token);
+                if (c is null) return (Fail(ContractErrorCodes.NotFound, "Contract was not found."), false);
+                if (c.Status == ContractStatuses.Discarded) return (OperationResult<bool>.Ok(false), false);   // idempotent repeat: nothing written
+                if (c.Revision != revision)
+                    return (OperationResult<bool>.Fail(ContractErrorCodes.StaleRevision, "The contract was changed meanwhile. Reload and try again.", new { currentRevision = c.Revision }), false);
+                if (c.Status != ContractStatuses.Draft || c.PreviousContractId is not null)
+                    return (OperationResult<bool>.Fail(ContractErrorCodes.NotDiscardable,
+                        c.Status != ContractStatuses.Draft ? $"A {c.Status} contract cannot be discarded; only a draft that was never issued can."
+                            : "An amendment draft cannot be discarded here; only the initial draft of a quotation can.", new { status = c.Status }), false);
+                var now = time.GetUtcNow();
+                c.DiscardedAt = now;
+                c.DiscardedByUserId = salesUserId;
+                c.DiscardReason = reason.Trim();
+                Move(c, ContractStatuses.Discarded, salesUserId, now, reason.Trim().Length > 450 ? reason.Trim()[..450] : reason.Trim());
+                c.UpdatedAt = now;
+                c.Revision++;
+                await unitOfWork.SaveChangesAsync(token);
+                return (OperationResult<bool>.Ok(true), true);
+            }, cancellationToken);
+            if (!outcome.Succeeded) return outcome.As<ContractView>();
+        }
+        catch (PersistenceConflictException)
+        {
+            return OperationResult<ContractView>.Fail(ContractErrorCodes.StaleRevision, "The contract was changed meanwhile. Reload and try again.");
+        }
+        return OperationResult<ContractView>.Ok(await ViewAsync((await unitOfWork.FindAsync(contractId, false, cancellationToken))!, true, cancellationToken));
+    }
+
+    /// <summary>
+    /// Why a quotation cannot get a new contract: a live one exists, or its draft was discarded (re-contracting after a discard is not a
+    /// defined process, and the one-live index would refuse it too).
+    /// </summary>
+    private static OperationResult<bool>? ExistingContractError(IReadOnlyList<CustomerContract> contracts)
+        => contracts.Any(c => c.Status == ContractStatuses.Discarded)
+            ? Fail(ContractErrorCodes.DraftDiscarded, "This quotation's contract draft was discarded; a new contract for it is not possible.")
+            : contracts.Any(c => c.Status != ContractStatuses.Superseded)
+                ? Fail(ContractErrorCodes.AlreadyExists, "A contract already exists for this quotation; amend it instead.")
+                : null;
 
     /// <param name="warrantyMonths">When given, changes the draft's installation warranty (one of the Admin's active options).</param>
     public Task<OperationResult<ContractView>> UpdateTermsAsync(Guid salesUserId, Guid contractId, int revision, string? terms, CancellationToken cancellationToken,
@@ -85,6 +163,9 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
         => RunAsSalesAsync(salesUserId, contractId, revision, allowManager: false, async (c, now, token) =>
         {
             if (c.Status != ContractStatuses.Draft) return Fail(ContractErrorCodes.InvalidState, "Only drafts can be issued.");
+            // The terms are part of the canonical (signed) content: an issued contract always has them.
+            if (string.IsNullOrWhiteSpace(c.Terms))
+                return Fail(ContractErrorCodes.TermsRequired, "Enter the contract terms before issuing.");
             // Every new contract states its installation warranty (contracts issued before warranty options existed keep theirs as signed).
             if (c.WarrantyMonths is null)
                 return Fail(ContractErrorCodes.WarrantyRequired,
@@ -193,7 +274,7 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
     {
         var current = await unitOfWork.FindAsync(contractId, false, cancellationToken);
         if (current is null || await unitOfWork.GetAssignedSaleAsync(current.SurveyRequestId, cancellationToken) != salesUserId) return NotFound();
-        if (current.Status is ContractStatuses.Draft or ContractStatuses.Paid or ContractStatuses.Superseded)
+        if (current.Status is ContractStatuses.Draft or ContractStatuses.Paid or ContractStatuses.Superseded or ContractStatuses.Discarded)
             return OperationResult<ContractView>.Fail(ContractErrorCodes.InvalidState, "Only issued, unpaid contracts can be amended (edit drafts directly).");
         var versions = await unitOfWork.ListByQuotationAsync(current.QuotationId, cancellationToken);
         if (versions.Any(c => c.Status == ContractStatuses.Draft))
@@ -334,17 +415,21 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
         return OperationResult<ContractView>.Ok(await ViewAsync((await unitOfWork.FindAsync(contractId, false, cancellationToken))!, true, cancellationToken));
     }
 
-    private async Task<OperationResult<ContractView>> AddNewAsync(CustomerContract contract, Guid actor, string eventType, string detail, CancellationToken cancellationToken)
+    /// <param name="precondition">Runs first inside the transaction (after its locks); a failure aborts without writing anything.</param>
+    private async Task<OperationResult<ContractView>> AddNewAsync(CustomerContract contract, Guid actor, string eventType, string detail, CancellationToken cancellationToken,
+        Func<CancellationToken, Task<OperationResult<bool>>>? precondition = null)
     {
         try
         {
-            await unitOfWork.ExecuteInTransactionAsync<bool>(async token =>
+            var outcome = await unitOfWork.ExecuteInTransactionAsync<OperationResult<bool>>(async token =>
             {
+                if (precondition is not null && await precondition(token) is { Succeeded: false } refused) return (refused, false);
                 unitOfWork.AddContract(contract);
                 Event(contract, eventType, null, ContractStatuses.Draft, actor, detail, contract.CreatedAt);
                 await unitOfWork.SaveChangesAsync(token);
-                return (true, true);
+                return (OperationResult<bool>.Ok(true), true);
             }, cancellationToken);
+            if (!outcome.Succeeded) return outcome.As<ContractView>();
         }
         catch (PersistenceConflictException)
         {
@@ -374,7 +459,8 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
             c.Terms, c.CanonicalHash,
             c.OfficialDocumentFileId is { } official ? new ContractDocumentView(official, c.OfficialDocumentSha256, c.OfficialDocumentConfirmedAt) : null,
             c.SignedDocumentFileId is { } signed ? new ContractDocumentView(signed, c.SignedDocumentSha256, c.SignedSubmittedAt) : null,
-            c.RejectionReason, c.IssuedAt, c.PublishedAt, c.SignedAt, c.PaidAt, c.Revision, submissions, events, c.WarrantyMonths);
+            c.RejectionReason, c.IssuedAt, c.PublishedAt, c.SignedAt, c.PaidAt, c.Revision, submissions, events, c.WarrantyMonths,
+            staff && c.DiscardedAt is { } discardedAt ? new ContractDiscardView(discardedAt, c.DiscardedByUserId!.Value, c.DiscardReason!) : null);
     }
 
     private static readonly JsonSerializerOptions CanonicalJson = new() { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull };

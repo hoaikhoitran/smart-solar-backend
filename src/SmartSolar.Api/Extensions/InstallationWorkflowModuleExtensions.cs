@@ -17,7 +17,10 @@ public static class InstallationWorkflowModuleExtensions
         services.AddScoped<OnSiteSurveyHandlers>();
         services.AddScoped<OnSiteSurveyAttachmentUrlHandlers>();
 
-        services.AddSingleton(ConfigurationBinding.Bind<SmartSolar.Modules.Quotations.QuotationOptions>(configuration, SmartSolar.Modules.Quotations.QuotationOptions.SectionName));
+        var quotationOptions = ConfigurationBinding.Bind<SmartSolar.Modules.Quotations.QuotationOptions>(configuration, SmartSolar.Modules.Quotations.QuotationOptions.SectionName);
+        if (quotationOptions.Validate() is { Count: > 0 } quotationProblems)
+            throw new InvalidOperationException($"Invalid quotation settings: {string.Join(" ", quotationProblems)}");
+        services.AddSingleton(quotationOptions);
         services.AddScoped<SmartSolar.Modules.Quotations.IQuotationUnitOfWork, QuotationUnitOfWork>();
         services.AddScoped<SmartSolar.Modules.Quotations.QuotationHandlers>();
 
@@ -48,6 +51,7 @@ public static class InstallationWorkflowModuleExtensions
         services.AddScoped<SmartSolar.Modules.Installations.InstallationSchedulePlanner>();
         services.AddScoped<SmartSolar.Modules.Installations.InstallationHandlers>();
         services.AddScoped<SmartSolar.Modules.Installations.InstallationEvidenceHandlers>();
+        services.AddScoped<SmartSolar.Modules.Installations.EnergyMonitoringHandlers>();
 
         if (configuration.GetValue("Payments:ReconciliationWorkerEnabled", true))
             services.AddHostedService<Background.PaymentReconciliationWorker>();

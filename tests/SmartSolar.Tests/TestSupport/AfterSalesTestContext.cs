@@ -63,7 +63,7 @@ public sealed class AfterSalesTestContext : IAsyncDisposable
         var scheduling = Installation.SchedulingWithInstallations(db);
         var planner = new InstallationSchedulePlanner(Installation.Scheduling.Eligibility(scheduling), Installation.Scheduling.Calendar,
             Installation.InstallationOptions, Installation.Scheduling.Assignments(scheduling));
-        return new(data, scheduling, planner, Installation.Scheduling.Policies, Views(data), Clock);
+        return new(data, scheduling, planner, Installation.Scheduling.Policies, Views(data), Installation.Scheduling.Calendar, Installation.Files(db), Clock);
     }
 
     public TechnicianServiceHandlers Technician(AppDbContext? db = null) => new(Data(db), Installation.Files(db), Installation.Scheduling.Calendar, Clock);
@@ -96,7 +96,7 @@ public sealed class AfterSalesTestContext : IAsyncDisposable
     {
         var data = Data();
         var terms = Terms(data);
-        return new(data, Payments(), terms, Packages(), Installation.Scheduling.Policies, Clock, NullLogger<AfterSalesSweepService>.Instance);
+        return new(data, Payments(), terms, Packages(), Installation.Scheduling.Policies, Installation.Scheduling.Calendar, Clock, NullLogger<AfterSalesSweepService>.Instance);
     }
 
     public AfterSalesDashboard Dashboard() => new(new AfterSalesReportQueries(Db), Installation.Scheduling.Calendar, Clock);

@@ -120,8 +120,11 @@ public sealed class AppDbContext : DbContext
     public DbSet<SmartSolar.Modules.Installations.InstallationChecklistItem> InstallationChecklistItems => Set<SmartSolar.Modules.Installations.InstallationChecklistItem>();
 
     public DbSet<SmartSolar.Modules.Installations.InstallationEvent> InstallationEvents => Set<SmartSolar.Modules.Installations.InstallationEvent>();
+    public DbSet<SmartSolar.Modules.Installations.EquipmentSubstitution> EquipmentSubstitutions => Set<SmartSolar.Modules.Installations.EquipmentSubstitution>();
+    public DbSet<SmartSolar.Modules.Installations.EquipmentSubstitutionItem> EquipmentSubstitutionItems => Set<SmartSolar.Modules.Installations.EquipmentSubstitutionItem>();
 
     public DbSet<SmartSolar.Modules.KnowledgeBase.KnowledgeDocument> KnowledgeDocuments => Set<SmartSolar.Modules.KnowledgeBase.KnowledgeDocument>();
+    public DbSet<SmartSolar.Modules.KnowledgeBase.KnowledgeDocumentAudienceChange> KnowledgeDocumentAudienceChanges => Set<SmartSolar.Modules.KnowledgeBase.KnowledgeDocumentAudienceChange>();
 
     public DbSet<SmartSolar.Modules.KnowledgeBase.KnowledgeDocumentVersion> KnowledgeDocumentVersions => Set<SmartSolar.Modules.KnowledgeBase.KnowledgeDocumentVersion>();
 

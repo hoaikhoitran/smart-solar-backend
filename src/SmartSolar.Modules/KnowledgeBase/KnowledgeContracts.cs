@@ -112,6 +112,14 @@ public interface IKnowledgeUnitOfWork : ITransactionalUnitOfWork
     /// <summary>Exactly the versions the chatbot may read right now: published version of each published document.</summary>
     Task<IReadOnlyList<RagAllowedVersion>> GetRetrievableVersionsAsync(CancellationToken cancellationToken);
 
+    /// <summary>
+    /// The retrievable versions a Customer may read: published documents an Admin classified as customer-visible (tag
+    /// <c>knowledge_document.audience = CUSTOMER</c>). Every other document is internal.
+    /// </summary>
+    Task<IReadOnlyList<RagAllowedVersion>> GetCustomerRetrievableVersionsAsync(CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<KnowledgeDocumentAudienceChange>> GetAudienceChangesAsync(Guid documentId, CancellationToken cancellationToken);
+
     Task<ChatSession?> FindSessionAsync(Guid sessionId, CancellationToken cancellationToken);
     Task<IReadOnlyList<ChatSession>> ListSessionsAsync(Guid userId, CancellationToken cancellationToken);
     Task<IReadOnlyList<ChatMessage>> GetMessagesAsync(Guid sessionId, int? lastCount, CancellationToken cancellationToken);

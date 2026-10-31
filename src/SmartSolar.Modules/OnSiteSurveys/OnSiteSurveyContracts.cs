@@ -8,8 +8,14 @@ public sealed record SurveyAppointmentContext(
     DateTimeOffset StartsAt, DateTimeOffset EndsAt, Guid? AssignedSaleId, string SurveyRequestStatus,
     Guid PropertySiteId, decimal? SiteLatitude, decimal? SiteLongitude);
 
+/// <summary>What the bill-of-materials check needs about a catalog product (never its price).</summary>
+public sealed record SurveyCatalogProduct(Guid ProductId, string ProductType, string Unit, bool IsActive);
+
 public interface IOnSiteSurveyUnitOfWork : ITransactionalUnitOfWork
 {
+    /// <summary>The non-deleted catalog products among <paramref name="productIds"/> (unknown ids are simply absent).</summary>
+    Task<IReadOnlyList<SurveyCatalogProduct>> GetCatalogProductsAsync(IReadOnlyCollection<Guid> productIds, CancellationToken cancellationToken);
+
     /// <summary>The ACTIVE (not cancelled/replaced) appointment, or null.</summary>
     Task<SurveyAppointmentContext?> GetActiveAppointmentAsync(Guid appointmentId, CancellationToken cancellationToken);
 
@@ -36,6 +42,9 @@ public interface IOnSiteSurveyUnitOfWork : ITransactionalUnitOfWork
 
     /// <summary>Moves the survey request from Scheduled to Completed (conditional update); false when it was not Scheduled.</summary>
     Task<bool> TryCompleteSurveyRequestAsync(Guid surveyRequestId, CancellationToken cancellationToken);
+
+    /// <summary>True when a contract that is not SUPERSEDED exists for the survey request (the commercial deal is formed).</summary>
+    Task<bool> HasLiveContractAsync(Guid surveyRequestId, CancellationToken cancellationToken);
 
     void AddReport(OnSiteSurveyReport report);
     void AddAttachment(OnSiteSurveyAttachment attachment);

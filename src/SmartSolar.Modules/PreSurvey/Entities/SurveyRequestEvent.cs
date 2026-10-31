@@ -16,4 +16,10 @@ public sealed class SurveyRequestEvent
 public static class SurveyRequestEventTypes
 {
     public const string SalesOwnerChanged = "SALES_OWNER_CHANGED";
+    /// <summary>The customer withdrew the request (Reason = the customer's reason, if any).</summary>
+    public const string RequestWithdrawn = "REQUEST_WITHDRAWN";
+    /// <summary>The Sales owner closed the request (Reason = "CODE: note").</summary>
+    public const string RequestClosed = "REQUEST_CLOSED";
+
+    public static readonly IReadOnlyList<string> All = [SalesOwnerChanged, RequestWithdrawn, RequestClosed];
 }

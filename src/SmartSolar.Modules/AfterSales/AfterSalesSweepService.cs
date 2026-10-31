@@ -1,3 +1,5 @@
+using SmartSolar.Modules.Scheduling.Domain;
+using SmartSolar.Modules.Common.Time;
 using Microsoft.Extensions.Logging;
 using SmartSolar.Modules.Common.Persistence;
 using SmartSolar.Modules.Installations;
@@ -32,6 +34,7 @@ public sealed class AfterSalesSweepService(
     SubscriptionTerms terms,
     ServicePackageHandlers packages,
     ISchedulingPolicyProvider policies,
+    WorkingCalendar calendar,
     TimeProvider time,
     ILogger<AfterSalesSweepService> logger)
 {
@@ -218,7 +221,7 @@ public sealed class AfterSalesSweepService(
                 else if (tracked.ExpiryReminderSentAt is null && tracked.EndsAt <= now.AddDays(noticeDays))
                 {
                     tracked.ExpiryReminderSentAt = now;
-                    AfterSalesHistory.Notify(data, tracked.CustomerUserId, "PACKAGE_EXPIRING", $"{tracked.PackageName} ends on {tracked.EndsAt:O}. Renew it to stay covered.",
+                    AfterSalesHistory.Notify(data, tracked.CustomerUserId, "PACKAGE_EXPIRING", $"{tracked.PackageName} ends at {DisplayTime.Format(tracked.EndsAt!.Value, calendar.TimeZone)}. Renew it to stay covered.",
                         now, subscriptionId: tracked.Id);
                 }
                 else
@@ -292,7 +295,7 @@ public sealed class AfterSalesSweepService(
                 tracked.UpdatedAt = tracked.NotifiedAt.Value;
                 tracked.Revision++;
                 AfterSalesHistory.Notify(data, term.CustomerUserId, "MAINTENANCE_DUE",
-                    $"Your maintenance visit (plan month {tracked.PlanMonth}) can be booked from {tracked.PeriodStartsAt:O}.", tracked.NotifiedAt.Value, subscriptionId: term.Id);
+                    $"Your maintenance visit (plan month {tracked.PlanMonth}) can be booked from {DisplayTime.Format(tracked.PeriodStartsAt, calendar.TimeZone)}.", tracked.NotifiedAt.Value, subscriptionId: term.Id);
                 return true;
             }, "sending a maintenance notice", cancellationToken);
         }

@@ -38,6 +38,12 @@ public sealed record PayableContract(Guid ContractId, string ContractNumber, Gui
 public interface IPaymentItemSettlement
 {
     Task SettleAsync(PaymentAttempt attempt, IReadOnlyList<PaymentAttemptItem> items, DateTimeOffset providerPaidAt, DateTimeOffset now, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Money was received for <paramref name="attempt"/> but nothing could be settled with it (duplicate payment of a paid contract,
+    /// wrong amount, contract no longer payable): open a refund request for a Manager, in the same confirmation transaction.
+    /// </summary>
+    Task RecordUnappliedPaymentAsync(PaymentAttempt attempt, decimal amount, string reason, DateTimeOffset now, CancellationToken cancellationToken);
 }
 
 /// <summary>One after-sales line of a checkout (the contract line is added by the payment service itself).</summary>

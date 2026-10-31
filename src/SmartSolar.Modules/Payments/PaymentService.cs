@@ -410,6 +410,9 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
                         attempt.FailureReason = "Payment received while the contract was not in SIGNED state.";
                         AddEvent(attempt, "CONTRACT_STATE_MISMATCH", from, attempt.Status, source, reference, now);
                     }
+                    // Money that was received but applied to nothing is never only a log line: it becomes a refund request for a Manager.
+                    if (attempt.Status is PaymentStatuses.RefundRequired or PaymentStatuses.ReviewRequired && amountPaid is > 0 && settlement is not null)
+                        await settlement.RecordUnappliedPaymentAsync(attempt, amountPaid.Value, attempt.FailureReason ?? attempt.Status, now, token);
                     await unitOfWork.SaveChangesAsync(token);
                     if (attempt.Status != PaymentStatuses.Paid)
                         logger.LogWarning("Payment attempt {AttemptId} needs manual handling: {Status}.", attempt.Id, attempt.Status);

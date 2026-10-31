@@ -33,6 +33,15 @@ public sealed class AdministrativeCommune
     public DateOnly ValidFrom { get; set; }
     public DateOnly? ValidTo { get; set; }
     public string DatasetKey { get; set; } = null!;
+
+    /// <summary>
+    /// Optional reference point of the commune (WGS 84 degrees) with its source. It is an APPROXIMATE administrative point
+    /// (for example a centroid or the commune office), never a rooftop location: a site keeps its own measured coordinates.
+    /// All three are null until a verified source is imported (commune-reference-points.csv).
+    /// </summary>
+    public decimal? ReferenceLatitude { get; set; }
+    public decimal? ReferenceLongitude { get; set; }
+    public string? ReferencePointSource { get; set; }
 }
 
 /// <summary>

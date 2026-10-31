@@ -47,6 +47,11 @@ public sealed class CustomerContract
     public DateTimeOffset? PublishedAt { get; set; }
     public DateTimeOffset? SignedAt { get; set; }
     public DateTimeOffset? PaidAt { get; set; }
+
+    /// <summary>DISCARDED: when, by which Sales owner and why the never-issued draft was discarded (kept as history, never reactivated).</summary>
+    public DateTimeOffset? DiscardedAt { get; set; }
+    public Guid? DiscardedByUserId { get; set; }
+    public string? DiscardReason { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
     public int Revision { get; set; }
@@ -90,8 +95,13 @@ public static class ContractStatuses
     public const string Signed = "SIGNED";
     public const string Paid = "PAID";
     public const string Superseded = "SUPERSEDED";
+    /// <summary>An initial draft the Sales owner explicitly discarded before it was issued. Terminal: never issued, signed, paid or reactivated.</summary>
+    public const string Discarded = "DISCARDED";
 
-    public static readonly IReadOnlyList<string> All = [Draft, Issued, AwaitingSignature, UnderReview, SignatureRejected, Signed, Paid, Superseded];
+    public static readonly IReadOnlyList<string> All = [Draft, Issued, AwaitingSignature, UnderReview, SignatureRejected, Signed, Paid, Superseded, Discarded];
+
+    /// <summary>A contract that still binds or may still bind the request (anything but superseded or discarded).</summary>
+    public static bool IsLive(string status) => status is not (Superseded or Discarded);
 
     /// <summary>States the customer can see.</summary>
     public static readonly IReadOnlyList<string> CustomerVisible = [AwaitingSignature, UnderReview, SignatureRejected, Signed, Paid, Superseded];
@@ -108,6 +118,18 @@ public static class ContractErrorCodes
 {
     public const string NotFound = "CONTRACT_NOT_FOUND";
     public const string QuotationNotAccepted = "CONTRACT_QUOTATION_NOT_ACCEPTED";
+    /// <summary>The on-site survey was amended after the quotation was made: the quotation no longer describes the surveyed installation (409).</summary>
+    public const string SurveyChanged = "CONTRACT_SURVEY_CHANGED";
+    /// <summary>The survey request was withdrawn or closed: no contract can be made for it (409).</summary>
+    public const string RequestClosed = "CONTRACT_REQUEST_CLOSED";
+    /// <summary>Only an initial DRAFT can be discarded (not an amendment draft, not an issued or later contract) (409).</summary>
+    public const string NotDiscardable = "CONTRACT_NOT_DISCARDABLE";
+    /// <summary>The quotation's contract draft was discarded; a new contract for the same quotation is not a defined process (409).</summary>
+    public const string DraftDiscarded = "CONTRACT_DRAFT_DISCARDED";
+    /// <summary>A non-empty discard reason (≤ 1000) is required (400).</summary>
+    public const string DiscardReasonRequired = "CONTRACT_DISCARD_REASON_REQUIRED";
+    /// <summary>A contract cannot be issued without its contractual terms (400). Contracts issued earlier keep their state.</summary>
+    public const string TermsRequired = "CONTRACT_TERMS_REQUIRED";
     public const string AlreadyExists = "CONTRACT_ALREADY_EXISTS";
     public const string InvalidState = "CONTRACT_INVALID_STATE";
     public const string StaleRevision = "CONTRACT_STALE_REVISION";

@@ -12,4 +12,7 @@ public sealed record MySurveyRequestItem(
     SurveyRequestStatus Status,
     DateTimeOffset SubmittedAt,
     DateTimeOffset? AssignedAt,
-    DateTimeOffset? ScheduledAt);
+    DateTimeOffset? ScheduledAt,
+    string? Ward = null,
+    string? CommuneName = null,
+    SurveyRequestAppointmentItem? Appointment = null);

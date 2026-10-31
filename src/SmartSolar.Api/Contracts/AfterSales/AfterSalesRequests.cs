@@ -49,3 +49,6 @@ public sealed record PackageRequest(string? Kind, string? Name, string? Descript
     IReadOnlyList<string>? CoveredDisasterTypes, decimal? CoveragePercent, decimal? PerIncidentLimit, decimal? TermLimit, bool IsActive, int Revision = 0);
 public sealed record WarrantyOptionRequest(string? Kind, int Months, bool IsActive, bool IsDefault);
 public sealed record RecordRefundRequest(DateTimeOffset RefundedAt, string? Reference);
+
+/// <summary>Verified manufacturer-warranty activation: ISO 8601 date with offset, a verified PROJECT_DOCUMENT file, and a reason.</summary>
+public sealed record WarrantyActivationRequest(string? ActivatedAt, Guid? EvidenceFileId, string? Reason);

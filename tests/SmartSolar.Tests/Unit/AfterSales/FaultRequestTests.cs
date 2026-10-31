@@ -33,7 +33,7 @@ public sealed class FaultRequestTests
         Assert.Equal(InstallationWarrantyMonths, warranty.WarrantyMonths);
         Assert.Equal(h.HandoverAt.AddMonths(InstallationWarrantyMonths), warranty.WarrantyEndsAt);
         Assert.True(warranty.UnderWarranty);
-        Assert.Equal(3, warranty.Assets.Count);
+        Assert.Equal(13, warranty.Assets.Count);   // the contracted 12 panels and 1 inverter
         Assert.Equal(AfterSalesErrorCodes.ProjectNotFound, (await ctx.Customer().GetWarrantyAsync(h.TechnicianId, h.ProjectId, None)).ErrorCode);
     }
 
@@ -94,6 +94,20 @@ public sealed class FaultRequestTests
         Assert.Equal(ServiceRequestStatuses.ReadyForWork, view.Status);
         Assert.Equal(ItemStatuses.Authorized, Assert.Single(view.Items).Status);
         Assert.Empty(await ctx.Tasks().ListOpenAsync(None));   // no quotation for free work
+        // D-06: the decision names the category it used and records the item's equipment (manufacturer) warranty as a separate fact.
+        var decided = await ctx.Db.AfterSalesEvents.AsNoTracking().SingleAsync(e => e.SubjectId == request.RequestId && e.EventType == "COVERAGE_DECIDED");
+        Assert.Contains($": {ItemCoverages.InstallationWarranty};", decided.Detail);
+        Assert.Contains("considered: equipment warranty 120 months (CATALOG_PRODUCT), start not determined", decided.Detail);
+        // M-4: the facts are also snapshotted on the item; no end date is invented while the start rule is undecided.
+        var decidedItem = await ctx.Db.ServiceItems.AsNoTracking().SingleAsync(i => i.Id == items[0]);
+        Assert.Equal(((int?)120, SmartSolar.Modules.Installations.EquipmentWarrantySources.CatalogProduct, (DateTimeOffset?)null),
+            (decidedItem.EquipmentWarrantyMonths, decidedItem.EquipmentWarrantySource, decidedItem.EquipmentWarrantyEndsAt));
+        // D-10: the visit notification states the time in Vietnam with its offset, never a raw UTC timestamp.
+        var assigned = await ctx.Db.AfterSalesNotifications.AsNoTracking().FirstAsync(n => n.RecipientUserId == h.TechnicianId && n.Type == "VISIT_ASSIGNED");
+        var visitStart = (await ctx.Db.ServiceVisits.AsNoTracking().FirstAsync(v => v.RequestId == request.RequestId)).StartsAt;
+        Assert.EndsWith($"on {SmartSolar.Modules.Common.Time.DisplayTime.Format(visitStart, ctx.Installation.Scheduling.Calendar.TimeZone)}.", assigned.Message);
+        Assert.Contains("(GMT+07:00)", assigned.Message);
+        Assert.DoesNotContain("+00:00", assigned.Message);
 
         // Eligibility is frozen at submission: a fault reported after the warranty ended cannot be covered by it.
         ctx.Clock.Now = h.HandoverAt.AddMonths(InstallationWarrantyMonths).AddDays(1).ToUniversalTime();
@@ -258,6 +272,27 @@ public sealed class FaultRequestTests
     }
 
     [Fact]
+    public async Task A_replacement_is_registered_by_the_technician_who_installed_it_not_by_the_original_installer()
+    {
+        await using var ctx = Create();
+        var h = await ctx.HandedOverAsync();
+        var repairer = await ctx.Installation.Scheduling.SeedTechnicianAsync("Repair technician", SchedulingTestContext.BinhTan);
+        var request = await ctx.FaultAsync(h, assetId: h.InverterId);
+        var items = await ctx.InspectedAsync(h, request.RequestId, Later(3), Item("Inverter board", h.InverterId));
+        await ctx.DecideAsync(h, request.RequestId, (items[0], ItemCoverages.InstallationWarranty));
+        var visitor = h with { TechnicianId = repairer.Id };
+        var repair = await ctx.VisitStartedAsync(visitor, request.RequestId, Later(6));
+
+        Assert.True((await ctx.Technician().ReportWorkAsync(repairer.Id, repair, "Inverter swapped", [new ItemResultInput(items[0], "replaced", null)],
+            [new ReplacementInput(h.InverterId, "Huawei", "SUN2000-5KTL", "HW-INV-NEW", "5 kW, 2 MPPT")], null, None)).Succeeded);
+
+        var replacement = await ctx.Db.InstalledAssets.AsNoTracking().SingleAsync(a => a.ReplacesAssetId == h.InverterId);
+        var original = await ctx.Db.InstalledAssets.AsNoTracking().SingleAsync(a => a.Id == h.InverterId);
+        Assert.Equal((h.TechnicianId, repairer.Id), (original.RegisteredByUserId, replacement.RegisteredByUserId));
+        Assert.Equal(repairer.Id, (await ctx.Db.AfterSalesEvents.AsNoTracking().SingleAsync(e => e.SubjectId == h.InverterId && e.EventType == "ASSET_REPLACEMENT_RECORDED")).ActorUserId);
+    }
+
+    [Fact]
     public async Task Replacement_equipment_becomes_active_on_acceptance_and_corrections_are_audited()
     {
         await using var ctx = Create();
@@ -277,6 +312,8 @@ public sealed class FaultRequestTests
         ctx.Db.ChangeTracker.Clear();
         Assert.Equal(InstalledAssetStatuses.Active, (await ctx.Db.InstalledAssets.AsNoTracking().SingleAsync(a => a.Id == pending.Id)).Status);
         Assert.Equal(InstalledAssetStatuses.Replaced, (await ctx.Db.InstalledAssets.AsNoTracking().SingleAsync(a => a.Id == h.InverterId)).Status);
+        // D-05: the handover comparison is about what the installation delivered; a later after-sales replacement does not rewrite it.
+        Assert.Equal(EquipmentComparisonStatuses.Matches, (await ctx.Installation.Installations().GetForManagerAsync(h.ProjectId, None)).Value!.Equipment!.Status);
 
         Assert.Equal(AfterSalesErrorCodes.ReasonRequired, (await ctx.Manager().CorrectAssetAsync(h.ManagerId, pending.Id, new AssetCorrection(null, null, "HW-INV-NEW2", null, null, " "), None)).ErrorCode);
         var corrected = (await ctx.Manager().CorrectAssetAsync(h.ManagerId, pending.Id, new AssetCorrection(null, null, "HW-INV-NEW2", null, null, "Typo in serial"), None)).Value!;

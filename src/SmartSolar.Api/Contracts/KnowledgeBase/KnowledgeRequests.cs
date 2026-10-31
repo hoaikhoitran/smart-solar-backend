@@ -27,3 +27,6 @@ public sealed record SaveRagConfigurationDraftRequest(string? GenerationModel, J
 public sealed record ActivateRagConfigurationRequest(int ExpectedRevision);
 
 public sealed record RollbackRagConfigurationRequest(int Version);
+
+/// <summary>Admin reclassification of a knowledge document: audience INTERNAL or CUSTOMER, reason required.</summary>
+public sealed record SetKnowledgeAudienceRequest(int Revision, string? Audience, string? Reason);

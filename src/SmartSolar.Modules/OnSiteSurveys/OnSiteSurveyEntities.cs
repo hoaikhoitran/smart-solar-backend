@@ -33,6 +33,12 @@ public sealed class OnSiteSurveyReport
     public decimal? MeasuredLongitude { get; set; }
     public string? Notes { get; set; }
 
+    /// <summary>
+    /// Technician-confirmed bill of materials (JSON of <see cref="BillOfMaterialsInput"/>): catalog product ids and quantities only,
+    /// never prices. Null when the technician did not provide one (the quotation is then prepared by Sales as before).
+    /// </summary>
+    public string? BillOfMaterialsJson { get; set; }
+
     /// <summary>1 at completion, +1 per amendment. Quotations record the version they were based on.</summary>
     public int Version { get; set; }
 
@@ -106,5 +112,11 @@ public static class OnSiteSurveyErrorCodes
     public const string NotCompleted = "ONSITE_SURVEY_NOT_COMPLETED";
     public const string StaleRevision = "ONSITE_SURVEY_STALE_REVISION";
     public const string EvidenceRequired = "ONSITE_SURVEY_EVIDENCE_REQUIRED";
+    /// <summary>The bill of materials names an unknown, inactive or wrong-kind catalog product (400).</summary>
+    public const string BillOfMaterialsInvalid = "ONSITE_SURVEY_BOM_VALIDATION_FAILED";
     public const string AttachmentNotFound = "ONSITE_SURVEY_ATTACHMENT_NOT_FOUND";
+    /// <summary>A contract (not superseded) exists for the request: the survey is locked; changes need a commercial change process (409).</summary>
+    public const string CommerciallyLocked = "ONSITE_SURVEY_COMMERCIALLY_LOCKED";
+    /// <summary>The survey request was withdrawn or closed (409).</summary>
+    public const string RequestClosed = "ONSITE_SURVEY_REQUEST_CLOSED";
 }

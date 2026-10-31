@@ -19,6 +19,15 @@ public interface ICatalogUnitOfWork
         ProductSearchCriteria criteria,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Management page of non-deleted products in <paramref name="status"/> (null = every status), with the same filters,
+    /// sorting and paging as the public list. Used by ADMIN/MANAGER only.
+    /// </summary>
+    Task<PagedResult<ProductDto>> ListManagedProductsAsync(
+        ProductSearchCriteria criteria,
+        Enums.ProductStatus? status,
+        CancellationToken cancellationToken);
+
     /// <summary>Read-only lookup of an ACTIVE, non-deleted product; must not track.</summary>
     Task<ProductDto?> FindActiveProductAsync(Guid productId, CancellationToken cancellationToken);
 

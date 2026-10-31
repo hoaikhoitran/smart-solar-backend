@@ -144,11 +144,12 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
     GetPendingSurveyRequestsAsync(
         CancellationToken cancellationToken)
     {
-        return await _db.SurveyRequests
+        var rows = await _db.SurveyRequests
             .AsNoTracking()
-            // "Unclaimed" queue: every non-cancelled request without a commercial owner, whatever its scheduling state.
+            // "Unclaimed" queue: every open (not withdrawn or closed) request without a commercial owner, whatever its scheduling state.
             .Where(x =>
                 x.Status != SurveyRequestStatus.Cancelled &&
+                x.Status != SurveyRequestStatus.Closed &&
                 x.AssignedSaleId == null)
             .OrderBy(x => x.SubmittedAt)
             .Select(x => new PendingSurveyRequestItem(
@@ -161,8 +162,39 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
                 x.PreSurvey.Property.InstallationSurfaceType,
                 x.PreSurvey.TotalAreaM2,
                 x.PreSurvey.UsableAreaM2,
-                x.SubmittedAt))
+                x.SubmittedAt,
+                x.PreSurvey.Property.Ward,
+                _db.AdministrativeCommunes.Where(c => c.Code == x.PreSurvey.Property.CommuneCode).Select(c => c.Name).FirstOrDefault(),
+                null))
             .ToListAsync(cancellationToken);
+        // Unclaimed queue: the appointment summary without technician details.
+        var appointments = await ActiveAppointmentsAsync(rows.Select(r => r.SurveyRequestId).ToList(), includeTechnician: false, cancellationToken);
+        return rows.Select(r => r with { Appointment = appointments.GetValueOrDefault(r.SurveyRequestId) }).ToList();
+    }
+
+    /// <summary>
+    /// The active (not cancelled) survey appointment of each request, in ONE query whatever the number of requests.
+    /// IsOverdue is filled by the handler (it needs the clock).
+    /// </summary>
+    private async Task<Dictionary<Guid, SurveyRequestAppointmentItem>> ActiveAppointmentsAsync(
+        IReadOnlyCollection<Guid> surveyRequestIds, bool includeTechnician, CancellationToken cancellationToken)
+    {
+        if (surveyRequestIds.Count == 0) return [];
+        var rows = await _db.TechnicianAppointments.AsNoTracking()
+            .Where(a => a.SurveyRequestId != null && surveyRequestIds.Contains(a.SurveyRequestId.Value)
+                        && a.Status != SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.Cancelled)
+            .Select(a => new
+            {
+                RequestId = a.SurveyRequestId!.Value, a.Id, a.Status, a.StartsAt, a.EndsAt, a.AcceptanceDeadlineAt, a.AssignedTechnicianUserId, a.CreatedAt,
+                TechnicianName = _db.UserAccounts.Where(u => u.Id == a.AssignedTechnicianUserId).Select(u => u.FullName).FirstOrDefault(),
+            })
+            .ToListAsync(cancellationToken);
+        return rows.GroupBy(r => r.RequestId).ToDictionary(g => g.Key, g =>
+        {
+            var a = g.OrderByDescending(x => x.CreatedAt).First();
+            return new SurveyRequestAppointmentItem(a.Id, a.Status, a.StartsAt, a.EndsAt, a.AcceptanceDeadlineAt,
+                includeTechnician ? a.AssignedTechnicianUserId : null, includeTechnician ? a.TechnicianName : null, false);
+        });
     }   
     public async Task<bool> TryClaimSurveyRequestAsync(
     Guid surveyRequestId,
@@ -196,7 +228,7 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
         Guid saleUserId,
         CancellationToken cancellationToken)
     {
-        return await _db.SurveyRequests
+        var rows = await _db.SurveyRequests
             .AsNoTracking()
             .Where(x => x.AssignedSaleId == saleUserId)
             .OrderByDescending(x => x.AssignedAt)
@@ -210,8 +242,14 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
                 x.Status,
                 x.SubmittedAt,
                 x.AssignedAt,
-                x.ScheduledAt))
+                x.ScheduledAt,
+                x.PreSurvey.Property.Ward,
+                _db.AdministrativeCommunes.Where(c => c.Code == x.PreSurvey.Property.CommuneCode).Select(c => c.Name).FirstOrDefault(),
+                null))
             .ToListAsync(cancellationToken);
+        // The caller owns these requests: the technician of each appointment is included.
+        var appointments = await ActiveAppointmentsAsync(rows.Select(r => r.SurveyRequestId).ToList(), includeTechnician: true, cancellationToken);
+        return rows.Select(r => r with { Appointment = appointments.GetValueOrDefault(r.SurveyRequestId) }).ToList();
     }
     public async Task<SurveyRequestDetail?>
     GetSurveyRequestDetailAsync(
@@ -334,5 +372,51 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
             appointment.CompletedAt,
             appointment.OperationalZoneId,
             appointment.Revision);
+    }
+
+    public async Task<(IReadOnlyList<SmartSolar.Modules.PreSurvey.ListMine.CustomerSiteListItem> Items, int Total)> ListCustomerSitesAsync(
+        Guid userId, int skip, int take, CancellationToken cancellationToken)
+    {
+        // Ownership: only sites of the customer profile of this user.
+        var sites = _db.PropertySites.AsNoTracking().Where(p => p.Customer.UserId == userId);
+        var total = await sites.CountAsync(cancellationToken);
+        var items = await sites
+            .OrderBy(p => p.Name).ThenBy(p => p.Id)
+            .Skip(skip).Take(take)
+            .Select(p => new SmartSolar.Modules.PreSurvey.ListMine.CustomerSiteListItem(
+                p.Id, p.Name, p.Province, p.District, p.Ward, p.StreetLine, p.ProvinceCode, p.CommuneCode,
+                _db.AdministrativeCommunes.Where(c => c.Code == p.CommuneCode).Select(c => c.Name).FirstOrDefault(),
+                p.Latitude, p.Longitude,
+                p.InstallationSurfaceType == null ? null : p.InstallationSurfaceType.ToString()!.ToUpper(),
+                p.SurfaceMaterial, p.PreSurveys.Count))
+            .ToListAsync(cancellationToken);
+        return (items, total);
+    }
+
+    public async Task<(IReadOnlyList<SmartSolar.Modules.PreSurvey.ListMine.CustomerPreSurveyListItem> Items, int Total)> ListCustomerPreSurveysAsync(
+        Guid userId, PreSurveyStatus? status, bool sortByCreatedAt, bool ascending, int skip, int take, CancellationToken cancellationToken)
+    {
+        // Ownership: only pre-surveys of sites of this user's customer profile.
+        var query = _db.PreSurveys.AsNoTracking().Where(x => x.Property.Customer.UserId == userId);
+        if (status is { } wanted) query = query.Where(x => x.Status == wanted);
+        var total = await query.CountAsync(cancellationToken);
+        query = (sortByCreatedAt, ascending) switch
+        {
+            (true, true) => query.OrderBy(x => x.CreatedAt).ThenBy(x => x.Id),
+            (true, false) => query.OrderByDescending(x => x.CreatedAt).ThenBy(x => x.Id),
+            (false, true) => query.OrderBy(x => x.UpdatedAt).ThenBy(x => x.Id),
+            _ => query.OrderByDescending(x => x.UpdatedAt).ThenBy(x => x.Id),
+        };
+        var rows = await query.Skip(skip).Take(take)
+            .Select(x => new
+            {
+                x.Id, x.PropertyId, SiteName = x.Property.Name, x.Status, x.Revision, x.GeometryVersion, x.TotalAreaM2, x.UsableAreaM2,
+                x.SelectedSimulationId, SurveyRequestId = x.SurveyRequest == null ? (Guid?)null : x.SurveyRequest.Id, x.CreatedAt, x.UpdatedAt,
+            })
+            .ToListAsync(cancellationToken);
+        var items = rows.Select(x => new SmartSolar.Modules.PreSurvey.ListMine.CustomerPreSurveyListItem(
+            x.Id, x.PropertyId, x.SiteName, x.Status == PreSurveyStatus.Draft ? "DRAFT" : "SUBMITTED", x.Revision, x.GeometryVersion,
+            x.TotalAreaM2, x.UsableAreaM2, x.SelectedSimulationId, x.SurveyRequestId, x.CreatedAt, x.UpdatedAt)).ToList();
+        return (items, total);
     }
 }

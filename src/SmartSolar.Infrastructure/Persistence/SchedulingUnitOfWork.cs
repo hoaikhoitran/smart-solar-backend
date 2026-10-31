@@ -262,14 +262,24 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
 
     private static readonly string[] TechnicianVisibleStatuses = [AppointmentStatuses.Accepted, AppointmentStatuses.Assigned, AppointmentStatuses.Completed];
 
-    public async Task<IReadOnlyList<(AppointmentSnapshot Appointment, string PropertyName, string Province, string? District)>> ListTechnicianAppointmentsAsync(
-        Guid technicianUserId, DateTimeOffset fromUtc, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<TechnicianAppointmentRow>> ListTechnicianAppointmentsAsync(
+        Guid technicianUserId, DateTimeOffset nowUtc, bool includePast, CancellationToken cancellationToken)
     {
-        var rows = await _db.TechnicianAppointments.AsNoTracking()
-            .Where(a => a.AssignedTechnicianUserId == technicianUserId && TechnicianVisibleStatuses.Contains(a.Status) && a.EndsAt >= fromUtc)
-            .Join(_db.PropertySites, a => a.PropertySiteId, p => p.Id, (a, p) => new { a, p.Name, p.Province, p.District })
+        var query = _db.TechnicianAppointments.AsNoTracking()
+            .Where(a => a.AssignedTechnicianUserId == technicianUserId && TechnicianVisibleStatuses.Contains(a.Status));
+        if (!includePast)
+        {
+            // Upcoming or still running, plus overdue confirmed jobs (end passed, survey never completed) so they do not disappear.
+            query = query.Where(a => a.EndsAt >= nowUtc || a.Status == AppointmentStatuses.Accepted || a.Status == AppointmentStatuses.Assigned);
+        }
+        // One query: the site, and its official commune name when the site carries a commune code (left join).
+        var rows = await query
+            .Join(_db.PropertySites, a => a.PropertySiteId, p => p.Id, (a, p) => new { a, p })
+            .GroupJoin(_db.AdministrativeCommunes, x => x.p.CommuneCode, c => c.Code, (x, communes) => new { x.a, x.p, communes })
+            .SelectMany(x => x.communes.DefaultIfEmpty(), (x, c) => new { x.a, x.p.Name, x.p.Province, x.p.District, x.p.Ward, CommuneName = c == null ? null : c.Name })
             .ToListAsync(cancellationToken);
-        return rows.OrderBy(r => r.a.StartsAt).Select(r => (Snapshot(r.a), r.Name, r.Province, r.District)).ToList();
+        return rows.OrderBy(r => r.a.StartsAt)
+            .Select(r => new TechnicianAppointmentRow(Snapshot(r.a), r.Name, r.Province, r.District, r.Ward, r.CommuneName)).ToList();
     }
 
     public async Task<TechnicianJobDetail?> GetTechnicianJobAsync(Guid technicianUserId, Guid appointmentId, CancellationToken cancellationToken)
@@ -473,6 +483,10 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
             .Where(a => a.Id == appointmentId && a.Status == AppointmentStatuses.PendingAcceptance && a.AcceptanceReminderSentAt == null
                         && a.AcceptanceDeadlineAt != null && a.AcceptanceDeadlineAt > nowUtc)
             .ExecuteUpdateAsync(s => s.SetProperty(a => a.AcceptanceReminderSentAt, nowUtc), cancellationToken) == 1;
+
+    public Task<Guid?> GetCrossZoneAuthorizedTechnicianAsync(Guid authorizationId, CancellationToken cancellationToken)
+        => _db.Set<SmartSolar.Modules.Scheduling.Dispatch.CrossZoneAuthorization>().AsNoTracking().Where(a => a.Id == authorizationId)
+            .Select(a => (Guid?)a.TechnicianUserId).FirstOrDefaultAsync(cancellationToken);
 
     public Task<bool> HasOnSiteSurveyInProgressAsync(Guid surveyRequestId, CancellationToken cancellationToken)
         => _db.OnSiteSurveyReports.AsNoTracking()

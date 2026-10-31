@@ -65,6 +65,9 @@ public sealed class PostgresAfterSalesMigrationTests
         var h = await ctx.HandedOverAsync();
         var term = await ctx.ActiveTermAsync(h, await ctx.PackageAsync(h.AdminId, ServicePackageKinds.Maintenance));
         await using var db = database.NewContext();
+        // Later migrations (commune reference points, quotation automation, M-1..M-4) are rolled back first, each in its own transaction;
+        // they are not what this guard protects. Stand on AfterSalesServices itself, then try to go below it.
+        await MigrateToAsync(db, AfterSales);
         var schemaBefore = await SchemaAsync(db);
 
         // Act

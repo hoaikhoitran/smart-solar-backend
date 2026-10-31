@@ -17,10 +17,15 @@ public sealed class CustomerContractConfiguration : IEntityTypeConfiguration<Cus
             t.HasCheckConstraint("ck_customer_contract_status", $"status IN ({string.Join(", ", ContractStatuses.All.Select(s => $"'{s}'"))})");
             t.HasCheckConstraint("ck_customer_contract_amount", "total_amount > 0 AND currency = 'VND'");
             t.HasCheckConstraint("ck_customer_contract_version", "version >= 1");
+            // A discarded contract was a never-issued draft: it has no hash, document, signature or payment.
             t.HasCheckConstraint("ck_customer_contract_issued_hash",
-                $"status = '{ContractStatuses.Draft}' OR (canonical_hash IS NOT NULL AND issued_at IS NOT NULL)");
+                $"status IN ('{ContractStatuses.Draft}', '{ContractStatuses.Discarded}') OR (canonical_hash IS NOT NULL AND issued_at IS NOT NULL)");
             t.HasCheckConstraint("ck_customer_contract_published_document",
-                $"status IN ('{ContractStatuses.Draft}', '{ContractStatuses.Issued}', '{ContractStatuses.Superseded}') OR (official_document_file_id IS NOT NULL AND official_document_sha256 IS NOT NULL)");
+                $"status IN ('{ContractStatuses.Draft}', '{ContractStatuses.Issued}', '{ContractStatuses.Superseded}', '{ContractStatuses.Discarded}') OR (official_document_file_id IS NOT NULL AND official_document_sha256 IS NOT NULL)");
+            t.HasCheckConstraint("ck_customer_contract_discarded",
+                $"(status = '{ContractStatuses.Discarded}') = (discarded_at IS NOT NULL AND discarded_by_user_id IS NOT NULL AND discard_reason IS NOT NULL)");
+            t.HasCheckConstraint("ck_customer_contract_discarded_never_issued",
+                $"status <> '{ContractStatuses.Discarded}' OR (issued_at IS NULL AND signed_at IS NULL AND paid_at IS NULL AND previous_contract_id IS NULL)");
             t.HasCheckConstraint("ck_customer_contract_signed_review",
                 $"status NOT IN ('{ContractStatuses.Signed}', '{ContractStatuses.Paid}') OR (signed_document_file_id IS NOT NULL AND reviewed_by_user_id IS NOT NULL AND signed_at IS NOT NULL)");
         });
@@ -56,12 +61,16 @@ public sealed class CustomerContractConfiguration : IEntityTypeConfiguration<Cus
         builder.Property(x => x.PublishedAt).HasColumnName("published_at");
         builder.Property(x => x.SignedAt).HasColumnName("signed_at");
         builder.Property(x => x.PaidAt).HasColumnName("paid_at");
+        builder.Property(x => x.DiscardedAt).HasColumnName("discarded_at");
+        builder.Property(x => x.DiscardedByUserId).HasColumnName("discarded_by_user_id");
+        builder.Property(x => x.DiscardReason).HasColumnName("discard_reason").HasMaxLength(1000);
         builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
         builder.Property(x => x.Revision).HasColumnName("revision").IsConcurrencyToken().IsRequired();
 
         builder.HasIndex(x => new { x.ContractNumber, x.Version }).IsUnique().HasDatabaseName("ux_customer_contract_number_version");
-        // One live contract and at most one amendment draft per quotation.
+        // One live contract and at most one amendment draft per quotation. A DISCARDED initial draft stays inside "one live", so a discard
+        // never makes room for a second contract of the same quotation (re-contracting after a discard is not a defined process).
         builder.HasIndex(x => x.QuotationId).IsUnique()
             .HasFilter($"status NOT IN ('{ContractStatuses.Draft}', '{ContractStatuses.Superseded}')").HasDatabaseName("ux_customer_contract_one_live");
         builder.HasIndex(x => new { x.QuotationId, x.Status }).IsUnique()
@@ -70,6 +79,8 @@ public sealed class CustomerContractConfiguration : IEntityTypeConfiguration<Cus
         builder.HasIndex(x => x.SurveyRequestId).HasDatabaseName("ix_customer_contract_survey_request");
 
         builder.HasOne<Quotation>().WithMany().HasForeignKey(x => x.QuotationId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.DiscardedByUserId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_customer_contract_discarded_by");
         builder.HasOne<SurveyRequest>().WithMany().HasForeignKey(x => x.SurveyRequestId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<CustomerContract>().WithMany().HasForeignKey(x => x.PreviousContractId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.CustomerUserId).OnDelete(DeleteBehavior.Restrict);

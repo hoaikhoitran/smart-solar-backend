@@ -86,20 +86,30 @@ public static class AfterSalesWorkflow
         Touch(claim, term, now);
     }
 
-    /// <summary>Gives back support reserved by a quotation that will not be used (declined, expired, superseded, cancelled).</summary>
-    public static void Release(DisasterClaim claim, ServiceSubscription term, decimal amount, DateTimeOffset now)
+    public const string SupportLedgerMismatch = "DISASTER_SUPPORT_LEDGER_MISMATCH";
+
+    /// <summary>
+    /// Gives back support reserved by a quotation that will not be used (declined, expired, superseded, cancelled). Releasing more than
+    /// is reserved means the balance is already inconsistent (for example a double release): the balance never goes negative (the
+    /// check constraints forbid it), but the mismatch is recorded as a DISASTER_SUPPORT_LEDGER_MISMATCH event on the claim so it is
+    /// investigated instead of being hidden.
+    /// </summary>
+    public static void Release(IAfterSalesUnitOfWork data, DisasterClaim claim, ServiceSubscription term, decimal amount, DateTimeOffset now)
     {
         if (amount <= 0) return;
+        if (amount > claim.SupportReserved || amount > term.SupportReserved)
+            AfterSalesHistory.Record(data, EventSubjects.Claim, claim.Id, SupportLedgerMismatch, null,
+                $"release of {amount:0} exceeds the reserved support (claim {claim.SupportReserved:0}, term {term.SupportReserved:0}); clamped to 0", now);
         claim.SupportReserved = Math.Max(0, claim.SupportReserved - amount);
         term.SupportReserved = Math.Max(0, term.SupportReserved - amount);
         Touch(claim, term, now);
     }
 
     /// <summary>Turns reserved support into consumed support (at the customer's final acceptance).</summary>
-    public static void Consume(DisasterClaim claim, ServiceSubscription term, decimal amount, DateTimeOffset now)
+    public static void Consume(IAfterSalesUnitOfWork data, DisasterClaim claim, ServiceSubscription term, decimal amount, DateTimeOffset now)
     {
         if (amount <= 0) return;
-        Release(claim, term, amount, now);
+        Release(data, claim, term, amount, now);
         claim.SupportConsumed += amount;
         term.SupportConsumed += amount;
     }
@@ -124,7 +134,7 @@ public static class AfterSalesWorkflow
         {
             var claim = await data.FindClaimForRequestAsync(quotation.RequestId, true, token);
             var term = claim?.SubscriptionId is { } termId ? await data.FindSubscriptionAsync(termId, true, token) : null;
-            if (claim is not null && term is not null) Release(claim, term, quotation.DisasterSupportAmount, now);
+            if (claim is not null && term is not null) Release(data, claim, term, quotation.DisasterSupportAmount, now);
         }
         quotation.Status = status;
         if (status == QuotationStatuses.Rejected) quotation.RejectedAt = now;

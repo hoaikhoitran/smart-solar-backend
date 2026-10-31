@@ -16,6 +16,9 @@ public sealed class SolarSimulationOptions
 
     public ShadingWindowOptions Shading { get; set; } = new();
 
+    /// <summary>Time-dependent obstacle / row shading (3D ray casting + PVGIS hourly). Section "SolarSimulation:ShadingAnalysis".</summary>
+    public ShadingAnalysisOptions ShadingAnalysis { get; set; } = new();
+
     /// <summary>Evenly spaced row-offset samples tried per orientation.</summary>
     public int LayoutOffsetSamples { get; set; } = 20;
 
@@ -107,4 +110,33 @@ public sealed class ShadingWindowOptions
     public double StartSolarHour { get; set; } = 9;
     public double EndSolarHour { get; set; } = 15;
     public double StepMinutes { get; set; } = 15;
+}
+
+/// <summary>
+/// Settings of the linear irradiance-based shading estimate. The PVGIS hourly years must lie inside the radiation database
+/// PVGIS uses for the site (PVGIS rejects other years and the shading status is then FAILED, never zero).
+/// </summary>
+public sealed class ShadingAnalysisOptions
+{
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>First and last historical year requested from PVGIS seriescalc (each year is computed, then averaged).</summary>
+    public int StartYear { get; set; } = 2021;
+    public int EndYear { get; set; } = 2023;
+
+    /// <summary>Sample grid on each panel face (cells along the panel width × along its length).</summary>
+    public int SamplesAlongWidth { get; set; } = 4;
+    public int SamplesAlongLength { get; set; } = 4;
+
+    /// <summary>Size of a sun-direction bin (degrees of elevation and of azimuth); each bin is ray-cast once.</summary>
+    public double DirectionBinDegree { get; set; } = 1.0;
+
+    /// <summary>
+    /// Upper bound of ray–occluder tests (direction bins × samples × occluders). Above it the shading status is UNAVAILABLE
+    /// (COMPUTATION_LIMIT) instead of slowing the request down.
+    /// </summary>
+    public long MaxWorkUnits { get; set; } = 400_000_000;
+
+    /// <summary>A panel counts as shaded when its irradiance-weighted annual direct shaded fraction is at least this (percent).</summary>
+    public double ShadedPanelThresholdPercent { get; set; } = 1.0;
 }

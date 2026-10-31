@@ -49,6 +49,21 @@ public sealed class SalesContractsController(ContractHandlers handlers) : Operat
     public async Task<IActionResult> Issue(Guid contractId, [FromBody] RevisionRequest request, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await handlers.IssueAsync(user, contractId, request.Revision, cancellationToken)) : UnauthorizedFailure();
 
+    /// <summary>
+    /// Discards the quotation's initial DRAFT contract (Sales owner only, reason required). The row stays as DISCARDED; the survey request can
+    /// then be closed. Issued, signed or paid contracts, and amendment drafts, cannot be discarded (409).
+    /// </summary>
+    [HttpPost("contracts/{contractId:guid}/discard")]
+    [Authorize(Roles = RoleCodes.Sales)]
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.CustomerContracts.ContractView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.ContractWritePolicy)]
+    public async Task<IActionResult> Discard(Guid contractId, [FromBody] DiscardContractRequest request, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (request.Revision is not { } revision) return Invalid("revision", "'revision' is required.");
+        return Respond(await handlers.DiscardAsync(user, contractId, revision, request.Reason, cancellationToken));
+    }
+
     [HttpPut("contracts/{contractId:guid}/official-document")]
     [Authorize(Roles = RoleCodes.Sales)]
     [EnableRateLimiting(RateLimitingExtensions.ContractWritePolicy)]

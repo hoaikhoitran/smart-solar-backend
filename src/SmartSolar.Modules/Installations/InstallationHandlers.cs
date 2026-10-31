@@ -28,6 +28,20 @@ public sealed class InstallationOptions
 
     /// <summary>A completion report needs at least one registered panel and one inverter.</summary>
     public bool RequirePanelAndInverterAssets { get; set; } = true;
+
+    /// <summary>
+    /// New projects start with every prerequisite (EVN grid connection, PCCC fire safety, structural assessment) REQUIRED, so work
+    /// cannot start until each is SATISFIED with a verified document (or covered by an authorized exemption, see
+    /// <see cref="ExemptiblePrerequisiteCodes"/>).
+    /// </summary>
+    public bool PrerequisitesRequiredByDefault { get; set; } = true;
+
+    /// <summary>
+    /// Mandatory prerequisite codes for which an approved applicability rule allows a Manager to record NOT_APPLICABLE (with a reason and a
+    /// verified supporting document). Empty by default: no legal exemption rule has been approved, so every mandatory prerequisite must be
+    /// satisfied. Only add a code here when the exemption condition has been approved.
+    /// </summary>
+    public string[] ExemptiblePrerequisiteCodes { get; set; } = [];
 }
 
 /// <summary>
@@ -37,7 +51,7 @@ public sealed class InstallationOptions
 /// photo evidence and assets and reports completion. The customer accepts (handover) or requests rework.
 /// Every transition is revision-checked inside one transaction and audited; every response is scoped to the caller's role.
 /// </summary>
-public sealed class InstallationHandlers(
+public sealed partial class InstallationHandlers(
     IInstallationUnitOfWork unitOfWork,
     ISchedulingUnitOfWork scheduling,
     InstallationSchedulePlanner planner,
@@ -100,7 +114,8 @@ public sealed class InstallationHandlers(
                         OperationalZoneId = inLock.Zone?.Id, CreatedAt = now, UpdatedAt = now,
                     });
                     foreach (var (code, title) in DefaultInstallationPlan.Checklist)
-                        unitOfWork.Add(new InstallationChecklistItem { Id = Guid.NewGuid(), ProjectId = projectId, Code = code, Title = title, IsRequired = false, Status = ChecklistStatuses.Pending });
+                        unitOfWork.Add(new InstallationChecklistItem { Id = Guid.NewGuid(), ProjectId = projectId, Code = code, Title = title,
+                            IsRequired = options.PrerequisitesRequiredByDefault, Status = ChecklistStatuses.Pending });
                     Event(projectId, InstallationEventTypes.ProjectCreated, managerUserId, null, InstallationStatuses.PendingAssignment, $"contract {contract.ContractNumber}", now);
                     await unitOfWork.SaveChangesAsync(token);
                     return (true, true);
@@ -361,25 +376,49 @@ public sealed class InstallationHandlers(
         var status = update.Status?.Trim().ToUpperInvariant();
         if (status is not (ChecklistStatuses.Pending or ChecklistStatuses.Satisfied or ChecklistStatuses.NotApplicable))
             return OperationResult<InstallationStaffView>.Fail(CommonErrorCodes.ValidationFailed, "Status must be PENDING, SATISFIED or NOT_APPLICABLE.");
-        if (status == ChecklistStatuses.Satisfied)
+        if (status is ChecklistStatuses.Satisfied or ChecklistStatuses.NotApplicable && update.EvidenceFileId is { } documentId)
         {
-            if (update.EvidenceFileId is not { } fileId)
-                return OperationResult<InstallationStaffView>.Fail(InstallationErrorCodes.EvidenceRequired, "A verified document is required to mark an item satisfied.");
-            var verified = await files.RequireVerifiedAsync([fileId], FilePurposes.ProjectDocument, null, cancellationToken);
+            var verified = await files.RequireVerifiedAsync([documentId], FilePurposes.ProjectDocument, null, cancellationToken);
             if (!verified.Succeeded) return verified.As<InstallationStaffView>();
+        }
+        else if (status == ChecklistStatuses.Satisfied)
+        {
+            return OperationResult<InstallationStaffView>.Fail(InstallationErrorCodes.EvidenceRequired, "A verified document is required to mark an item satisfied.");
         }
         var result = await MutateAsync(projectId, revision, null, async (project, now, token) =>
         {
             if (InstallationStatuses.IsFinal(project.Status)) return Fail(InstallationErrorCodes.InvalidState, $"{project.Status} projects are final.");
+            // The checklist is what the start was based on: once work started it is history and is not rewritten.
+            if (project.StartedAt is not null) return Fail(InstallationErrorCodes.InvalidState, "The prerequisites are frozen once the installation started.");
             var item = (await unitOfWork.GetChecklistAsync(projectId, true, token)).FirstOrDefault(i => i.Id == itemId);
             if (item is null) return Fail(InstallationErrorCodes.ChecklistItemNotFound, "Checklist item was not found.");
-            item.IsRequired = update.IsRequired;
+            var mandatory = DefaultInstallationPlan.IsMandatory(item.Code);
+            if (mandatory && !update.IsRequired)
+                return Fail(InstallationErrorCodes.PrerequisiteMandatory,
+                    $"{item.Code} is a mandatory prerequisite and stays required; record an authorized exemption as NOT_APPLICABLE instead.");
+            // A prerequisite is never waived silently: dropping a requirement or declaring it not applicable needs the reason in the note.
+            var waived = (item.IsRequired && !update.IsRequired) || (status == ChecklistStatuses.NotApplicable && item.Status != ChecklistStatuses.NotApplicable);
+            if (waived && string.IsNullOrWhiteSpace(update.Note))
+                return Fail(InstallationErrorCodes.WaiverReasonRequired, $"Explain in the note why {item.Code} is not required / not applicable.");
+            // A mandatory prerequisite is exempted only under an approved applicability rule and with a supporting document: a note alone
+            // is not a legal authorization.
+            if (mandatory && status == ChecklistStatuses.NotApplicable)
+            {
+                if (!options.ExemptiblePrerequisiteCodes.Contains(item.Code, StringComparer.Ordinal))
+                    return OperationResult<bool>.Fail(InstallationErrorCodes.ExemptionNotAuthorized,
+                        $"No approved exemption rule allows {item.Code} to be not applicable; it must be satisfied with a verified document.",
+                        new { code = item.Code });
+                if (update.EvidenceFileId is null)
+                    return Fail(InstallationErrorCodes.ExemptionEvidenceRequired, $"Attach the verified document that supports the exemption of {item.Code}.");
+            }
+            item.IsRequired = mandatory || update.IsRequired;
             item.Status = status!;
-            item.EvidenceFileId = status == ChecklistStatuses.Satisfied ? update.EvidenceFileId : null;
+            item.EvidenceFileId = status is ChecklistStatuses.Satisfied or ChecklistStatuses.NotApplicable ? update.EvidenceFileId : null;
             item.Note = Trim(update.Note, 1000);
             item.VerifiedByUserId = status == ChecklistStatuses.Pending ? null : managerUserId;
             item.VerifiedAt = status == ChecklistStatuses.Pending ? null : now;
-            Event(projectId, InstallationEventTypes.ChecklistUpdated, managerUserId, null, null, $"{item.Code}: required={item.IsRequired}, {item.Status}", now);
+            Event(projectId, InstallationEventTypes.ChecklistUpdated, managerUserId, null, null,
+                waived ? $"{item.Code}: required={item.IsRequired}, {item.Status}; waived: {Trim(update.Note, 300)}" : $"{item.Code}: required={item.IsRequired}, {item.Status}", now);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
         return await ThenAsync(result, () => StaffViewAsync(projectId, cancellationToken));
@@ -507,6 +546,30 @@ public sealed class InstallationHandlers(
         if (keys.Distinct().Count() != keys.Count)
             return OperationResult<InstallationTechnicianView>.Fail(InstallationErrorCodes.DuplicateSerial, "The same serial number appears twice in the request.");
 
+        // A referenced catalog product must exist and be of the asset's kind. Panels and inverters (the contracted equipment) always reference
+        // their catalog product. The equipment warranty comes from the catalog, never from the technician: a duration that differs is refused.
+        var products = await unitOfWork.GetAssetProductsAsync(assets.Where(a => a.ProductId is not null).Select(a => a.ProductId!.Value).Distinct().ToList(), cancellationToken);
+        var productErrors = new Dictionary<string, string[]>();
+        for (var i = 0; i < assets.Count; i++)
+        {
+            var type = assets[i].AssetType.Trim().ToUpperInvariant();
+            if (assets[i].ProductId is not { } productId)
+            {
+                if (type is AssetTypes.Panel or AssetTypes.Inverter) productErrors[$"assets[{i}].productId"] = [$"A {type} must reference its catalog product."];
+                else if (assets[i].WarrantyMonths is not null)
+                    productErrors[$"assets[{i}].warrantyMonths"] = ["Without a catalog product there is no verified warranty; leave warrantyMonths empty."];
+                continue;
+            }
+            var problem = !products.TryGetValue(productId, out var product) ? "is not a catalog product"
+                : !AssetMatchesProduct(type, product.ProductType) ? $"is a {product.ProductType}, not a {type}"
+                : null;
+            if (problem is not null) productErrors[$"assets[{i}].productId"] = [$"Product {productId} {problem}."];
+            else if (assets[i].WarrantyMonths is { } months && months != product!.WarrantyMonths)
+                productErrors[$"assets[{i}].warrantyMonths"] = [$"The warranty comes from the catalog product ({product.WarrantyMonths?.ToString() ?? "none"} months); leave it empty."];
+        }
+        if (productErrors.Count > 0)
+            return OperationResult<InstallationTechnicianView>.Fail(InstallationErrorCodes.AssetProductInvalid, "One or more assets do not match the catalog.", productErrors);
+
         return await TechnicianActionAsync(technicianUserId, projectId, null, requireAccepted: true, async (p, _, now, token) =>
         {
             if (!InstallationStatuses.IsStarted(p.Status))
@@ -519,11 +582,29 @@ public sealed class InstallationHandlers(
                 {
                     Id = Guid.NewGuid(), ProjectId = projectId, AssetType = a.AssetType.Trim().ToUpperInvariant(), ProductId = a.ProductId,
                     Manufacturer = a.Manufacturer.Trim().ToUpperInvariant(), Model = a.Model.Trim(), SerialNumber = a.SerialNumber.Trim().ToUpperInvariant(),
-                    PositionCode = Trim(a.PositionCode, 50), WarrantyMonths = a.WarrantyMonths, RegisteredByUserId = technicianUserId, RegisteredAt = now,
+                    PositionCode = Trim(a.PositionCode, 50), RegisteredByUserId = technicianUserId, RegisteredAt = now,
+                    WarrantyMonths = a.ProductId is { } id && products.TryGetValue(id, out var catalog) ? catalog.WarrantyMonths : null,
+                    // The source of the duration; its start (and so its end) stays unset until the start rule is decided.
+                    WarrantySource = a.ProductId is { } pid && products.TryGetValue(pid, out var source) && source.WarrantyMonths is not null
+                        ? EquipmentWarrantySources.CatalogProduct : null,
                 });
+            if (assets.Any(a => a.AssetType.Trim().ToUpperInvariant() is AssetTypes.Panel or AssetTypes.Inverter))
+                await SupersedeActiveSubstitutionAsync(projectId, now, token);
             Event(projectId, InstallationEventTypes.AssetsRegistered, technicianUserId, null, null, $"{assets.Count} assets", now);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
+    }
+
+    /// <summary>PANEL / INVERTER assets must reference a product of that catalog type; other assets must not reference a priced service.</summary>
+    private static bool AssetMatchesProduct(string assetType, string productType)
+    {
+        var type = Catalog.Constants.ProductTypes.Normalize(productType);
+        return assetType switch
+        {
+            AssetTypes.Panel => type == Catalog.Constants.ProductTypes.SolarPanel,
+            AssetTypes.Inverter => type == Catalog.Constants.ProductTypes.Inverter,
+            _ => !Catalog.Constants.ProductTypes.IsService(type),
+        };
     }
 
     /// <summary>
@@ -547,6 +628,9 @@ public sealed class InstallationHandlers(
                 return Fail(InstallationErrorCodes.AssetsRequired, "Register the installed panels and inverter before reporting completion.");
             if ((await unitOfWork.GetAcceptancesAsync(projectId, false, token)).Any(a => a.Decision == AcceptanceDecisions.Pending))
                 return Fail(InstallationErrorCodes.InvalidState, "A completion report is already waiting for the customer.");
+            if (await EquipmentComparisonAsync(p, token) is { Status: EquipmentComparisonStatuses.ApprovalRequired } comparison)
+                return OperationResult<bool>.Fail(InstallationErrorCodes.SubstitutionApprovalRequired,
+                    "The installed panels / inverters differ from the contract. A Manager must approve the substitution first.", new { differences = comparison.Differences });
 
             var from = p.Status;
             p.AcceptanceRound = round;
@@ -600,6 +684,10 @@ public sealed class InstallationHandlers(
             pending.DecidedAt = now;
             pending.Reason = Trim(reason, 2000);
             var from = p.Status;
+            if (accept && await EquipmentComparisonAsync(p, token) is { Status: EquipmentComparisonStatuses.ApprovalRequired or EquipmentComparisonStatuses.CustomerApprovalRequired } comparison)
+                return OperationResult<bool>.Fail(InstallationErrorCodes.SubstitutionCustomerApprovalRequired,
+                    "The installed equipment differs from your contract. Review and approve the substitution first, or ask for rework.",
+                    new { differences = comparison.Differences });
             if (accept)
             {
                 pending.Decision = AcceptanceDecisions.Accepted;
@@ -617,6 +705,7 @@ public sealed class InstallationHandlers(
             {
                 pending.Decision = AcceptanceDecisions.ReworkRequested;
                 p.Status = InstallationStatuses.ReworkRequired;
+                await DeclineActiveSubstitutionAsync(projectId, customerUserId, Trim(reason, 2000), now, token);
                 Event(projectId, InstallationEventTypes.ReworkRequested, customerUserId, from, p.Status, $"round {pending.Round}: {Trim(reason, 400)}", now);
             }
             return OperationResult<bool>.Ok(true);
@@ -759,8 +848,24 @@ public sealed class InstallationHandlers(
 
     private static IReadOnlySet<Guid>? Ignore(InstallationAssignment? current) => current is null ? null : new HashSet<Guid> { current.Id };
 
-    private static List<string> BlockingChecklist(IReadOnlyList<InstallationChecklistItem> items)
-        => items.Where(i => i.IsRequired && i.Status == ChecklistStatuses.Pending).Select(i => i.Code).ToList();
+    /// <summary>
+    /// Items that keep work from starting: a required item still PENDING, and a mandatory prerequisite (EVN, PCCC, structural) that is
+    /// neither SATISFIED nor exempted under an approved rule with a document, whatever its stored flag (so a project created before the
+    /// prerequisites became mandatory, or waived with a note only, cannot start either).
+    /// </summary>
+    private List<string> BlockingChecklist(IReadOnlyList<InstallationChecklistItem> items)
+        => items.Where(i => DefaultInstallationPlan.IsMandatory(i.Code)
+                ? !(i.Status == ChecklistStatuses.Satisfied || (i.Status == ChecklistStatuses.NotApplicable && i.EvidenceFileId is not null
+                    && !string.IsNullOrWhiteSpace(i.Note) && options.ExemptiblePrerequisiteCodes.Contains(i.Code, StringComparer.Ordinal)))
+                : i.IsRequired && i.Status == ChecklistStatuses.Pending)
+            .Select(i => i.Code).ToList();
+
+    /// <summary>Approval times in the business time zone; the customer sees the Manager's reason but no staff identity.</summary>
+    private EquipmentComparisonView LocalSteps(EquipmentComparisonView view, bool forCustomer = false) => view with
+    {
+        ManagerApproval = view.ManagerApproval is { } m ? m with { At = Local(m.At)!.Value, ActorUserId = forCustomer ? null : m.ActorUserId } : null,
+        CustomerApproval = view.CustomerApproval is { } c ? c with { At = Local(c.At)!.Value } : null,
+    };
 
     private DateTimeOffset? Local(DateTimeOffset? instant) => instant is { } value ? TimeZoneInfo.ConvertTime(value, calendar.TimeZone) : null;
 
@@ -791,7 +896,7 @@ public sealed class InstallationHandlers(
         return new InstallationStaffView(p.Id, p.ContractId, p.SurveyRequestId, p.CustomerUserId, p.Status, zone,
             current is null ? null : new ResponsibleTechnicianView(current.TechnicianUserId, names.GetValueOrDefault(current.TechnicianUserId, ""), current.Status, Local(current.RespondedAt)),
             Local(p.ScheduledStartsAt), Local(p.ScheduledEndsAt), p.PlannedStartDate, p.PlannedEndDate, Local(p.StartedAt), Local(p.AcceptanceRequestedAt),
-            Local(p.CompletedAt), Local(p.HandoverAt), Local(p.CancelledAt), p.CancellationReason, p.CurrentRound, p.Revision,
+            Local(p.CompletedAt), Local(p.HandoverAt), Local(p.CancelledAt), p.CancellationReason, p.DisplayRound, p.Revision,
             await unitOfWork.GetSiteAsync(p.PropertySiteId, p.CustomerUserId, cancellationToken),
             assignments.Select(a => new AssignmentView(a.Id, a.TechnicianUserId, names.GetValueOrDefault(a.TechnicianUserId, ""), Local(a.StartsAt)!.Value, Local(a.EndsAt)!.Value,
                 a.Status, a.AssignedByUserId, Local(a.AssignedAt)!.Value, a.AssignmentReason, Local(a.RespondedAt), a.ResponseReason, Local(a.ClosedAt))).ToList(),
@@ -799,7 +904,8 @@ public sealed class InstallationHandlers(
             (await unitOfWork.GetChecklistAsync(projectId, false, cancellationToken))
                 .Select(i => new ChecklistItemView(i.Id, i.Code, i.Title, i.IsRequired, i.Status, i.EvidenceFileId, i.Note, Local(i.VerifiedAt))).ToList(),
             (await unitOfWork.GetEventsAsync(projectId, cancellationToken))
-                .Select(e => new InstallationEventView(e.EventType, e.ActorUserId, e.FromStatus, e.ToStatus, e.Detail, Local(e.CreatedAt)!.Value)).ToList());
+                .Select(e => new InstallationEventView(e.EventType, e.ActorUserId, e.FromStatus, e.ToStatus, e.Detail, Local(e.CreatedAt)!.Value)).ToList(),
+            LocalSteps(await EquipmentComparisonAsync(p, cancellationToken)) with { History = await SubstitutionHistoryAsync(projectId, cancellationToken) });
     }
 
     private async Task<InstallationTechnicianView> TechnicianViewAsync(Guid projectId, InstallationAssignment assignment, CancellationToken cancellationToken)
@@ -815,10 +921,11 @@ public sealed class InstallationHandlers(
         var zone = p.OperationalZoneId is { } zoneId ? await unitOfWork.GetZoneSummaryAsync(zoneId, cancellationToken) : null;
         return new InstallationTechnicianView(p.Id, p.Status, assignment.Status, assignment.Id, Local(assignment.StartsAt)!.Value, Local(assignment.EndsAt)!.Value,
             zone?.Name, involved ? await unitOfWork.GetSiteAsync(p.PropertySiteId, p.CustomerUserId, cancellationToken) : null,
-            Local(p.StartedAt), Local(p.AcceptanceRequestedAt), Local(p.CompletedAt), p.CurrentRound, p.Revision, blocked is null, blocked,
+            Local(p.StartedAt), Local(p.AcceptanceRequestedAt), Local(p.CompletedAt), p.DisplayRound, p.Revision, blocked is null, blocked,
             involved ? await EvidenceAsync(projectId, cancellationToken) : [],
             involved ? await AssetsAsync(projectId, cancellationToken) : [],
-            involved ? await AcceptancesAsync(projectId, cancellationToken) : []);
+            involved ? await AcceptancesAsync(projectId, cancellationToken) : [],
+            involved ? LocalSteps(await EquipmentComparisonAsync(p, cancellationToken)) : null);
     }
 
     private async Task<InstallationCustomerView> CustomerViewAsync(Guid projectId, CancellationToken cancellationToken)
@@ -829,8 +936,9 @@ public sealed class InstallationHandlers(
             technician = (await unitOfWork.GetUserNamesAsync([t], cancellationToken)).GetValueOrDefault(t);
         var scheduled = p.Status is not (InstallationStatuses.PendingAssignment or InstallationStatuses.Cancelled);
         return new InstallationCustomerView(p.Id, p.ContractId, p.Status, scheduled ? Local(p.ScheduledStartsAt) : null, scheduled ? Local(p.ScheduledEndsAt) : null,
-            technician, Local(p.StartedAt), Local(p.AcceptanceRequestedAt), Local(p.CompletedAt), Local(p.HandoverAt), Local(p.CancelledAt), p.CurrentRound, p.Revision,
-            await EvidenceAsync(projectId, cancellationToken), await AssetsAsync(projectId, cancellationToken), await AcceptancesAsync(projectId, cancellationToken));
+            technician, Local(p.StartedAt), Local(p.AcceptanceRequestedAt), Local(p.CompletedAt), Local(p.HandoverAt), Local(p.CancelledAt), p.DisplayRound, p.Revision,
+            await EvidenceAsync(projectId, cancellationToken), await AssetsAsync(projectId, cancellationToken), await AcceptancesAsync(projectId, cancellationToken),
+            LocalSteps(await EquipmentComparisonAsync(p, cancellationToken), forCustomer: true));
     }
 
     private void Event(Guid projectId, string type, Guid actor, string? from, string? to, string? detail, DateTimeOffset now)

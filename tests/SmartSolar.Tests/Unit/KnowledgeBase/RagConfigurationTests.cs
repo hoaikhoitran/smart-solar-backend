@@ -296,9 +296,9 @@ public sealed class RagConfigurationTests
         Assert.Equal((1, 1500, 200), (version.IndexedConfigVersion!.Value, version.IndexedChunkCharacters!.Value, version.IndexedChunkOverlap!.Value));
         Assert.Equal("READY", version.LastIngestStatus);
 
-        var first = await rig.Chat().AskAsync(admin, null, "Câu 1", "a", None);
+        var first = await rig.Chat().AskAsync(admin, null, "Câu 1", "a", None, KnowledgeAudience.Staff);
         Assert.True(first.Succeeded && first.Value!.Grounded, first.Message);
-        await rig.Chat().AskAsync(admin, first.Value.SessionId, "Câu 2", "b", None);
+        await rig.Chat().AskAsync(admin, first.Value.SessionId, "Câu 2", "b", None, KnowledgeAudience.Staff);
         var answer = rig.Rag.LastAnswerRequest!;
         Assert.Equal(1, answer.ConfigVersion);
         Assert.Equal("o4-mini", answer.GenerationModel);
@@ -317,7 +317,7 @@ public sealed class RagConfigurationTests
         var bootstrap = new Rig(ctx2);
         var admin2 = await bootstrap.AdminAsync();
         await bootstrap.PublishedAsync(admin2);
-        await bootstrap.Chat().AskAsync(admin2, null, "Câu 1", null, None);
+        await bootstrap.Chat().AskAsync(admin2, null, "Câu 1", null, None, KnowledgeAudience.Staff);
         var b = bootstrap.Rag.LastAnswerRequest!;
         Assert.Equal((0, 0.2m, "v1", bootstrap.Options.TopK, bootstrap.Options.MaxOutputTokens), (b.ConfigVersion, b.MinScore!.Value, b.PromptVersion!, b.TopK, b.MaxOutputTokens));
         Assert.Null(b.GenerationModel);
@@ -330,7 +330,7 @@ public sealed class RagConfigurationTests
         Assert.Contains("\"minScore\":0.2", wire);
         // Once an admin configuration is ACTIVE it overrides the service defaults again.
         await bootstrap.ActivateAsync(admin2, Input(model: "gpt-4.1", temperatureSpecified: true, temperature: 0.3m));
-        await bootstrap.Chat().AskAsync(admin2, null, "Câu 2", null, None);
+        await bootstrap.Chat().AskAsync(admin2, null, "Câu 2", null, None, KnowledgeAudience.Staff);
         var active = bootstrap.Rag.LastAnswerRequest!;
         Assert.Equal(("gpt-4.1", 0.3m, RagTokenParameters.MaxTokens), (active.GenerationModel!, active.Temperature!.Value, active.TokenParameter!));
         Assert.Equal((0, 2400, 300), (bootstrap.Rag.LastIngestRequest!.ConfigVersion, bootstrap.Rag.LastIngestRequest.ChunkCharacters!.Value,
@@ -447,7 +447,7 @@ public sealed class RagConfigurationTests
         Assert.False(string.IsNullOrEmpty(after.LastIngestError));
         Assert.Equal(DocumentStatuses.Published, (await ctx.Db.KnowledgeDocuments.AsNoTracking().SingleAsync()).Status);
         Assert.Equal(versionId, Assert.Single(await new KnowledgeUnitOfWork(ctx.Db).GetRetrievableVersionsAsync(None)).VersionId);
-        var answer = await rig.Chat().AskAsync(admin, null, "Bảo hành bao lâu?", null, None);
+        var answer = await rig.Chat().AskAsync(admin, null, "Bảo hành bao lâu?", null, None, KnowledgeAudience.Staff);
         Assert.True(answer.Value!.Grounded);
     }
 
@@ -462,17 +462,17 @@ public sealed class RagConfigurationTests
         rig.Rag.DuringAnswer = async () => reserved.Add((await ctx.Db.RagUsageReservations.AsNoTracking().SingleAsync()).ReservedTokens);
         const string question = "Bảo hành bao lâu?";
 
-        await rig.Chat().AskAsync(admin, null, question, null, None);
+        await rig.Chat().AskAsync(admin, null, question, null, None, KnowledgeAudience.Staff);
         Assert.Equal(rig.Options.MaxContextTokens + rig.Options.MaxOutputTokens + question.Length / 3 + 500, reserved[^1]);
 
         await rig.ActivateAsync(admin, Input(context: 500, maxOutput: 64));
-        await rig.Chat().AskAsync(admin, null, question, null, None);
+        await rig.Chat().AskAsync(admin, null, question, null, None, KnowledgeAudience.Staff);
         Assert.Equal(500 + 64 + question.Length / 3 + 500, reserved[^1]);
 
         // With a small daily allowance the active (larger) estimate is what gets refused.
         await rig.ActivateAsync(admin, Input(context: 6000, maxOutput: 1500));
         rig.Options.DailyTokensPerUser = (await ctx.Db.RagUsageDaily.AsNoTracking().SingleAsync(u => u.UserId == admin)).ChargedTokens + 7000;
-        Assert.Equal(KnowledgeErrorCodes.QuotaExceeded, (await rig.Chat().AskAsync(admin, null, question, null, None)).ErrorCode);
+        Assert.Equal(KnowledgeErrorCodes.QuotaExceeded, (await rig.Chat().AskAsync(admin, null, question, null, None, KnowledgeAudience.Staff)).ErrorCode);
     }
 
     [Fact]
@@ -484,15 +484,15 @@ public sealed class RagConfigurationTests
         await rig.ActivateAsync(admin, Input(topK: 2, minScore: 0.9m));
         var doc = await rig.PublishedAsync(admin);
 
-        var grounded = await rig.Chat().AskAsync(admin, null, "Bảo hành bao lâu?", null, None);
+        var grounded = await rig.Chat().AskAsync(admin, null, "Bảo hành bao lâu?", null, None, KnowledgeAudience.Staff);
         Assert.True(grounded.Value!.Grounded);
         Assert.Equal(doc.DocumentId, Assert.Single(grounded.Value.Answer.Citations).DocumentId);
 
         // Claimed grounded but without citations, or citing an unknown version: replaced by the insufficient answer.
         rig.Rag.Answer = _ => new RagAnswerResult(true, null, "Chắc là 25 năm.", true, [], 500, 30, "fake", 1, 1, 1);
-        Assert.Equal(ChatService.InsufficientAnswer, (await rig.Chat().AskAsync(admin, null, "Inverter?", null, None)).Value!.Answer.Content);
+        Assert.Equal(ChatService.InsufficientAnswer, (await rig.Chat().AskAsync(admin, null, "Inverter?", null, None, KnowledgeAudience.Staff)).Value!.Answer.Content);
         rig.Rag.Answer = r => new RagAnswerResult(true, null, "x [1]", true, [new RagCitation(Guid.NewGuid(), Guid.NewGuid(), "c", 1, null, 0.9, "s")], 1, 1, "fake", 1, 1, 1);
-        var foreign = await rig.Chat().AskAsync(admin, null, "Inverter?", null, None);
+        var foreign = await rig.Chat().AskAsync(admin, null, "Inverter?", null, None, KnowledgeAudience.Staff);
         Assert.False(foreign.Value!.Grounded);
         Assert.Empty(foreign.Value.Answer.Citations);
     }

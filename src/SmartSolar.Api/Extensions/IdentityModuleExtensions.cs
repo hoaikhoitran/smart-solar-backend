@@ -144,17 +144,17 @@ public static class IdentityModuleExtensions
             {
                 // Several model-state entries can map to the same field name,
                 // so group before building the details dictionary.
-                var details = context.ModelState
-                    .Where(entry => entry.Value?.Errors.Count > 0)
-                    .GroupBy(entry => string.IsNullOrEmpty(entry.Key) ? "request" : entry.Key)
-                    .ToDictionary(
-                        group => group.Key,
-                        group => group
-                            .SelectMany(entry => entry.Value!.Errors)
-                            .Select(error => string.IsNullOrWhiteSpace(error.ErrorMessage)
-                                ? "The value is invalid."
-                                : error.ErrorMessage)
-                            .ToArray());
+                // Model binding fails before any business validation: the body or a value could not be read (malformed JSON,
+                // wrong type), so every entry gets the INVALID_FORMAT code.
+                var details = new ValidationDetails();
+                foreach (var entry in context.ModelState.Where(entry => entry.Value?.Errors.Count > 0))
+                {
+                    foreach (var error in entry.Value!.Errors)
+                    {
+                        details.Add(string.IsNullOrEmpty(entry.Key) ? "request" : entry.Key, ValidationErrorCodes.InvalidFormat,
+                            string.IsNullOrWhiteSpace(error.ErrorMessage) ? "The value is invalid." : error.ErrorMessage);
+                    }
+                }
 
                 var envelope = ApiResponse<object>.Failure(
                     new ApiError(

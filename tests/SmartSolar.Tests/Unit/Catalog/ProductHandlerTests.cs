@@ -247,6 +247,10 @@ public class ProductHandlerTests
         public Task<PagedResult<ProductDto>> ListActiveProductsAsync(ProductSearchCriteria criteria, CancellationToken cancellationToken)
             => _inner.ListActiveProductsAsync(criteria, cancellationToken);
 
+        public Task<PagedResult<ProductDto>> ListManagedProductsAsync(ProductSearchCriteria criteria, SmartSolar.Modules.Catalog.Enums.ProductStatus? status,
+            CancellationToken cancellationToken)
+            => _inner.ListManagedProductsAsync(criteria, status, cancellationToken);
+
         public Task<ProductDto?> FindActiveProductAsync(Guid productId, CancellationToken cancellationToken)
             => _inner.FindActiveProductAsync(productId, cancellationToken);
 

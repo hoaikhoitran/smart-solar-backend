@@ -269,6 +269,25 @@ public sealed class ServicePackageTests
         Assert.True((await ctx.Customer().DecideCompletionAsync(h.CustomerId, storm.RequestId, true, null, null, None)).Succeeded);
 
         var consumed = await ctx.Db.ServiceSubscriptions.AsNoTracking().SingleAsync(s => s.Id == term.Id);
-        Assert.Equal((0m, 2_800_000m, 5_200_000m), (consumed.SupportReserved, consumed.SupportConsumed, consumed.SupportAvailable));
+        Assert.Equal((0m, 2_800_000m, 5_200_000m), (consumed.SupportReserved, consumed.SupportConsumed, consumed.SupportAvailable));        // BL-12: a consistent ledger records no mismatch.
+        Assert.Empty(await ctx.Db.AfterSalesEvents.Where(e => e.EventType == AfterSalesWorkflow.SupportLedgerMismatch).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Releasing_more_support_than_is_reserved_is_recorded_instead_of_hidden()
+    {
+        await using var ctx = Create();
+        var data = ctx.Data();
+        var claim = new DisasterClaim { Id = Guid.NewGuid(), SupportReserved = 1_000_000m };
+        var term = new ServiceSubscription { Id = Guid.NewGuid(), SupportReserved = 1_000_000m, TermLimit = 8_000_000m };
+        var now = DateTimeOffset.UtcNow;
+
+        AfterSalesWorkflow.Release(data, claim, term, 1_000_000m, now);   // consistent: nothing recorded
+        AfterSalesWorkflow.Release(data, claim, term, 1_000_000m, now);   // a second release of the same amount
+
+        Assert.Equal((0m, 0m), (claim.SupportReserved, term.SupportReserved));
+        var recorded = ctx.Db.ChangeTracker.Entries<AfterSalesEvent>().Select(e => e.Entity).ToList();
+        var mismatch = Assert.Single(recorded);
+        Assert.Equal((AfterSalesWorkflow.SupportLedgerMismatch, EventSubjects.Claim, claim.Id), (mismatch.EventType, mismatch.SubjectType, mismatch.SubjectId));
     }
 }

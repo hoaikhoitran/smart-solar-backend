@@ -223,6 +223,35 @@ public class CatalogEndpointsTests
     }
 
     [Fact]
+    public async Task Admins_list_inactive_products_while_the_public_catalog_stays_active_only()
+    {
+        // Arrange: one active and one deactivated product.
+        using var factory = new AuthApiFactory();
+        var admin = ClientFor(factory, RoleCodes.Admin);
+        var activeId = await CreateAsync(admin, "PNL-ACTIVE");
+        var inactiveId = await CreateAsync(admin, "PNL-OFF");
+        var deactivate = await admin.PatchAsJsonAsync($"/api/admin/products/{inactiveId}/status", new { status = "INACTIVE" });
+        Assert.Equal(HttpStatusCode.OK, deactivate.StatusCode);
+
+        static async Task<List<Guid>> IdsAsync(HttpResponseMessage response)
+            => (await BodyOf(response)).GetProperty("data").GetProperty("items").EnumerateArray().Select(i => i.GetProperty("id").GetGuid()).ToList();
+
+        // Act / Assert
+        Assert.Equal([activeId], await IdsAsync(await admin.GetAsync("/api/products")));
+        Assert.Equal([inactiveId], await IdsAsync(await admin.GetAsync("/api/admin/products?status=INACTIVE")));
+        Assert.Equal(2, (await IdsAsync(await admin.GetAsync("/api/admin/products"))).Count);                       // default ALL
+        Assert.Equal(2, (await IdsAsync(await admin.GetAsync("/api/admin/products?status=all&pageSize=1&page=1"))).Count + 1);
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.GetAsync("/api/admin/products?status=DELETED")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await ClientFor(factory, RoleCodes.Sales).GetAsync("/api/admin/products")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await factory.CreateClient().GetAsync("/api/admin/products")).StatusCode);
+
+        // Reactivation after a "page refresh": found through the admin list, then ACTIVE again.
+        Assert.Equal(HttpStatusCode.OK, (await admin.PatchAsJsonAsync($"/api/admin/products/{inactiveId}/status", new { status = "ACTIVE" })).StatusCode);
+        Assert.Empty(await IdsAsync(await admin.GetAsync("/api/admin/products?status=INACTIVE")));
+        Assert.Contains(inactiveId, await IdsAsync(await admin.GetAsync("/api/products")));
+    }
+
+    [Fact]
     public async Task An_unknown_product_returns_not_found_in_the_envelope()
     {
         using var factory = new AuthApiFactory();

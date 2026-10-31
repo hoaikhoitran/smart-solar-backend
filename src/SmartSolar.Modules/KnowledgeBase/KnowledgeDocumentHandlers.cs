@@ -33,9 +33,16 @@ public static class KnowledgeJobs
     }
 }
 
+/// <summary>
+/// <see cref="Audience"/> is authoritative for who may retrieve the document. <see cref="LegacyAudienceTag"/> flags a document that still
+/// carries the interim <c>audience:customer</c> tag: it grants nothing and asks an Admin to review the classification.
+/// </summary>
 public sealed record KnowledgeDocumentView(Guid DocumentId, string Title, string Category, IReadOnlyList<string> Tags, string Status, Guid? LatestVersionId,
     Guid? PublishedVersionId, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, int Revision, IReadOnlyList<KnowledgeVersionView>? Versions,
-    IReadOnlyList<IngestionJobView>? Jobs);
+    IReadOnlyList<IngestionJobView>? Jobs, string Audience = KnowledgeAudiences.Internal, bool LegacyAudienceTag = false,
+    IReadOnlyList<AudienceChangeView>? AudienceChanges = null);
+
+public sealed record AudienceChangeView(string FromAudience, string ToAudience, Guid ActorUserId, string Reason, DateTimeOffset CreatedAt);
 
 /// <summary>
 /// Admin lifecycle of knowledge documents: REGISTERED → PROCESSING → READY_FOR_REVIEW → PUBLISHED
@@ -112,6 +119,32 @@ public sealed class KnowledgeDocumentHandlers(IKnowledgeUnitOfWork unitOfWork, F
             document.Title = title.Trim();
             document.Category = category.Trim().ToUpperInvariant();
             document.Tags = Tags(tags);
+            return Task.FromResult(OperationResult<bool>.Ok(true));
+        }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Admin reclassifies who may retrieve the document (INTERNAL ↔ CUSTOMER), with a reason, revision-checked so concurrent changes cannot
+    /// both apply. The change takes effect at once for retrieval, citations and chat history, and is kept as an audit row.
+    /// </summary>
+    public Task<OperationResult<KnowledgeDocumentView>> SetAudienceAsync(Guid adminUserId, Guid documentId, int revision, string? audience, string? reason,
+        CancellationToken cancellationToken)
+    {
+        var target = audience?.Trim().ToUpperInvariant();
+        if (target is null || !KnowledgeAudiences.All.Contains(target))
+            return Task.FromResult(OperationResult<KnowledgeDocumentView>.Fail(CommonErrorCodes.ValidationFailed, $"Audience must be one of {string.Join(", ", KnowledgeAudiences.All)}."));
+        if (string.IsNullOrWhiteSpace(reason) || reason.Trim().Length > 1000)
+            return Task.FromResult(OperationResult<KnowledgeDocumentView>.Fail(CommonErrorCodes.ValidationFailed, "A reason of at most 1000 characters is required."));
+        return MutateAsync(documentId, revision, (document, now, _) =>
+        {
+            if (document.Audience == target)
+                return Task.FromResult(Fail(KnowledgeErrorCodes.AudienceUnchanged, $"The document is already {target}."));
+            unitOfWork.Add(new KnowledgeDocumentAudienceChange
+            {
+                Id = Guid.NewGuid(), DocumentId = document.Id, FromAudience = document.Audience, ToAudience = target, ActorUserId = adminUserId,
+                Reason = reason.Trim(), CreatedAt = now,
+            });
+            document.Audience = target;
             return Task.FromResult(OperationResult<bool>.Ok(true));
         }, cancellationToken);
     }
@@ -279,8 +312,13 @@ public sealed class KnowledgeDocumentHandlers(IKnowledgeUnitOfWork unitOfWork, F
                 .Select(j => new IngestionJobView(j.Id, j.VersionId, j.Kind, j.Status, j.Attempts, j.MaxAttempts, j.NextAttemptAt, j.LastError, j.CreatedAt, j.CompletedAt,
                     j.ConfigVersion, j.ChunkCharacters, j.ChunkOverlap)).ToList();
         }
-        return new KnowledgeDocumentView(d.Id, d.Title, d.Category, (d.Tags ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries), d.Status, d.LatestVersionId,
-            d.PublishedVersionId, d.CreatedAt, d.UpdatedAt, d.Revision, versions, jobs);
+        var tags = (d.Tags ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries);
+        var changes = detail
+            ? (await unitOfWork.GetAudienceChangesAsync(documentId, cancellationToken)).OrderBy(c => c.CreatedAt)
+                .Select(c => new AudienceChangeView(c.FromAudience, c.ToAudience, c.ActorUserId, c.Reason, c.CreatedAt)).ToList()
+            : null;
+        return new KnowledgeDocumentView(d.Id, d.Title, d.Category, tags, d.Status, d.LatestVersionId,
+            d.PublishedVersionId, d.CreatedAt, d.UpdatedAt, d.Revision, versions, jobs, d.Audience, tags.Contains(KnowledgeAudiences.LegacyCustomerTag), changes);
     }
 
     private static string? ValidateMetadata(string title, string category, IReadOnlyList<string>? tags)

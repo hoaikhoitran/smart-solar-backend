@@ -294,7 +294,7 @@ public sealed class AppointmentAssignmentService(
     /// The usual coverage refusal; an authorized cross-zone dispatch also accepts NO_ZONE_COVERAGE (no zone to be a member of) and
     /// ZONE_NOT_SERVICEABLE (the zone takes no new self-service work, staff place it by hand). SITE_LOCATION_REQUIRED always refuses.
     /// </summary>
-    private static ReservationOutcome? DispatchCoverageError(SiteCoverage coverage, bool crossZone)
+    internal static ReservationOutcome? DispatchCoverageError(SiteCoverage coverage, bool crossZone)
         => crossZone && coverage.Status is Zones.CoverageStatuses.NoZoneCoverage or Zones.CoverageStatuses.ZoneNotServiceable
             ? null
             : AppointmentReservationService.CoverageError(coverage);
@@ -777,5 +777,5 @@ public sealed class AppointmentAssignmentService(
     public static AppointmentSnapshot Snapshot(TechnicianAppointment a) => new(
         a.Id, a.AppointmentType, a.SurveyRequestId, a.PropertySiteId, a.OperationalZoneId, a.StartsAt, a.EndsAt, a.ReservedTechnicianUserId,
         a.AssignedTechnicianUserId, a.AssignedBySaleUserId, a.Status, a.CustomerNote, a.BookedByUserId, a.BookedAt, a.AcceptanceDeadlineAt,
-        a.EscalatedAt, a.AcceptedAt, a.AssignedAt, a.AssignmentSource, a.AssignmentReason, a.CompletedAt, a.Revision);
+        a.EscalatedAt, a.AcceptedAt, a.AssignedAt, a.AssignmentSource, a.AssignmentReason, a.CompletedAt, a.Revision, a.CrossZoneAuthorizationId);
 }

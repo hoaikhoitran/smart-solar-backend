@@ -54,6 +54,8 @@ public sealed class SimulationsController : ControllerBase
         _selectValidator = selectValidator;
     }
 
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.SolarSimulation.Models.SimulationDetail>), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.SolarSimulation.Models.SimulationDetail>), StatusCodes.Status200OK)]
     [HttpPost]
     [Authorize(Roles = RoleCodes.Customer)]
     [EnableRateLimiting(RateLimitingExtensions.SimulationWritePolicy)]
@@ -79,9 +81,7 @@ public sealed class SimulationsController : ControllerBase
         var validation = await _createValidator.ValidateAsync(command, cancellationToken);
         if (!validation.IsValid)
         {
-            var details = validation.Errors
-                .GroupBy(x => x.PropertyName)
-                .ToDictionary(g => g.Key, g => g.Select(x => x.ErrorMessage).ToArray());
+            var details = ValidationDetails.From(validation);
             return BadRequest(Failure(SimulationErrorCodes.ValidationFailed, "One or more fields are invalid.", details));
         }
 
@@ -106,6 +106,7 @@ public sealed class SimulationsController : ControllerBase
     }
 
     /// <summary>Cached recent results (newest first) and the stored selected summary.</summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.SolarSimulation.Models.SimulationListView>), StatusCodes.Status200OK)]
     [HttpGet]
     public async Task<IActionResult> List(Guid preSurveyId, CancellationToken cancellationToken)
     {
@@ -122,6 +123,7 @@ public sealed class SimulationsController : ControllerBase
     /// The full result while cached (source CACHE); for the selected simulation after expiry, its
     /// verified durable snapshot (source SNAPSHOT) or its compact summary (source SUMMARY).
     /// </summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.SolarSimulation.Models.SimulationDetail>), StatusCodes.Status200OK)]
     [HttpGet("{simulationId:guid}")]
     public async Task<IActionResult> Get(Guid preSurveyId, Guid simulationId, CancellationToken cancellationToken)
     {
@@ -140,6 +142,7 @@ public sealed class SimulationsController : ControllerBase
     }
 
     /// <summary>Selects a cached result (Draft only). Re-selecting replaces the previous selection.</summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.SolarSimulation.Models.SelectedSimulationView>), StatusCodes.Status200OK)]
     [HttpPost("{simulationId:guid}/select")]
     [Authorize(Roles = RoleCodes.Customer)]
     [EnableRateLimiting(RateLimitingExtensions.SimulationWritePolicy)]
@@ -154,9 +157,7 @@ public sealed class SimulationsController : ControllerBase
         var validation = await _selectValidator.ValidateAsync(command, cancellationToken);
         if (!validation.IsValid)
         {
-            var details = validation.Errors
-                .GroupBy(x => x.PropertyName)
-                .ToDictionary(g => g.Key, g => g.Select(x => x.ErrorMessage).ToArray());
+            var details = ValidationDetails.From(validation);
             return BadRequest(Failure(SimulationErrorCodes.ValidationFailed, "One or more fields are invalid.", details));
         }
 

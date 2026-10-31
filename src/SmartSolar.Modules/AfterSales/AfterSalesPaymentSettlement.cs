@@ -38,6 +38,19 @@ public sealed class AfterSalesPaymentSettlement(IAfterSalesUnitOfWork data, Subs
         }
     }
 
+    public Task RecordUnappliedPaymentAsync(PaymentAttempt attempt, decimal amount, string reason, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        var refund = new RefundRecord
+        {
+            Id = Guid.NewGuid(), CustomerUserId = attempt.CustomerUserId, PaymentAttemptId = attempt.Id, OriginalAmount = amount,
+            Reason = Text.Trim($"Payment {attempt.OrderCode} received but not applied: {reason}", 1000)!, Status = RefundStatuses.PendingApproval,
+            CreatedAt = now, UpdatedAt = now,
+        };
+        data.Add(refund);
+        AfterSalesHistory.Record(data, EventSubjects.Refund, refund.Id, "REFUND_REQUESTED", null, refund.Reason, now);
+        return Task.CompletedTask;
+    }
+
     private async Task<string?> SettleSubscriptionAsync(PaymentAttempt attempt, Guid subscriptionId, DateTimeOffset providerPaidAt, DateTimeOffset now, CancellationToken token)
     {
         var subscription = await data.FindSubscriptionAsync(subscriptionId, true, token);

@@ -43,6 +43,7 @@ public sealed class SurveyRequestsController : ControllerBase
     }
 
     /// <summary>The unclaimed queue: non-cancelled requests without a commercial owner (whatever their scheduling state).</summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<System.Collections.Generic.IReadOnlyList<SmartSolar.Modules.PreSurvey.GetPendingSurveyRequests.PendingSurveyRequestItem>>), StatusCodes.Status200OK)]
     [HttpGet("pending")]
     public async Task<IActionResult> GetPending(
         CancellationToken cancellationToken)
@@ -87,6 +88,7 @@ public sealed class SurveyRequestsController : ControllerBase
         return Ok(Success(new ClaimSurveyRequestResponse(surveyRequestId)));
     }
 
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<System.Collections.Generic.IReadOnlyList<SmartSolar.Modules.PreSurvey.GetMySurveyRequests.MySurveyRequestItem>>), StatusCodes.Status200OK)]
     [HttpGet("my")]
     public async Task<IActionResult> GetMy(
         CancellationToken cancellationToken)
@@ -106,6 +108,7 @@ public sealed class SurveyRequestsController : ControllerBase
         return Ok(Success(requests));
     }
 
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.PreSurvey.GetSurveyRequestDetail.SurveyRequestDetail>), StatusCodes.Status200OK)]
     [HttpGet("{surveyRequestId:guid}")]
     public async Task<IActionResult> GetDetail(
         Guid surveyRequestId,
@@ -148,6 +151,7 @@ public sealed class SurveyRequestsController : ControllerBase
     /// appointment (reason required). 403 SURVEY_REQUEST_NOT_OWNED for anyone else; claim first.
     /// PUT …/reassign-technician is kept as an alias.
     /// </summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Scheduling.PreSurveyAppointments.AssignmentView>), StatusCodes.Status200OK)]
     [HttpPost("{surveyRequestId:guid}/assign-technician")]
     [HttpPut("{surveyRequestId:guid}/reassign-technician")]
     [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting(RateLimitingExtensions.SchedulingWritePolicy)]
@@ -172,7 +176,7 @@ public sealed class SurveyRequestsController : ControllerBase
             return BadRequest(Failure(
                 Modules.Scheduling.Constants.SchedulingErrorCodes.ValidationFailed,
                 "One or more fields are invalid.",
-                validation.Errors.GroupBy(e => e.PropertyName).ToDictionary(g => g.Key, g => g.Select(e => e.ErrorMessage).ToArray())));
+                ValidationDetails.From(validation)));
         }
 
         var result = await assignHandler.HandleAsync(command, cancellationToken);
@@ -185,6 +189,7 @@ public sealed class SurveyRequestsController : ControllerBase
     /// The staff queue: ESCALATED appointments and pending ones past their acceptance deadline (owned and unowned),
     /// with the service area and whether any technician could still take them.
     /// </summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<System.Collections.Generic.IReadOnlyList<SmartSolar.Modules.Scheduling.PreSurveyAppointments.EscalatedAppointmentView>>), StatusCodes.Status200OK)]
     [HttpGet("escalated")]
     [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting(RateLimitingExtensions.SchedulingReadPolicy)]
     public async Task<IActionResult> GetEscalated(
@@ -205,6 +210,7 @@ public sealed class SurveyRequestsController : ControllerBase
     /// Sales reschedule of an owned request. The confirmed technician keeps the job when still eligible at the
     /// new time; pass technicianUserId (with a reason) to reschedule and assign together.
     /// </summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Scheduling.PreSurveyAppointments.SalesRescheduleView>), StatusCodes.Status200OK)]
     [HttpPut("{surveyRequestId:guid}/reschedule")]
     [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting(RateLimitingExtensions.SchedulingWritePolicy)]
     public async Task<IActionResult> Reschedule(

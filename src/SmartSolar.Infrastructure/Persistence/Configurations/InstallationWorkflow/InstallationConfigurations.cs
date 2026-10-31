@@ -194,6 +194,11 @@ public sealed class InstalledAssetConfiguration : IEntityTypeConfiguration<Insta
             t.HasCheckConstraint("ck_installed_asset_type", $"asset_type IN ({string.Join(", ", AssetTypes.All.Select(s => $"'{s}'"))})");
             t.HasCheckConstraint("ck_installed_asset_warranty", "warranty_months IS NULL OR warranty_months BETWEEN 0 AND 600");
             t.HasCheckConstraint("ck_installed_asset_status", $"status IN ({string.Join(", ", InstalledAssetStatuses.All.Select(s => $"'{s}'"))})");
+            // A duration always states its source (existing durations are backfilled as LEGACY_UNVERIFIED by the migration).
+            t.HasCheckConstraint("ck_installed_asset_warranty_source",
+                $"(warranty_months IS NULL) = (warranty_source IS NULL) AND (warranty_source IS NULL OR warranty_source IN ({string.Join(", ", EquipmentWarrantySources.All.Select(s => $"'{s}'"))}))");
+            t.HasCheckConstraint("ck_installed_asset_warranty_period",
+                "warranty_ends_at IS NULL OR (warranty_starts_at IS NOT NULL AND warranty_months IS NOT NULL AND warranty_ends_at > warranty_starts_at)");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -212,6 +217,9 @@ public sealed class InstalledAssetConfiguration : IEntityTypeConfiguration<Insta
         builder.Property(x => x.ReplacesAssetId).HasColumnName("replaces_asset_id");
         builder.Property(x => x.ServiceRequestId).HasColumnName("service_request_id");
         builder.Property(x => x.Specifications).HasColumnName("specifications").HasMaxLength(500);
+        builder.Property(x => x.WarrantySource).HasColumnName("warranty_source").HasMaxLength(30);
+        builder.Property(x => x.WarrantyStartsAt).HasColumnName("warranty_starts_at");
+        builder.Property(x => x.WarrantyEndsAt).HasColumnName("warranty_ends_at");
         // A serial number is unique for its manufacturer across all assets, replaced ones included (history is kept).
         builder.HasIndex(x => new { x.Manufacturer, x.SerialNumber }).IsUnique().HasDatabaseName("ux_installed_asset_manufacturer_serial");
         builder.HasOne<InstalledAsset>().WithMany().HasForeignKey(x => x.ReplacesAssetId).OnDelete(DeleteBehavior.Restrict)
@@ -270,5 +278,80 @@ public sealed class InstallationEventConfiguration : IEntityTypeConfiguration<In
         builder.HasIndex(x => new { x.ProjectId, x.CreatedAt }).HasDatabaseName("ix_installation_event_project_created_at");
         builder.HasOne<InstallationProject>().WithMany().HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.ActorUserId).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+public sealed class EquipmentSubstitutionConfiguration : IEntityTypeConfiguration<EquipmentSubstitution>
+{
+    public void Configure(EntityTypeBuilder<EquipmentSubstitution> builder)
+    {
+        builder.ToTable("installation_equipment_substitution", t =>
+        {
+            t.HasCheckConstraint("ck_installation_equipment_substitution_status",
+                $"status IN ({string.Join(", ", EquipmentSubstitutionStatuses.All.Select(s => $"'{s}'"))})");
+            t.HasCheckConstraint("ck_installation_equipment_substitution_approved",
+                $"status <> '{EquipmentSubstitutionStatuses.Approved}' OR customer_approved_at IS NOT NULL");
+            t.HasCheckConstraint("ck_installation_equipment_substitution_declined",
+                $"status <> '{EquipmentSubstitutionStatuses.CustomerDeclined}' OR customer_declined_at IS NOT NULL");
+            t.HasCheckConstraint("ck_installation_equipment_substitution_customer",
+                "(customer_approved_at IS NULL OR customer_declined_at IS NULL) AND ((customer_approved_at IS NULL AND customer_declined_at IS NULL) = (customer_user_id IS NULL))");
+            t.HasCheckConstraint("ck_installation_equipment_substitution_superseded",
+                $"(status = '{EquipmentSubstitutionStatuses.Superseded}') = (superseded_at IS NOT NULL)");
+        });
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.ProjectId).HasColumnName("project_id").IsRequired();
+        builder.Property(x => x.ContractId).HasColumnName("contract_id").IsRequired();
+        builder.Property(x => x.QuotationId).HasColumnName("quotation_id").IsRequired();
+        builder.Property(x => x.Fingerprint).HasColumnName("fingerprint").HasMaxLength(64).IsRequired();
+        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(30).IsRequired();
+        builder.Property(x => x.ManagerUserId).HasColumnName("manager_user_id").IsRequired();
+        builder.Property(x => x.ManagerReason).HasColumnName("manager_reason").HasMaxLength(400).IsRequired();
+        builder.Property(x => x.ManagerApprovedAt).HasColumnName("manager_approved_at").IsRequired();
+        builder.Property(x => x.CustomerUserId).HasColumnName("customer_user_id");
+        builder.Property(x => x.CustomerApprovedAt).HasColumnName("customer_approved_at");
+        builder.Property(x => x.CustomerDeclinedAt).HasColumnName("customer_declined_at");
+        builder.Property(x => x.CustomerDeclineReason).HasColumnName("customer_decline_reason").HasMaxLength(2000);
+        builder.Property(x => x.SupersededAt).HasColumnName("superseded_at");
+        builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
+        builder.Property(x => x.Revision).HasColumnName("revision").IsConcurrencyToken().IsRequired();
+        // At most one active (pending or approved) substitution per project: duplicate or concurrent approvals cannot both commit.
+        builder.HasIndex(x => x.ProjectId).IsUnique()
+            .HasFilter($"status IN ('{EquipmentSubstitutionStatuses.CustomerApprovalPending}', '{EquipmentSubstitutionStatuses.Approved}')")
+            .HasDatabaseName("ux_installation_equipment_substitution_active");
+        builder.HasIndex(x => new { x.ProjectId, x.CreatedAt }).HasDatabaseName("ix_installation_equipment_substitution_project_created_at");
+        builder.HasOne<InstallationProject>().WithMany().HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<SmartSolar.Modules.CustomerContracts.CustomerContract>().WithMany().HasForeignKey(x => x.ContractId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_equipment_substitution_contract");
+        builder.HasOne<SmartSolar.Modules.Quotations.Quotation>().WithMany().HasForeignKey(x => x.QuotationId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_equipment_substitution_quotation");
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.ManagerUserId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_equipment_substitution_manager");
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.CustomerUserId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_equipment_substitution_customer");
+    }
+}
+
+public sealed class EquipmentSubstitutionItemConfiguration : IEntityTypeConfiguration<EquipmentSubstitutionItem>
+{
+    public void Configure(EntityTypeBuilder<EquipmentSubstitutionItem> builder)
+    {
+        builder.ToTable("installation_equipment_substitution_item", t =>
+            t.HasCheckConstraint("ck_installation_equipment_substitution_item_quantities",
+                "contracted_quantity >= 0 AND installed_quantity >= 0 AND contracted_quantity <> installed_quantity"));
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.SubstitutionId).HasColumnName("substitution_id").IsRequired();
+        builder.Property(x => x.ProductId).HasColumnName("product_id");
+        builder.Property(x => x.ProductType).HasColumnName("product_type").HasMaxLength(40).IsRequired();
+        builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(255);
+        builder.Property(x => x.ContractedQuantity).HasColumnName("contracted_quantity").HasPrecision(18, 3).IsRequired();
+        builder.Property(x => x.InstalledQuantity).HasColumnName("installed_quantity").IsRequired();
+        builder.HasIndex(x => x.SubstitutionId).HasDatabaseName("ix_installation_equipment_substitution_item_substitution");
+        builder.HasOne<EquipmentSubstitution>().WithMany().HasForeignKey(x => x.SubstitutionId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_equipment_substitution_item_substitution");
+        builder.HasOne<Product>().WithMany().HasForeignKey(x => x.ProductId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_equipment_substitution_item_product");
     }
 }

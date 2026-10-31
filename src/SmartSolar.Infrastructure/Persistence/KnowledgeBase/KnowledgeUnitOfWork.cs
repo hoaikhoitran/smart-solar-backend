@@ -60,6 +60,20 @@ public sealed class KnowledgeUnitOfWork(AppDbContext db) : TransactionalUnitOfWo
             .Select(x => new RagAllowedVersion(x.v.Id, x.d.Id, x.d.Title, x.v.VersionNumber))
             .ToListAsync(cancellationToken);
 
+    public async Task<IReadOnlyList<RagAllowedVersion>> GetCustomerRetrievableVersionsAsync(CancellationToken cancellationToken)
+    {
+        // The persisted audience is the only source: tags grant nothing.
+        return await Db.KnowledgeDocuments.AsNoTracking()
+            .Where(d => d.Status == DocumentStatuses.Published && d.PublishedVersionId != null && d.Audience == KnowledgeAudiences.Customer)
+            .Join(Db.KnowledgeDocumentVersions, d => d.PublishedVersionId, v => v.Id, (d, v) => new { d, v })
+            .Where(x => x.v.Status == VersionStatuses.Published)
+            .Select(x => new RagAllowedVersion(x.v.Id, x.d.Id, x.d.Title, x.v.VersionNumber))
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<KnowledgeDocumentAudienceChange>> GetAudienceChangesAsync(Guid documentId, CancellationToken cancellationToken)
+        => await Db.KnowledgeDocumentAudienceChanges.AsNoTracking().Where(c => c.DocumentId == documentId).ToListAsync(cancellationToken);
+
     public Task<ChatSession?> FindSessionAsync(Guid sessionId, CancellationToken cancellationToken)
         => Db.ChatSessions.AsNoTracking().FirstOrDefaultAsync(s => s.Id == sessionId, cancellationToken);
 

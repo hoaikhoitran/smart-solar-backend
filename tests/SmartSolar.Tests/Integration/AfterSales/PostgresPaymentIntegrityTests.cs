@@ -44,7 +44,9 @@ public sealed class PostgresPaymentIntegrityTests
         var whileLive = await ctx.Packages().PurchaseAsync(customer, new PurchaseInput(contract.ContractId, care.Id, null, true), None);
         Assert.Equal(PaymentErrorCodes.CheckoutInProgress, whileLive.ErrorCode);   // one payable checkout per contract
         Assert.True((await ctx.Payments().CancelCurrentAsync(customer, contract.ContractId, None)).Succeeded);
-        var combined = (await ctx.Packages().PurchaseAsync(customer, new PurchaseInput(contract.ContractId, care.Id, null, true), None)).Value!.Checkout;
+        var combinedResult = await ctx.Packages().PurchaseAsync(customer, new PurchaseInput(contract.ContractId, care.Id, null, true), None); //TMP-DIAG
+        Assert.True(combinedResult.Succeeded, $"TMP-DIAG {combinedResult.ErrorCode}: {combinedResult.Message} {System.Text.Json.JsonSerializer.Serialize(combinedResult.Details)}"); //TMP-DIAG
+        var combined = combinedResult.Value!.Checkout;
 
         // Act: the customer completes both; the two PayOS webhooks race.
         var webhooks = new[]

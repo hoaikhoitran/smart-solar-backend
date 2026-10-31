@@ -38,7 +38,8 @@ public sealed record ServiceRequestSummary(Guid RequestId, string RequestNumber,
     DateTimeOffset? PreferredStartsAt, DateTimeOffset CreatedAt);
 
 public sealed record AssetView(Guid AssetId, string AssetType, string Manufacturer, string Model, string SerialNumber, string? PositionCode, string Status,
-    Guid? ReplacesAssetId, Guid? ServiceRequestId, string? Specifications);
+    Guid? ReplacesAssetId, Guid? ServiceRequestId, string? Specifications, int? WarrantyMonths = null, string? WarrantySource = null,
+    DateTimeOffset? WarrantyStartsAt = null, DateTimeOffset? WarrantyEndsAt = null);
 
 /// <summary>Customer view of one installation's after-sales coverage. <see cref="WarrantyStatus"/> is one of <see cref="InstallationWarrantyStatuses"/>.</summary>
 public sealed record WarrantyView(Guid ProjectId, DateTimeOffset? HandoverAt, int? WarrantyMonths, DateTimeOffset? WarrantyEndsAt, bool UnderWarranty,
@@ -134,7 +135,8 @@ public sealed class AfterSalesViews(IAfterSalesUnitOfWork data, Scheduling.Domai
             c.SupportConsumed);
 
     public static AssetView Asset(InstalledAsset a)
-        => new(a.Id, a.AssetType, a.Manufacturer, a.Model, a.SerialNumber, a.PositionCode, a.Status, a.ReplacesAssetId, a.ServiceRequestId, a.Specifications);
+        => new(a.Id, a.AssetType, a.Manufacturer, a.Model, a.SerialNumber, a.PositionCode, a.Status, a.ReplacesAssetId, a.ServiceRequestId, a.Specifications,
+            a.WarrantyMonths, a.WarrantySource, a.WarrantyStartsAt, a.WarrantyEndsAt);
 
     public async Task<SubscriptionView> SubscriptionAsync(ServiceSubscription s, CancellationToken token)
     {

@@ -4,12 +4,19 @@ namespace SmartSolar.Modules.CustomerContracts;
 
 public sealed record AcceptedQuotationSource(
     Guid QuotationId, int QuotationVersion, string QuoteNumber, string Status, Guid SurveyRequestId, Guid CustomerUserId,
-    Guid? AssignedSaleId, string Currency, decimal TotalAmount, string PricingSnapshotJson, string? CustomerSnapshotJson, string? Terms);
+    Guid? AssignedSaleId, string Currency, decimal TotalAmount, string PricingSnapshotJson, string? CustomerSnapshotJson, string? Terms,
+    int QuotationSurveyVersion = 0, int CurrentSurveyVersion = 0);
 
 public interface IContractUnitOfWork : ITransactionalUnitOfWork
 {
     Task<AcceptedQuotationSource?> GetQuotationAsync(Guid quotationId, CancellationToken cancellationToken);
     Task<Guid?> GetAssignedSaleAsync(Guid surveyRequestId, CancellationToken cancellationToken);
+
+    /// <summary>Row lock on the survey request (PostgreSQL); the same lock closures take, always before any quotation or contract row.</summary>
+    Task LockSurveyRequestAsync(Guid surveyRequestId, CancellationToken cancellationToken);
+
+    /// <summary>True when the request was withdrawn (Cancelled) or Closed.</summary>
+    Task<bool> IsSurveyRequestClosedAsync(Guid surveyRequestId, CancellationToken cancellationToken);
     Task<CustomerContract?> FindAsync(Guid contractId, bool track, CancellationToken cancellationToken);
     Task<IReadOnlyList<CustomerContract>> ListByQuotationAsync(Guid quotationId, CancellationToken cancellationToken);
     Task<IReadOnlyList<CustomerContract>> ListBySurveyRequestAsync(Guid surveyRequestId, CancellationToken cancellationToken);
