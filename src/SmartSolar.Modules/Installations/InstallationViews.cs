@@ -23,7 +23,8 @@ public sealed record InstallationStaffView(
     DateOnly? PlannedStartDate, DateOnly? PlannedEndDate, DateTimeOffset? StartedAt, DateTimeOffset? AcceptanceRequestedAt,
     DateTimeOffset? CompletedAt, DateTimeOffset? HandoverAt, DateTimeOffset? CancelledAt, string? CancellationReason, int CurrentRound, int Revision,
     InstallationSiteInfo? Site, IReadOnlyList<AssignmentView> Assignments, IReadOnlyList<EvidenceView> Evidence, IReadOnlyList<AssetView> Assets,
-    IReadOnlyList<AcceptanceView> Acceptances, IReadOnlyList<ChecklistItemView> Checklist, IReadOnlyList<InstallationEventView> Events);
+    IReadOnlyList<AcceptanceView> Acceptances, IReadOnlyList<ChecklistItemView> Checklist, IReadOnlyList<InstallationEventView> Events,
+    EquipmentComparisonView? Equipment = null);
 
 /// <summary>Row of the Manager project list.</summary>
 public sealed record InstallationProjectSummary(Guid ProjectId, Guid ContractId, string Status, Guid? ResponsibleTechnicianUserId, string? ResponsibleTechnicianName,
@@ -37,14 +38,16 @@ public sealed record InstallationTechnicianView(
     Guid ProjectId, string Status, string MyAssignmentStatus, Guid AssignmentId, DateTimeOffset StartsAt, DateTimeOffset EndsAt,
     string? ZoneName, InstallationSiteInfo? Site, DateTimeOffset? StartedAt, DateTimeOffset? AcceptanceRequestedAt, DateTimeOffset? CompletedAt,
     int CurrentRound, int Revision, bool CanStart, string? StartBlockedReason,
-    IReadOnlyList<EvidenceView> Evidence, IReadOnlyList<AssetView> Assets, IReadOnlyList<AcceptanceView> Acceptances);
+    IReadOnlyList<EvidenceView> Evidence, IReadOnlyList<AssetView> Assets, IReadOnlyList<AcceptanceView> Acceptances,
+    EquipmentComparisonView? Equipment = null);
 
 /// <summary>The customer's view: the technician's name only once they accepted the job.</summary>
 public sealed record InstallationCustomerView(
     Guid ProjectId, Guid ContractId, string Status, DateTimeOffset? ScheduledStartsAt, DateTimeOffset? ScheduledEndsAt, string? TechnicianName,
     DateTimeOffset? StartedAt, DateTimeOffset? AcceptanceRequestedAt, DateTimeOffset? CompletedAt, DateTimeOffset? HandoverAt,
     DateTimeOffset? CancelledAt, int CurrentRound, int Revision,
-    IReadOnlyList<EvidenceView> Evidence, IReadOnlyList<AssetView> Assets, IReadOnlyList<AcceptanceView> Acceptances);
+    IReadOnlyList<EvidenceView> Evidence, IReadOnlyList<AssetView> Assets, IReadOnlyList<AcceptanceView> Acceptances,
+    EquipmentComparisonView? Equipment = null);
 
 /// <summary>A technician of the project's service area and whether they can take the interval (reason code when not).</summary>
 /// <summary>

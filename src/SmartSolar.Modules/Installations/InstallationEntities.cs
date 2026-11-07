@@ -51,6 +51,12 @@ public sealed class InstallationProject
 
     /// <summary>The evidence round the next completion report is judged on.</summary>
     public int CurrentRound => AcceptanceRound + 1;
+
+    /// <summary>
+    /// The round shown to people: while a report waits for the customer, and after completion, that is the round being judged / the
+    /// last round (<see cref="AcceptanceRound"/>); otherwise the round being worked on (<see cref="CurrentRound"/>).
+    /// </summary>
+    public int DisplayRound => Status is InstallationStatuses.PendingCustomerAcceptance or InstallationStatuses.Completed ? AcceptanceRound : CurrentRound;
 }
 
 /// <summary>
@@ -142,6 +148,84 @@ public sealed class InstalledAsset
 
     /// <summary>Essential technical specification of a replacement (rating, capacity…).</summary>
     public string? Specifications { get; set; }
+
+    /// <summary>Source of <see cref="WarrantyMonths"/> (<see cref="EquipmentWarrantySources"/>); null when there is no duration.</summary>
+    public string? WarrantySource { get; set; }
+
+    /// <summary>
+    /// Start and end of the equipment (manufacturer) warranty. Not set: when it starts (commissioning, handover, invoice, activation) has
+    /// not been decided, and no date is guessed.
+    /// </summary>
+    public DateTimeOffset? WarrantyStartsAt { get; set; }
+
+    public DateTimeOffset? WarrantyEndsAt { get; set; }
+}
+
+/// <summary>
+/// A Manager-approved difference between the installed panels/inverters and the accepted quotation, bound to the exact comparison
+/// (<see cref="Fingerprint"/>). The differences are its <see cref="EquipmentSubstitutionItem"/> rows, one per affected product, so any
+/// many-to-many change (e.g. 1 contracted inverter → 2 of another model) is represented as is. At most one record per project is active
+/// (CUSTOMER_APPROVAL_PENDING or APPROVED); a change of the installed equipment or a customer refusal ends it, never rewrites it.
+/// </summary>
+public sealed class EquipmentSubstitution
+{
+    public Guid Id { get; set; }
+    public Guid ProjectId { get; set; }
+    public Guid ContractId { get; set; }
+    /// <summary>The accepted quotation whose immutable lines are the contracted specification.</summary>
+    public Guid QuotationId { get; set; }
+    /// <summary>Hex fingerprint of the contracted and installed sets (currently 32 characters; up to a full SHA-256).</summary>
+    public string Fingerprint { get; set; } = null!;
+    public string Status { get; set; } = null!;
+    public Guid ManagerUserId { get; set; }
+    public string ManagerReason { get; set; } = null!;
+    public DateTimeOffset ManagerApprovedAt { get; set; }
+    public Guid? CustomerUserId { get; set; }
+    public DateTimeOffset? CustomerApprovedAt { get; set; }
+    public DateTimeOffset? CustomerDeclinedAt { get; set; }
+    public string? CustomerDeclineReason { get; set; }
+    public DateTimeOffset? SupersededAt { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
+    public int Revision { get; set; }
+}
+
+/// <summary>One product whose installed count differs from the contract (contracted 0 = not contracted; installed 0 = not installed).</summary>
+public sealed class EquipmentSubstitutionItem
+{
+    public Guid Id { get; set; }
+    public Guid SubstitutionId { get; set; }
+    /// <summary>Null for an installed asset without a catalog product (legacy registrations).</summary>
+    public Guid? ProductId { get; set; }
+    public string ProductType { get; set; } = null!;
+    public string? Name { get; set; }
+    public decimal ContractedQuantity { get; set; }
+    public int InstalledQuantity { get; set; }
+}
+
+public static class EquipmentSubstitutionStatuses
+{
+    /// <summary>Manager approved; the customer has not decided.</summary>
+    public const string CustomerApprovalPending = "CUSTOMER_APPROVAL_PENDING";
+    /// <summary>Manager and customer approved exactly this comparison.</summary>
+    public const string Approved = "APPROVED";
+    /// <summary>The customer asked for rework instead of agreeing.</summary>
+    public const string CustomerDeclined = "CUSTOMER_DECLINED";
+    /// <summary>The installed equipment changed afterwards: this approval no longer describes it.</summary>
+    public const string Superseded = "SUPERSEDED";
+
+    public static readonly IReadOnlyList<string> All = [CustomerApprovalPending, Approved, CustomerDeclined, Superseded];
+}
+
+/// <summary>Where an asset's equipment warranty duration comes from.</summary>
+public static class EquipmentWarrantySources
+{
+    /// <summary>The catalog product's warranty, copied when the asset was registered.</summary>
+    public const string CatalogProduct = "CATALOG_PRODUCT";
+    /// <summary>Registered before the source was recorded (typed by a technician or defaulted): not verified.</summary>
+    public const string LegacyUnverified = "LEGACY_UNVERIFIED";
+
+    public static readonly IReadOnlyList<string> All = [CatalogProduct, LegacyUnverified];
 }
 
 public static class InstalledAssetStatuses
@@ -269,6 +353,10 @@ public static class InstallationEventTypes
     public const string ReturnedToRework = "RETURNED_TO_REWORK";
     public const string ChecklistUpdated = "CHECKLIST_UPDATED";
     public const string ProjectCancelled = "PROJECT_CANCELLED";
+    /// <summary>Manager approved the installed equipment's differences from the contract (detail "fp:{fingerprint}; reason").</summary>
+    public const string SubstitutionApproved = "EQUIPMENT_SUBSTITUTION_APPROVED";
+    /// <summary>The customer agreed to the approved differences (detail "fp:{fingerprint}").</summary>
+    public const string SubstitutionCustomerApproved = "EQUIPMENT_SUBSTITUTION_CUSTOMER_APPROVED";
 }
 
 public static class InstallationErrorCodes
@@ -292,6 +380,22 @@ public static class InstallationErrorCodes
     public const string EvidenceRequired = "INSTALLATION_EVIDENCE_REQUIRED";
     public const string AssetsRequired = "INSTALLATION_ASSETS_REQUIRED";
     public const string DuplicateSerial = "INSTALLATION_DUPLICATE_SERIAL";
+    /// <summary>Waiving a prerequisite (not required / not applicable) needs a reason in the note (400).</summary>
+    public const string WaiverReasonRequired = "INSTALLATION_CHECKLIST_WAIVER_REASON_REQUIRED";
+    /// <summary>An asset names an unknown/deleted catalog product, or a product of another kind (e.g. a PANEL that is an inverter) (400).</summary>
+    public const string AssetProductInvalid = "INSTALLATION_ASSET_PRODUCT_VALIDATION_FAILED";
+    /// <summary>A mandatory prerequisite cannot be made optional (409).</summary>
+    public const string PrerequisiteMandatory = "INSTALLATION_PREREQUISITE_MANDATORY";
+    /// <summary>The installed panels / inverters differ from the accepted quotation without a Manager approval of exactly these differences (409).</summary>
+    public const string SubstitutionApprovalRequired = "INSTALLATION_SUBSTITUTION_APPROVAL_REQUIRED";
+    /// <summary>The customer has not agreed to the approved equipment differences: no handover yet (409).</summary>
+    public const string SubstitutionCustomerApprovalRequired = "INSTALLATION_SUBSTITUTION_CUSTOMER_APPROVAL_REQUIRED";
+    /// <summary>There is no equipment difference to approve (409).</summary>
+    public const string NoSubstitution = "INSTALLATION_NO_SUBSTITUTION";
+    /// <summary>No approved exemption rule allows this mandatory prerequisite to be NOT_APPLICABLE (409).</summary>
+    public const string ExemptionNotAuthorized = "INSTALLATION_PREREQUISITE_EXEMPTION_NOT_AUTHORIZED";
+    /// <summary>An exemption of a mandatory prerequisite needs a verified supporting document (400).</summary>
+    public const string ExemptionEvidenceRequired = "INSTALLATION_EXEMPTION_EVIDENCE_REQUIRED";
     public const string NotHandedOver = "INSTALLATION_NOT_HANDED_OVER";
 
     /// <summary>No such evidence on this project, or the caller may not see it (404, no existence disclosure).</summary>
@@ -319,4 +423,7 @@ public static class DefaultInstallationPlan
         ("FIRE_SAFETY_APPROVAL", "Fire safety (PCCC) approval"),
         ("STRUCTURAL_ASSESSMENT", "Roof structural assessment"),
     ];
+
+    /// <summary>EVN, PCCC and structural assessment are mandatory prerequisites of every installation.</summary>
+    public static bool IsMandatory(string code) => Checklist.Any(c => c.Code == code);
 }

@@ -74,9 +74,7 @@ public sealed class PreSurveySurfaceController : ControllerBase
         var validation = await _updateValidator.ValidateAsync(command, cancellationToken);
         if (!validation.IsValid)
         {
-            var details = validation.Errors
-                .GroupBy(x => x.PropertyName)
-                .ToDictionary(g => g.Key, g => g.Select(x => x.ErrorMessage).ToArray());
+            var details = ValidationDetails.From(validation);
             return BadRequest(Failure(PreSurveyErrorCodes.ValidationFailed, "One or more fields are invalid.", details));
         }
 

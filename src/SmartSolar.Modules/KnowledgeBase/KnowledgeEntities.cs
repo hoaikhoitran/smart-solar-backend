@@ -20,7 +20,24 @@ public sealed class KnowledgeDocument
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
     public DateTimeOffset? ArchivedAt { get; set; }
+    /// <summary>
+    /// Who may retrieve the document: <see cref="KnowledgeAudiences.Internal"/> (staff only, the default, also for every document that
+    /// existed before the column) or <see cref="KnowledgeAudiences.Customer"/>. Changed only by an Admin, with an audit row.
+    /// </summary>
+    public string Audience { get; set; } = KnowledgeAudiences.Internal;
     public int Revision { get; set; }
+}
+
+/// <summary>Append-only audit of a document's audience classification.</summary>
+public sealed class KnowledgeDocumentAudienceChange
+{
+    public Guid Id { get; set; }
+    public Guid DocumentId { get; set; }
+    public string FromAudience { get; set; } = null!;
+    public string ToAudience { get; set; } = null!;
+    public Guid ActorUserId { get; set; }
+    public string Reason { get; set; } = null!;
+    public DateTimeOffset CreatedAt { get; set; }
 }
 
 public sealed class KnowledgeDocumentVersion
@@ -102,6 +119,11 @@ public sealed class ChatMessage
     public int? CompletionTokens { get; set; }
     public string? Model { get; set; }
     public int? LatencyMs { get; set; }
+    /// <summary>
+    /// Assistant messages: the audience the answer was retrieved for (CUSTOMER or INTERNAL = staff). Null for answers generated before
+    /// audiences existed, which may draw on any published document; a customer never sees their text.
+    /// </summary>
+    public string? RetrievalAudience { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 }
 
@@ -216,6 +238,8 @@ public static class KnowledgeErrorCodes
 {
     public const string DocumentNotFound = "RAG_DOCUMENT_NOT_FOUND";
     public const string VersionNotFound = "RAG_VERSION_NOT_FOUND";
+    /// <summary>The document already has the requested audience (409).</summary>
+    public const string AudienceUnchanged = "RAG_DOCUMENT_AUDIENCE_UNCHANGED";
     public const string InvalidState = "RAG_INVALID_STATE";
     public const string StaleRevision = "RAG_STALE_REVISION";
     public const string SessionNotFound = "RAG_SESSION_NOT_FOUND";

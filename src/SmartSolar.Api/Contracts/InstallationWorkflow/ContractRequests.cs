@@ -11,3 +11,6 @@ public sealed record ContractReviewRequest(int Revision, string? Decision, strin
 
 /// <summary>officialDocumentSha256 identifies which published PDF the customer printed and signed.</summary>
 public sealed record SignedDocumentRequest(Guid FileId, string? OfficialDocumentSha256);
+
+/// <summary>Discard of an initial DRAFT contract: the current revision and a reason (1–1000 characters).</summary>
+public sealed record DiscardContractRequest(int? Revision, string? Reason);

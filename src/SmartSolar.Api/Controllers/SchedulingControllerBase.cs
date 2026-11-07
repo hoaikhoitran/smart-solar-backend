@@ -31,7 +31,7 @@ public abstract class SchedulingControllerBase : ControllerBase
 
     protected IActionResult ValidationFailure(ValidationResult validation)
         => BadRequest(Failure(SchedulingErrorCodes.ValidationFailed, "One or more fields are invalid.",
-            validation.Errors.GroupBy(e => e.PropertyName).ToDictionary(g => g.Key, g => g.Select(e => e.ErrorMessage).ToArray())));
+            ValidationDetails.From(validation)));
 
     protected IActionResult InvalidField(string field, string message)
         => BadRequest(Failure(SchedulingErrorCodes.ValidationFailed, "One or more fields are invalid.",
@@ -43,7 +43,7 @@ public abstract class SchedulingControllerBase : ControllerBase
     public static int StatusFor(string code) => code switch
     {
         SchedulingErrorCodes.ValidationFailed or SchedulingErrorCodes.InvalidBookingTime or SchedulingErrorCodes.AssignmentReasonRequired
-            or DispatchErrorCodes.ReasonRequired => StatusCodes.Status400BadRequest,
+            or SchedulingErrorCodes.RecoveryReasonRequired or DispatchErrorCodes.ReasonRequired => StatusCodes.Status400BadRequest,
         PreSurveyErrorCodes.SurveyRequestNotAssigned or SchedulingErrorCodes.SurveyRequestNotOwned
             or SchedulingErrorCodes.ZoneManagementForbidden or SchedulingErrorCodes.ZoneScopeForbidden => StatusCodes.Status403Forbidden,
         SchedulingErrorCodes.SurveyRequestNotFound or SchedulingErrorCodes.PropertySiteNotFound or SchedulingErrorCodes.BookingNotFound

@@ -44,6 +44,8 @@ public sealed class SqliteCatalogModelCustomizer : ModelCustomizer
         ConvertSortableColumns(modelBuilder.Entity<SchedulingNotification>());
         ConvertSortableColumns(modelBuilder.Entity<SmartSolar.Modules.Identity.Entities.UserAccountAuditEntry>());
         ConvertSortableColumns(modelBuilder.Entity<SmartSolar.Modules.Identity.Entities.UserAccount>());
+        // Customer pre-survey lists sort by CreatedAt / UpdatedAt.
+        ConvertSortableColumns(modelBuilder.Entity<SmartSolar.Modules.PreSurvey.Entities.PreSurvey>());
 
         // Installation Flow, after-sales and knowledge-base entities.
         foreach (var entity in modelBuilder.Model.GetEntityTypes().ToList())

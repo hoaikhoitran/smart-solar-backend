@@ -14,6 +14,7 @@ using SmartSolar.Modules.SolarSimulation.Geometry;
 using SmartSolar.Modules.SolarSimulation.Installation;
 using SmartSolar.Modules.SolarSimulation.Models;
 using SmartSolar.Modules.SolarSimulation.Options;
+using SmartSolar.Modules.SolarSimulation.Shading;
 
 namespace SmartSolar.Modules.SolarSimulation.CreateSimulation;
 
@@ -201,6 +202,7 @@ public sealed class CreateSimulationHandler
             ["pvSettings"] = _pvEnergy.Settings,
             ["climateSettings"] = _climate.Settings,
             ["shadingWindow"] = window,
+            ["shadingAnalysis"] = _options.ShadingAnalysis,
             ["layoutOffsetSamples"] = _options.LayoutOffsetSamples,
             ["maxPlacements"] = _options.Limits.MaxPlacements,
             ["rackSupportHeightWarningMm"] = _options.RackSupportHeightWarningMm,
@@ -335,7 +337,15 @@ public sealed class CreateSimulationHandler
             ? SafeClimateAsync(source.Latitude!.Value, source.Longitude!.Value, budget.Token)
             : Task.FromResult<ClimateContextResult?>(null);
 
-        await Task.WhenAll(energyTasks.Cast<Task>().Append(climateTask));
+        // Shading: decided before the provider calls; the hourly series uses exactly the primary scenario's system parameters.
+        var shadingOptions = _options.ShadingAnalysis;
+        var shadingPlan = ShadingAnalysis.Plan(layout, input, product.RatedPowerW!.Value, hasLocation, shadingOptions);
+        var hourlyTask = shadingPlan.Kind == ShadingPlanKind.RayCast && scenarios.Count > 0
+            ? SafeHourlyAsync(new PvHourlyRequest(source.Latitude!.Value, source.Longitude!.Value, kwp, systemLoss, input.PanelTiltDegree,
+                input.PanelAzimuthDegree, scenarios[0].Place, shadingOptions.StartYear, shadingOptions.EndYear), budget.Token)
+            : Task.FromResult<PvHourlyResult?>(null);
+
+        await Task.WhenAll(energyTasks.Cast<Task>().Append(climateTask).Append(hourlyTask));
 
         var warnings = new List<SimulationWarning>
         {
@@ -410,12 +420,36 @@ public sealed class CreateSimulationHandler
                 string.Join("; ", scenarioDocs.Where(s => s.Failure is not null).Select(s => $"{s.MountingPlace}: {s.Failure!.Code}")) + "."));
         }
 
+        var shading = BuildShading(shadingPlan, layout.Placements.Select(p => p.Index).ToList(), energyStatus, primary, hourlyTask.Result, source, shadingOptions);
+        var shadingApplied = shading.Status == ComponentStatusCodes.Succeeded;
         var assumptions = new List<string>
         {
-            $"System losses {systemLoss}% ({(systemLossSpecified ? "site-specified" : "PVGIS documented default")}).",
+            $"System losses {systemLoss}% ({(systemLossSpecified ? "site-specified" : "PVGIS documented default")}); PVGIS system losses do not include nearby-object shading, so the shading estimate is not double-counted.",
             $"Module technology '{_pvEnergy.Settings.Technology}' (PVGIS default; the catalog has no technology field).",
-            $"Terrain horizon {(_pvEnergy.Settings.UseHorizon ? "included" : "excluded")} (PVGIS); local obstacle shading not modeled.",
+            $"Terrain horizon {(_pvEnergy.Settings.UseHorizon ? "included" : "excluded")} (PVGIS); " +
+            (shadingApplied ? "nearby obstacle and rack-row shading applied as a linear irradiance-based estimate." : "local obstacle shading not applied."),
         };
+        if (shadingApplied)
+        {
+            // The shading-only adjustment can only remove energy: the result is never above the unshaded baseline.
+            warnings.RemoveAll(w => w.Code == SimulationWarningCodes.ObstacleShadingNotModeled);
+            if (shading.HourlyReferenceAnnualEnergyKwh is { } reference && shading.AnnualEnergyBeforeShadingKwh is > 0
+                && Math.Abs(reference - shading.AnnualEnergyBeforeShadingKwh.Value) / shading.AnnualEnergyBeforeShadingKwh.Value > 0.05m)
+            {
+                warnings.Add(new(SimulationWarningCodes.ShadingBaselineDiffers,
+                    $"The PVGIS hourly series ({shading.StartYear}–{shading.EndYear}) gives {reference} kWh/year unshaded versus the typical-year {shading.AnnualEnergyBeforeShadingKwh} kWh; only its monthly loss fractions are used."));
+            }
+            if (shading.SunHeightCheckDeviationDegree is > 1.0)
+            {
+                warnings.Add(new(SimulationWarningCodes.SunPositionCheckDeviation,
+                    $"Computed sun heights differ from PVGIS H_sun by {shading.SunHeightCheckDeviationDegree:0.###}° on average; check the timestamps."));
+            }
+        }
+        else if (shading.Status != ComponentStatusCodes.NotApplicable && shading.Reason != ShadingReasons.Disabled)
+        {
+            warnings.Add(new(SimulationWarningCodes.ShadingNotApplied,
+                $"The shading estimate is {shading.Status} ({shading.Reason}); energy values are unshaded."));
+        }
         if (mountingType == MountingTypes.Flush && scenarios.Count > 0)
         {
             assumptions.Add("Flush mounting with an air gap lies between PVGIS 'building' (no air movement) and 'free' (free airflow). " +
@@ -428,17 +462,27 @@ public sealed class CreateSimulationHandler
             assumptions.Add("Rack mounting uses PVGIS 'free' (modules on a rack with air flowing freely behind them).");
         }
 
+        // With a successful shading estimate the headline energy is the after-shading value (monthly too); the PVGIS
+        // scenarios stay unshaded for reference.
+        var succeeded = energyStatus == ComponentStatusCodes.Succeeded;
+        var annualEnergy = succeeded ? (shadingApplied ? shading.AnnualEnergyAfterShadingKwh : primary!.AnnualEnergyKwh) : null;
+        var monthlyEnergy = !succeeded ? []
+            : shadingApplied
+                ? primary!.Monthly.Select(m => m with { EnergyKwh = shading.Monthly.Single(x => x.Month == m.Month).EnergyAfterShadingKwh }).ToList()
+                : primary!.Monthly;
         var energy = new EnergyDocument(
             energyStatus,
             energyReason,
             "TYPICAL_YEAR_HISTORICAL",
-            energyStatus == ComponentStatusCodes.Succeeded ? primary!.AnnualEnergyKwh : null,
-            energyStatus == ComponentStatusCodes.Succeeded ? primary!.SpecificYieldKwhPerKwpYear : null,
-            energyStatus == ComponentStatusCodes.Succeeded ? primary!.Monthly : [],
+            annualEnergy,
+            annualEnergy is { } kwh && kwp > 0 ? Math.Round(kwh / kwp, 1) : null,
+            monthlyEnergy,
             primary?.MountingPlace,
             scenarioDocs,
             assumptions,
-            EnergyDisclaimer);
+            EnergyDisclaimer,
+            succeeded ? primary!.AnnualEnergyKwh : null,
+            succeeded ? annualEnergy : null);
 
         // Climate.
         var climateResult = climateTask.Result;
@@ -470,7 +514,8 @@ public sealed class CreateSimulationHandler
             : SimulationStatusCodes.PartiallyCompleted;
 
         var isReusable = scenarioDocs.All(s => s.Status == ComponentStatusCodes.Succeeded)
-                         && climateStatus != ComponentStatusCodes.Failed;
+                         && climateStatus != ComponentStatusCodes.Failed
+                         && shading.Status != ComponentStatusCodes.Failed;
 
         return new ComputedSimulation(
             status,
@@ -488,7 +533,64 @@ public sealed class CreateSimulationHandler
             ToLayoutDocument(layout, surface, input),
             energy,
             climate,
-            warnings);
+            warnings,
+            shading);
+    }
+
+    /// <summary>Turns the shading plan and the hourly data into the shading document (explicit statuses; never fabricated values).</summary>
+    private ShadingDocument BuildShading(ShadingPlan plan, IReadOnlyList<int> placementIndices, string energyStatus, EnergyScenarioDocument? primary,
+        PvHourlyResult? hourly, SimulationSource source, ShadingAnalysisOptions options)
+    {
+        int? start = plan.Kind == ShadingPlanKind.RayCast ? options.StartYear : null;
+        int? end = plan.Kind == ShadingPlanKind.RayCast ? options.EndYear : null;
+        if (plan.Kind == ShadingPlanKind.Unavailable)
+        {
+            var status = plan.Reason == ShadingReasons.NoPanels ? ComponentStatusCodes.NotApplicable : ComponentStatusCodes.Unavailable;
+            return ShadingAnalysis.NotSucceeded(status, plan.Reason!, null, options, null, null);
+        }
+        if (energyStatus != ComponentStatusCodes.Succeeded)
+            return ShadingAnalysis.NotSucceeded(ComponentStatusCodes.Unavailable, ShadingReasons.EnergyUnavailable, null, options, start, end);
+
+        if (plan.Kind == ShadingPlanKind.NoOccluders)
+        {
+            // Nothing can cast a shadow: zero loss for every panel, no hourly data needed.
+            return ShadingAnalysis.Succeeded(options, primary!.Monthly, null, placementIndices, options.SamplesAlongWidth * options.SamplesAlongLength,
+                ShadingReasons.NoOccluders, null, null);
+        }
+
+        if (hourly is not { Succeeded: true })
+            return ShadingAnalysis.NotSucceeded(ComponentStatusCodes.Failed, ShadingReasons.HourlyDataFailed, hourly?.Failure, options, start, end);
+
+        var calculator = plan.Calculator!;
+        var latitude = (double)source.Latitude!.Value;
+        var longitude = (double)source.Longitude!.Value;
+        var work = ShadingAnalysis.EstimateWork(calculator, calculator.Scene.OccluderCount, latitude, longitude, hourly.Series!.Records);
+        if (work > options.MaxWorkUnits)
+        {
+            _logger.LogWarning("Shading estimate skipped: {Work} ray tests exceed the limit {Limit}.", work, options.MaxWorkUnits);
+            return ShadingAnalysis.NotSucceeded(ComponentStatusCodes.Unavailable, ShadingReasons.ComputationLimit, null, options, start, end);
+        }
+
+        var estimate = ShadingEnergyCalculator.Calculate(latitude, longitude, [new ShadingSubarray(calculator, hourly.Series.Records)]);
+        return ShadingAnalysis.Succeeded(options, primary!.Monthly, estimate, placementIndices, calculator.SamplesPerPanel, null,
+            hourly.Series.Provider.YearMin ?? start, hourly.Series.Provider.YearMax ?? end);
+    }
+
+    private async Task<PvHourlyResult?> SafeHourlyAsync(PvHourlyRequest request, CancellationToken budget)
+    {
+        try
+        {
+            return await _pvEnergy.GetHourlySeriesAsync(request, budget);
+        }
+        catch (OperationCanceledException)
+        {
+            return PvHourlyResult.Fail(ProviderFailureCodes.Timeout, "The provider time budget for this simulation was exceeded.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unexpected PVGIS hourly failure.");
+            return PvHourlyResult.Fail(ProviderFailureCodes.Unavailable, "PVGIS failed unexpectedly.");
+        }
     }
 
     private async Task<PvEnergyResult> SafeEstimateAsync(PvEnergyRequest request, CancellationToken budget)

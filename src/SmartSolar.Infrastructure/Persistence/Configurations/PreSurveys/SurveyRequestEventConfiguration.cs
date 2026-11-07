@@ -10,7 +10,7 @@ public sealed class SurveyRequestEventConfiguration : IEntityTypeConfiguration<S
     public void Configure(EntityTypeBuilder<SurveyRequestEvent> builder)
     {
         builder.ToTable("survey_request_event", t =>
-            t.HasCheckConstraint("ck_survey_request_event_type", $"event_type IN ('{SurveyRequestEventTypes.SalesOwnerChanged}')"));
+            t.HasCheckConstraint("ck_survey_request_event_type", $"event_type IN ({string.Join(", ", SurveyRequestEventTypes.All.Select(e => $"'{e}'"))})"));
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.SurveyRequestId).HasColumnName("survey_request_id").IsRequired();

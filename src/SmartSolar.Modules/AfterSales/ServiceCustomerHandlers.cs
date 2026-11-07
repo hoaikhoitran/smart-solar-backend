@@ -281,7 +281,7 @@ public sealed class ServiceCustomerHandlers(
         var term = claim?.SubscriptionId is { } termId ? await data.FindSubscriptionAsync(termId, true, token) : null;
         if (claim is not null && term is not null)
             foreach (var paid in (await data.ListQuotationsAsync(request.Id, false, token)).Where(q => q.Status == QuotationStatuses.Paid && q.DisasterSupportAmount > 0))
-                AfterSalesWorkflow.Consume(claim, term, paid.DisasterSupportAmount, now);
+                AfterSalesWorkflow.Consume(data, claim, term, paid.DisasterSupportAmount, now);
 
         // Replacement equipment becomes the active asset; the replaced asset stays as history.
         var assets = await data.ListAssetsAsync(request.ProjectId, true, token);

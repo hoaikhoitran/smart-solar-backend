@@ -38,6 +38,57 @@ namespace SmartSolar.Api.Controllers
 
         }
 
+        /// <summary>The caller's own property sites (by name), paged: <c>page</c> ≥ 1, <c>pageSize</c> 1–100 (default 20).</summary>
+        [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Common.Paging.PagedResult<SmartSolar.Modules.PreSurvey.ListMine.CustomerSiteListItem>>), StatusCodes.Status200OK)]
+        [HttpGet("me/sites")]
+        public async Task<IActionResult> ListMySites(
+            [FromQuery] int page = 1, [FromQuery] int pageSize = 20,
+            [FromServices] SmartSolar.Modules.PreSurvey.ListMine.CustomerListingHandler listing = null!,
+            CancellationToken cancellationToken = default)
+        {
+            if (GetAuthenticatedUserId() is not { } userId)
+                return Unauthorized(Failure(PreSurveyErrorCodes.Unauthorized, "Authentication is required."));
+            if (PageProblem(page, pageSize) is { } problem) return problem;
+            return Ok(Success(await listing.ListSitesAsync(userId, new SmartSolar.Modules.PreSurvey.ListMine.CustomerListPage(page, pageSize), cancellationToken)));
+        }
+
+        /// <summary>
+        /// The caller's own pre-surveys, paged. <c>status</c> = DRAFT | SUBMITTED (optional); <c>sortBy</c> = updatedAt (default) |
+        /// createdAt; <c>sortDirection</c> = desc (default) | asc.
+        /// </summary>
+        [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Common.Paging.PagedResult<SmartSolar.Modules.PreSurvey.ListMine.CustomerPreSurveyListItem>>), StatusCodes.Status200OK)]
+        [HttpGet("me/pre-surveys")]
+        public async Task<IActionResult> ListMyPreSurveys(
+            [FromQuery] string? status = null, [FromQuery] string? sortBy = null, [FromQuery] string? sortDirection = null,
+            [FromQuery] int page = 1, [FromQuery] int pageSize = 20,
+            [FromServices] SmartSolar.Modules.PreSurvey.ListMine.CustomerListingHandler listing = null!,
+            CancellationToken cancellationToken = default)
+        {
+            if (GetAuthenticatedUserId() is not { } userId)
+                return Unauthorized(Failure(PreSurveyErrorCodes.Unauthorized, "Authentication is required."));
+            var errors = new Dictionary<string, string[]>();
+            if (status is not null && !SmartSolar.Modules.PreSurvey.ListMine.CustomerListingHandler.PreSurveyStatuses.Contains(status.ToUpperInvariant()))
+                errors["status"] = ["'status' must be DRAFT or SUBMITTED."];
+            if (sortBy is not null && !SmartSolar.Modules.PreSurvey.ListMine.CustomerListingHandler.PreSurveySortFields.Contains(sortBy, StringComparer.OrdinalIgnoreCase))
+                errors["sortBy"] = ["'sortBy' must be updatedAt or createdAt."];
+            if (sortDirection is not null && sortDirection.ToLowerInvariant() is not ("asc" or "desc"))
+                errors["sortDirection"] = ["'sortDirection' must be asc or desc."];
+            if (errors.Count > 0) return BadRequest(Failure(PreSurveyErrorCodes.ValidationFailed, "One or more fields are invalid.", errors));
+            if (PageProblem(page, pageSize) is { } problem) return problem;
+            var ascending = string.Equals(sortDirection, "asc", StringComparison.OrdinalIgnoreCase);
+            return Ok(Success(await listing.ListPreSurveysAsync(userId, status, sortBy, ascending,
+                new SmartSolar.Modules.PreSurvey.ListMine.CustomerListPage(page, pageSize), cancellationToken)));
+        }
+
+        private IActionResult? PageProblem(int page, int pageSize)
+        {
+            var errors = new Dictionary<string, string[]>();
+            if (page < 1) errors["page"] = ["'page' must be at least 1."];
+            if (pageSize is < 1 or > SmartSolar.Modules.PreSurvey.ListMine.CustomerListPage.MaxPageSize)
+                errors["pageSize"] = [$"'pageSize' must be between 1 and {SmartSolar.Modules.PreSurvey.ListMine.CustomerListPage.MaxPageSize}."];
+            return errors.Count == 0 ? null : BadRequest(Failure(PreSurveyErrorCodes.ValidationFailed, "One or more fields are invalid.", errors));
+        }
+
         [HttpPost("me")]
         public async Task<IActionResult> CreatMyProfile([FromBody] CreateCustomerProfileRequest request, 
                                                             CancellationToken token)
@@ -52,13 +103,7 @@ namespace SmartSolar.Api.Controllers
             var validation = await _validator.ValidateAsync(command, token);
             if (!validation.IsValid)
             {
-                var details = validation.Errors
-                .GroupBy(x => x.PropertyName)
-                .ToDictionary(
-                    group => group.Key,
-                    group => group
-                        .Select(x => x.ErrorMessage)
-                        .ToArray());
+                var details = ValidationDetails.From(validation);
 
                 return BadRequest(
                     Failure(
@@ -123,13 +168,7 @@ namespace SmartSolar.Api.Controllers
 
         if (!validation.IsValid)
         {
-            var details = validation.Errors
-                .GroupBy(x => x.PropertyName)
-                .ToDictionary(
-                    group => group.Key,
-                    group => group
-                        .Select(x => x.ErrorMessage)
-                        .ToArray());
+            var details = ValidationDetails.From(validation);
 
             return BadRequest(
                 Failure(

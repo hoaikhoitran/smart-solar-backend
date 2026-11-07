@@ -10,6 +10,7 @@ public sealed class CatalogValidationReport
     public List<string> Errors { get; } = [];
     public List<CatalogCommuneRow> Communes { get; } = [];
     public List<CatalogLegacyRow> Legacy { get; } = [];
+    public List<CatalogReferencePointRow> ReferencePoints { get; } = [];
 
     /// <summary>File name → sha256 computed on the bytes read.</summary>
     public Dictionary<string, string> ComputedSha256 { get; } = new(StringComparer.Ordinal);
@@ -30,6 +31,11 @@ public sealed class CatalogValidationReport
 public static partial class CatalogDatasetValidator
 {
     public static readonly string[] CommuneHeader = ["province_code", "commune_code", "name", "unit_type"];
+
+    public static readonly string[] ReferencePointHeader = ["commune_code", "latitude", "longitude", "source"];
+
+    /// <summary>Generous bounding box of Viet Nam including its islands (WGS 84 degrees); a point outside it is a data error.</summary>
+    public const decimal MinLatitude = 6m, MaxLatitude = 24m, MinLongitude = 102m, MaxLongitude = 118m;
 
     public static readonly string[] LegacyHeader =
     [
@@ -71,11 +77,21 @@ public static partial class CatalogDatasetValidator
             else if (!string.Equals(declared, report.ComputedSha256[name], StringComparison.OrdinalIgnoreCase))
                 report.Errors.Add($"{name}: sha256 {report.ComputedSha256[name]} does not match the manifest ({declared}).");
         }
-        foreach (var name in manifest.Files.Keys.Where(n => !files.Files.ContainsKey(n) && n is not CatalogDatasetFiles.CommunesFileName and not CatalogDatasetFiles.LegacyMapFileName))
-            report.Errors.Add($"manifest.json: lists '{name}', which is not part of a catalog dataset.");
+        // The reference-point file is optional, but when it is present it is pinned by the manifest like the other files.
+        if (files.Files.ContainsKey(CatalogDatasetFiles.ReferencePointsFileName))
+        {
+            const string name = CatalogDatasetFiles.ReferencePointsFileName;
+            if (!manifest.Files.TryGetValue(name, out var declared)) report.Errors.Add($"manifest.json: files.{name} (sha256) is missing.");
+            else if (!string.Equals(declared, report.ComputedSha256[name], StringComparison.OrdinalIgnoreCase))
+                report.Errors.Add($"{name}: sha256 {report.ComputedSha256[name]} does not match the manifest ({declared}).");
+        }
+        foreach (var name in manifest.Files.Keys.Where(n => !files.Files.ContainsKey(n) && n is not CatalogDatasetFiles.CommunesFileName
+                                                                and not CatalogDatasetFiles.LegacyMapFileName))
+            report.Errors.Add(name == CatalogDatasetFiles.ReferencePointsFileName ? $"{name}: file is listed in the manifest but missing." : $"manifest.json: lists '{name}', which is not part of a catalog dataset.");
 
         if (files.Files.TryGetValue(CatalogDatasetFiles.CommunesFileName, out var communes)) ReadCommunes(communes, manifest, report);
         if (files.Files.TryGetValue(CatalogDatasetFiles.LegacyMapFileName, out var legacy)) ReadLegacy(legacy, report);
+        if (files.Files.TryGetValue(CatalogDatasetFiles.ReferencePointsFileName, out var points)) ReadReferencePoints(points, report);
         ValidateCounts(manifest.Counts, report);
         return report;
     }
@@ -233,6 +249,63 @@ public static partial class CatalogDatasetValidator
         if (report.Legacy.Count > 0 && orphans.Count > 0)
             report.Errors.Add($"{file}: communes without any predecessor row: {string.Join(", ", orphans.Take(20))}.");
     }
+
+    /// <summary>
+    /// Reference points are matched by the official commune code only (never by a name, so no historical name is resolved
+    /// silently). A code may appear once; the latitude/longitude must lie in Viet Nam and every row names its source.
+    /// </summary>
+    private static void ReadReferencePoints(byte[] bytes, CatalogValidationReport report)
+    {
+        const string file = CatalogDatasetFiles.ReferencePointsFileName;
+        var rows = Rows(bytes, file, ReferencePointHeader, report);
+        if (rows is null) return;
+        var communes = report.Communes.Select(c => c.Code).ToHashSet(StringComparer.Ordinal);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var line = i + 2;
+            var r = rows[i];
+            if (r.Count != ReferencePointHeader.Length)
+            {
+                report.Errors.Add($"{file}:{line}: expected {ReferencePointHeader.Length} columns, found {r.Count}.");
+                continue;
+            }
+            var code = r[0];
+            var source = r[3].Trim();
+            var ok = true;
+            if (!communes.Contains(code))
+            {
+                report.Errors.Add($"{file}:{line}: commune_code '{code}' is not a commune of communes.csv.");
+                ok = false;
+            }
+            if (!TryCoordinate(r[1], MinLatitude, MaxLatitude, out var latitude))
+            {
+                report.Errors.Add($"{file}:{line}: latitude '{r[1]}' must be a decimal between {MinLatitude} and {MaxLatitude} with at most 6 decimals.");
+                ok = false;
+            }
+            if (!TryCoordinate(r[2], MinLongitude, MaxLongitude, out var longitude))
+            {
+                report.Errors.Add($"{file}:{line}: longitude '{r[2]}' must be a decimal between {MinLongitude} and {MaxLongitude} with at most 6 decimals.");
+                ok = false;
+            }
+            if (source.Length is 0 or > 300)
+            {
+                report.Errors.Add($"{file}:{line}: source is required (at most 300 characters): name the dataset or document the point comes from.");
+                ok = false;
+            }
+            if (ok && !seen.Add(code))
+            {
+                report.Errors.Add($"{file}:{line}: duplicate reference point for commune '{code}' (ambiguous).");
+                ok = false;
+            }
+            if (ok) report.ReferencePoints.Add(new CatalogReferencePointRow(line, code, latitude, longitude, source));
+        }
+    }
+
+    private static bool TryCoordinate(string text, decimal min, decimal max, out decimal value)
+        => decimal.TryParse(text, System.Globalization.NumberStyles.AllowLeadingSign | System.Globalization.NumberStyles.AllowDecimalPoint,
+               System.Globalization.CultureInfo.InvariantCulture, out value)
+           && value >= min && value <= max && decimal.Round(value, 6) == value;
 
     private static void ValidateCounts(CatalogManifestCounts counts, CatalogValidationReport report)
     {

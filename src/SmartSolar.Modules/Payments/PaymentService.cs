@@ -48,8 +48,11 @@ public sealed record WebhookResult(bool Accepted, string Outcome);
 /// <see cref="IPaymentItemSettlement"/> in the confirmation transaction, using the provider-confirmed transaction time.
 /// </para>
 public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGateway gateway, PaymentOptions options, TimeProvider time, ILogger<PaymentService> logger,
-    IPaymentItemSettlement? settlement = null)
+    IPaymentItemSettlement? settlement = null, Func<DateTimeOffset, long>? orderCodes = null)
 {
+    /// <summary>Tries for a new attempt whose random order-code digits repeat one already issued in the same second.</summary>
+    private const int OrderCodeTries = 3;
+
     public async Task<OperationResult<PaymentAttemptView>> CreateOrGetAttemptAsync(Guid customerUserId, Guid contractId, CancellationToken cancellationToken)
     {
         var contract = await unitOfWork.GetContractAsync(contractId, cancellationToken);
@@ -75,33 +78,41 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
         if (await unitOfWork.CountAttemptsSinceAsync(contractId, now.AddMinutes(-10), cancellationToken) >= options.MaxAttemptsPerTenMinutes)
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.TooManyAttempts, "Too many payment attempts for this contract. Try again in a few minutes.");
 
-        var orderCode = NewOrderCode(now);
         var created = new PaymentAttempt
         {
-            Id = Guid.NewGuid(), ContractId = contractId, CustomerUserId = customerUserId, Provider = gateway.ProviderName, OrderCode = orderCode,
-            Amount = contract.TotalAmount, Currency = "VND", Description = $"SS{orderCode % 10_000_000:D7}", Status = PaymentStatuses.Pending,
+            Id = Guid.NewGuid(), ContractId = contractId, CustomerUserId = customerUserId, Provider = gateway.ProviderName,
+            Amount = contract.TotalAmount, Currency = "VND", Status = PaymentStatuses.Pending,
             ExpiresAt = now.AddMinutes(Math.Clamp(options.LinkExpiryMinutes, 5, 1440)), CreatedAt = now, UpdatedAt = now,
         };
-        try
+        for (var tries = 1; ; tries++)
         {
-            await unitOfWork.ExecuteInTransactionAsync<bool>(async token =>
+            AssignOrderCode(created, now);
+            try
             {
-                unitOfWork.AddAttempt(created);
-                AddEvent(created, "CREATED", null, PaymentStatuses.Pending, PaymentSources.Customer, null, now);
-                await unitOfWork.SaveChangesAsync(token);
-                return (true, true);
-            }, cancellationToken);
-        }
-        catch (PersistenceConflictException)
-        {
-            // A concurrent request created the payable attempt first: return it (never two links).
-            var live = (await unitOfWork.ListAttemptsAsync(contractId, cancellationToken)).FirstOrDefault(a => PaymentStatuses.Payable.Contains(a.Status));
-            return live is not null
-                ? OperationResult<PaymentAttemptView>.Ok(View(live))
-                : OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid or being paid.");
+                await unitOfWork.ExecuteInTransactionAsync<bool>(async token =>
+                {
+                    unitOfWork.AddAttempt(created);
+                    AddEvent(created, "CREATED", null, PaymentStatuses.Pending, PaymentSources.Customer, null, now);
+                    await unitOfWork.SaveChangesAsync(token);
+                    return (true, true);
+                }, cancellationToken);
+                break;
+            }
+            catch (PersistenceConflictException ex) when (IsOrderCodeCollision(ex) && tries < OrderCodeTries)
+            {
+                // Same second, same random digits as an existing order: not a payment conflict, draw again.
+            }
+            catch (PersistenceConflictException)
+            {
+                // A concurrent request created the payable attempt first: return it (never two links).
+                var live = (await unitOfWork.ListAttemptsAsync(contractId, cancellationToken)).FirstOrDefault(a => PaymentStatuses.Payable.Contains(a.Status));
+                return live is not null
+                    ? OperationResult<PaymentAttemptView>.Ok(View(live))
+                    : OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid or being paid.");
+            }
         }
 
-        var link = await gateway.CreatePaymentLinkAsync(new PaymentLinkRequest(orderCode, (long)contract.TotalAmount, created.Description, options.ReturnUrl,
+        var link = await gateway.CreatePaymentLinkAsync(new PaymentLinkRequest(created.OrderCode, (long)contract.TotalAmount, created.Description, options.ReturnUrl,
             options.CancelUrl, created.ExpiresAt, contract.CustomerName, contract.CustomerEmail, contract.CustomerPhone), cancellationToken);
         return await RecordLinkAsync(created.Id, link, cancellationToken);
     }
@@ -140,39 +151,47 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
         var now = time.GetUtcNow();
         if (expiresAt <= now.AddMinutes(1))
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AmountNotSupported, "The checkout deadline has already passed.");
-        var orderCode = NewOrderCode(now);
         var created = new PaymentAttempt
         {
-            Id = Guid.NewGuid(), ContractId = contractId, CustomerUserId = customerUserId, Provider = gateway.ProviderName, OrderCode = orderCode,
-            Amount = total, Currency = "VND", Description = $"SS{orderCode % 10_000_000:D7}", Status = PaymentStatuses.Pending,
+            Id = Guid.NewGuid(), ContractId = contractId, CustomerUserId = customerUserId, Provider = gateway.ProviderName,
+            Amount = total, Currency = "VND", Status = PaymentStatuses.Pending,
             ExpiresAt = expiresAt, CreatedAt = now, UpdatedAt = now,
         };
         string? refused = null;
-        try
+        for (var tries = 1; ; tries++)
         {
-            await unitOfWork.ExecuteInTransactionAsync<bool>(async token =>
+            AssignOrderCode(created, now);
+            try
             {
-                refused = await reserveItems(created.Id, token);
-                if (refused is not null) return (false, false);
-                unitOfWork.AddAttempt(created);
-                foreach (var line in lines)
+                await unitOfWork.ExecuteInTransactionAsync<bool>(async token =>
                 {
-                    line.PaymentAttemptId = created.Id;
-                    unitOfWork.AddItem(line);
-                }
-                AddEvent(created, "CREATED", null, PaymentStatuses.Pending, PaymentSources.Customer, string.Join(", ", lines.Select(l => $"{l.ItemType} {l.Amount:0}")), now);
-                await unitOfWork.SaveChangesAsync(token);
-                return (true, true);
-            }, cancellationToken);
-        }
-        catch (PersistenceConflictException)
-        {
-            // A concurrent checkout of the same contract or item was created first.
-            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CheckoutInProgress, "A payment for these items is already in progress.");
+                    refused = await reserveItems(created.Id, token);
+                    if (refused is not null) return (false, false);
+                    unitOfWork.AddAttempt(created);
+                    foreach (var line in lines)
+                    {
+                        line.PaymentAttemptId = created.Id;
+                        unitOfWork.AddItem(line);
+                    }
+                    AddEvent(created, "CREATED", null, PaymentStatuses.Pending, PaymentSources.Customer, string.Join(", ", lines.Select(l => $"{l.ItemType} {l.Amount:0}")), now);
+                    await unitOfWork.SaveChangesAsync(token);
+                    return (true, true);
+                }, cancellationToken);
+                break;
+            }
+            catch (PersistenceConflictException ex) when (IsOrderCodeCollision(ex) && tries < OrderCodeTries)
+            {
+                // Same second, same random digits as an existing order: not a payment conflict, draw again.
+            }
+            catch (PersistenceConflictException)
+            {
+                // A concurrent checkout of the same contract or item was created first.
+                return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CheckoutInProgress, "A payment for these items is already in progress.");
+            }
         }
         if (refused is not null) return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CheckoutInProgress, refused);
 
-        var link = await gateway.CreatePaymentLinkAsync(new PaymentLinkRequest(orderCode, (long)total, created.Description, options.ReturnUrl,
+        var link = await gateway.CreatePaymentLinkAsync(new PaymentLinkRequest(created.OrderCode, (long)total, created.Description, options.ReturnUrl,
             options.CancelUrl, created.ExpiresAt, contract?.CustomerName, contract?.CustomerEmail, contract?.CustomerPhone), cancellationToken);
         return await RecordLinkAsync(created.Id, link, cancellationToken);
     }
@@ -410,6 +429,9 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
                         attempt.FailureReason = "Payment received while the contract was not in SIGNED state.";
                         AddEvent(attempt, "CONTRACT_STATE_MISMATCH", from, attempt.Status, source, reference, now);
                     }
+                    // Money that was received but applied to nothing is never only a log line: it becomes a refund request for a Manager.
+                    if (attempt.Status is PaymentStatuses.RefundRequired or PaymentStatuses.ReviewRequired && amountPaid is > 0 && settlement is not null)
+                        await settlement.RecordUnappliedPaymentAsync(attempt, amountPaid.Value, attempt.FailureReason ?? attempt.Status, now, token);
                     await unitOfWork.SaveChangesAsync(token);
                     if (attempt.Status != PaymentStatuses.Paid)
                         logger.LogWarning("Payment attempt {AttemptId} needs manual handling: {Status}.", attempt.Id, attempt.Status);
@@ -508,6 +530,16 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
 
     /// <summary>Positive, below 2^53 (PayOS limit), unique by index; time-prefixed with random low digits.</summary>
     private static long NewOrderCode(DateTimeOffset now) => (now.ToUnixTimeSeconds() % 1_000_000_000L) * 10_000L + RandomNumberGenerator.GetInt32(0, 10_000);
+
+    private void AssignOrderCode(PaymentAttempt attempt, DateTimeOffset now)
+    {
+        attempt.OrderCode = (orderCodes ?? NewOrderCode)(now);
+        attempt.Description = $"SS{attempt.OrderCode % 10_000_000:D7}";
+    }
+
+    /// <summary>The new order code repeated an existing one (PostgreSQL index name, or SQLite's "table.column" text).</summary>
+    private static bool IsOrderCodeCollision(PersistenceConflictException ex)
+        => ex.Kind == PersistenceConflictException.UniqueViolation && ex.Constraint is "ux_payment_attempt_order_code" or "payment_attempt.order_code";
 
     private static string? Truncate(string? value, int max) => value is null ? null : value.Length <= max ? value : value[..max];
 }

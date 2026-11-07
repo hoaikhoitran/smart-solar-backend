@@ -201,4 +201,47 @@ public sealed class PvgisV53ClientTests
 
         Assert.True((await ProviderTestHost.Pvgis(stub, cache).EstimateAsync(Request, CancellationToken.None)).Succeeded);
     }
+
+    private static readonly PvHourlyRequest HourlyRequest = new(10.7769m, 106.7008m, 26.4m, 14m, 12m, 90m, PvgisMountingPlaces.Building, 2021, 2023);
+
+    /// <summary>SYNTHETIC seriescalc body (two hours; invented values) with pvcalculation=1 and components=1 fields.</summary>
+    private static string HourlyResponse(string firstPower = "1200.5")
+        => "{\"inputs\":{\"meteo_data\":{\"radiation_db\":\"PVGIS-SARAH3\",\"meteo_db\":\"ERA5\",\"year_min\":2021,\"year_max\":2023}},"
+           + "\"outputs\":{\"hourly\":["
+           + "{\"time\":\"20210101:0010\",\"P\":" + firstPower + ",\"Gb(i)\":500.0,\"Gd(i)\":120.0,\"Gr(i)\":5.0,\"H_sun\":20.5,\"T2m\":24.0,\"WS10m\":1.0,\"Int\":0.0},"
+           + "{\"time\":\"20210101:1310\",\"P\":0.0,\"Gb(i)\":0.0,\"Gd(i)\":0.0,\"Gr(i)\":0.0,\"H_sun\":0.0,\"T2m\":22.0,\"WS10m\":1.0,\"Int\":0.0}]},"
+           + "\"meta\":{}}";
+
+    [Fact]
+    public async Task Hourly_series_requests_seriescalc_with_components_and_parses_utc_rows()
+    {
+        var stub = new StubHttpMessageHandler().Enqueue(HttpStatusCode.OK, HourlyResponse());
+        var client = ProviderTestHost.Pvgis(stub, new FakeCacheStore());
+
+        var result = await client.GetHourlySeriesAsync(HourlyRequest, CancellationToken.None);
+
+        Assert.True(result.Succeeded, result.Failure?.Message);
+        var url = stub.Requests.Single().RequestUri!.ToString();
+        Assert.Contains("seriescalc?", url);
+        Assert.Contains("pvcalculation=1&components=1", url);
+        Assert.Contains("aspect=-90", url);            // compass 90° (east) → PVGIS aspect −90
+        Assert.Contains("peakpower=26.4&loss=14", url);
+        Assert.Contains("mountingplace=building", url);
+        Assert.Contains("startyear=2021&endyear=2023", url);
+        var first = result.Series!.Records[0];
+        Assert.Equal((new DateTimeOffset(2021, 1, 1, 0, 0, 0, TimeSpan.Zero), 10), (first.HourStartUtc, first.MinuteOfTimestamp));
+        Assert.Equal((1200.5, 500.0, 120.0, 5.0, 20.5), (first.PowerW, first.BeamW, first.DiffuseW, first.ReflectedW, first.SunHeightDegree));
+        Assert.Equal(13, result.Series.Records[1].HourStartUtc.Hour);
+        Assert.Equal("PVGIS-SARAH3", result.Series.Provider.RadiationDatabase);
+    }
+
+    [Fact]
+    public async Task Hourly_rows_with_negative_or_missing_values_are_rejected_not_zeroed()
+    {
+        var stub = new StubHttpMessageHandler().Enqueue(HttpStatusCode.OK, HourlyResponse("-5.0"));
+
+        var result = await ProviderTestHost.Pvgis(stub, new FakeCacheStore()).GetHourlySeriesAsync(HourlyRequest, CancellationToken.None);
+
+        Assert.Equal(ProviderFailureCodes.ResponseInvalid, result.Failure!.Code);
+    }
 }

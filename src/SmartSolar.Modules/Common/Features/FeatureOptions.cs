@@ -5,7 +5,9 @@ namespace SmartSolar.Modules.Common.Features;
 /// payment → installation) and the knowledge base (RAG chatbot) add tables that are applied by a
 /// manual, approved migration. Until then both flags stay false: their endpoints answer
 /// 503 FEATURE_PENDING_MIGRATION and Flow 1 never queries the new tables (for example installation
-/// shifts in the scheduling day state), so deploying this code before the migration is safe.
+/// shifts in the scheduling day state). The flags only gate features: they do NOT make it safe to run this build on a
+/// schema that is missing any of its migrations (new columns are mapped on always-used tables too). That case is caught by the
+/// API's schema readiness check, which answers 503 SCHEMA_NOT_READY until every migration of the build is applied.
 /// </summary>
 public sealed class FeatureOptions
 {

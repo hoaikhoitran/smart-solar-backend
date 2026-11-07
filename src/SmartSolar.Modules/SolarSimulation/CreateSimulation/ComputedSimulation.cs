@@ -23,7 +23,8 @@ public sealed record ComputedSimulation(
     LayoutDocument Layout,
     EnergyDocument Energy,
     ClimateDocument Climate,
-    IReadOnlyList<SimulationWarning> Warnings)
+    IReadOnlyList<SimulationWarning> Warnings,
+    ShadingDocument? Shading = null)
 {
     public Guid SimulationId { get; init; }
 

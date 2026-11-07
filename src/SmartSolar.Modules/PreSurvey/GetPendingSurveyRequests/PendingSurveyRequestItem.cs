@@ -1,4 +1,5 @@
 using SmartSolar.Modules.PreSurvey.Enums;
+using SmartSolar.Modules.PreSurvey.GetMySurveyRequests;
 
 namespace SmartSolar.Modules.PreSurvey.GetPendingSurveyRequests;
 
@@ -12,4 +13,7 @@ public sealed record PendingSurveyRequestItem(
     InstallationSurfaceType? InstallationSurfaceType,
     decimal? TotalAreaM2,
     decimal? UsableAreaM2,
-    DateTimeOffset SubmittedAt);
+    DateTimeOffset SubmittedAt,
+    string? Ward = null,
+    string? CommuneName = null,
+    SurveyRequestAppointmentItem? Appointment = null);

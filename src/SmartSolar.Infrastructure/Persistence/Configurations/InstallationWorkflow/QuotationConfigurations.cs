@@ -23,8 +23,12 @@ public sealed class QuotationConfiguration : IEntityTypeConfiguration<Quotation>
             t.HasCheckConstraint("ck_quotation_total_consistent", "total_amount = subtotal - discount_amount + tax_amount");
             t.HasCheckConstraint("ck_quotation_tax_rate", "tax_rate_percent BETWEEN 0 AND 20");
             t.HasCheckConstraint("ck_quotation_version_positive", "version >= 1");
+            t.HasCheckConstraint("ck_quotation_origin", $"origin IN ({string.Join(", ", QuotationOrigins.All.Select(s => $"'{s}'"))})");
+            t.HasCheckConstraint("ck_quotation_closed_fields",
+                $"(status IN ('{QuotationStatuses.Rejected}', '{QuotationStatuses.Cancelled}')) = (closed_at IS NOT NULL AND closed_by_user_id IS NOT NULL)");
+            // A draft cancelled with its request was never issued, so it has no issue fields (found by the PostgreSQL closure race test).
             t.HasCheckConstraint("ck_quotation_issued_fields",
-                $"status = '{QuotationStatuses.Draft}' OR (issued_at IS NOT NULL AND valid_until IS NOT NULL AND customer_snapshot IS NOT NULL)");
+                $"status IN ('{QuotationStatuses.Draft}', '{QuotationStatuses.Cancelled}') OR (issued_at IS NOT NULL AND valid_until IS NOT NULL AND customer_snapshot IS NOT NULL)");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -50,12 +54,18 @@ public sealed class QuotationConfiguration : IEntityTypeConfiguration<Quotation>
         builder.Property(x => x.Terms).HasColumnName("terms").HasMaxLength(4000);
         builder.Property(x => x.Notes).HasColumnName("notes").HasMaxLength(2000);
         builder.Property(x => x.CustomerSnapshot).HasColumnName("customer_snapshot").HasColumnType("jsonb");
+        // Existing quotations were all prepared by Sales.
+        builder.Property(x => x.Origin).HasColumnName("origin").HasMaxLength(20).IsRequired().HasDefaultValue(QuotationOrigins.Sales);
+        builder.Property(x => x.PricingBasisJson).HasColumnName("pricing_basis").HasColumnType("jsonb");
         builder.Property(x => x.DocumentFileId).HasColumnName("document_file_id");
         builder.Property(x => x.IssuedAt).HasColumnName("issued_at");
         builder.Property(x => x.AcceptedAt).HasColumnName("accepted_at");
         builder.Property(x => x.RevisionRequestedAt).HasColumnName("revision_requested_at");
         builder.Property(x => x.RevisionReason).HasColumnName("revision_reason").HasMaxLength(2000);
         builder.Property(x => x.SupersededAt).HasColumnName("superseded_at");
+        builder.Property(x => x.ClosedAt).HasColumnName("closed_at");
+        builder.Property(x => x.ClosedByUserId).HasColumnName("closed_by_user_id");
+        builder.Property(x => x.CloseReason).HasColumnName("close_reason").HasMaxLength(2000);
         builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
         builder.Property(x => x.Revision).HasColumnName("revision").IsConcurrencyToken().IsRequired();
@@ -73,6 +83,7 @@ public sealed class QuotationConfiguration : IEntityTypeConfiguration<Quotation>
         builder.HasOne<Quotation>().WithMany().HasForeignKey(x => x.PreviousQuotationId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.CustomerUserId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.SalesUserId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.ClosedByUserId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<StoredFile>().WithMany().HasForeignKey(x => x.DocumentFileId).OnDelete(DeleteBehavior.Restrict);
     }
 }

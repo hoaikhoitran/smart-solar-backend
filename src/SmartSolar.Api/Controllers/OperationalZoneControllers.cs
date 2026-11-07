@@ -112,6 +112,24 @@ public sealed class AdminSurveyRequestsController(SalesOwnerHandler handler, IVa
         if (!validation.IsValid) return ValidationFailure(validation);
         return Respond(await handler.HandleAsync(command, cancellationToken));
     }
+
+    /// <summary>
+    /// Manager/Admin reschedule of any request's active appointment (no Sales ownership needed), for example to recover an
+    /// OVERDUE appointment: a future start, optionally a technician, and a reason (required for overdue recovery and for a technician).
+    /// </summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Scheduling.PreSurveyAppointments.SalesRescheduleView>), StatusCodes.Status200OK)]
+    [HttpPut("{surveyRequestId:guid}/reschedule")]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingWritePolicy)]
+    public async Task<IActionResult> Reschedule(Guid surveyRequestId, [FromBody] SalesRescheduleRequest request, [FromServices] SalesRescheduleHandler reschedule,
+        CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } userId) return UnauthorizedFailure();
+        if (!IsoTimestamp.TryParse(request.StartsAt, out var startsAt))
+            return InvalidField("startsAt", "'startsAt' must be ISO 8601 with an offset, e.g. 2026-10-22T13:30:00+07:00.");
+        if (request.Reason is { Length: > 500 }) return InvalidField("reason", "'reason' must be at most 500 characters.");
+        return Respond(await reschedule.HandleAsync(
+            new SalesRescheduleCommand(userId, surveyRequestId, startsAt, request.Reason, request.TechnicianUserId, IsManager: true), cancellationToken));
+    }
 }
 
 /// <summary>

@@ -58,9 +58,29 @@ public sealed class InstallationTests
         return (paid, (await ctx.Installations().GetForManagerAsync(project.ProjectId, None)).Value!, technician.Id, other.Id);
     }
 
-    /// <summary>SCHEDULED → IN_PROGRESS on the scheduled day.</summary>
+    /// <summary>
+    /// The Manager satisfies every still-pending required prerequisite and every mandatory one (EVN, PCCC, structural) not yet satisfied
+    /// with a verified project document, as production requires before work can start.
+    /// </summary>
+    internal static async Task SatisfyPrerequisitesAsync(InstallationWorkflowTestContext ctx, Guid projectId)
+    {
+        var installs = ctx.Installations();
+        var manager = (await ctx.Db.InstallationProjects.AsNoTracking().SingleAsync(p => p.Id == projectId)).ManagerUserId;
+        foreach (var item in (await installs.GetForManagerAsync(projectId, None)).Value!.Checklist
+                     .Where(i => (i.IsRequired && i.Status == ChecklistStatuses.Pending) || (DefaultInstallationPlan.IsMandatory(i.Code) && i.Status != ChecklistStatuses.Satisfied)))
+        {
+            var revision = (await installs.GetForManagerAsync(projectId, None)).Value!.Revision;
+            var document = await ctx.VerifiedFileAsync(manager, FilePurposes.ProjectDocument, "pdf");
+            var satisfied = await installs.UpdateChecklistItemAsync(manager, projectId, item.ItemId, revision,
+                new ChecklistUpdate(true, ChecklistStatuses.Satisfied, document, "Approval document on file"), None);
+            Assert.True(satisfied.Succeeded, satisfied.Message);
+        }
+    }
+
+    /// <summary>SCHEDULED → IN_PROGRESS on the scheduled day (prerequisites satisfied first).</summary>
     internal static async Task StartAsync(InstallationWorkflowTestContext ctx, Guid projectId, Guid technician)
     {
+        await SatisfyPrerequisitesAsync(ctx, projectId);
         ctx.Clock.Now = At(8, 30, Wed).ToUniversalTime();
         var started = await ctx.Installations().StartProjectAsync(technician, projectId, None);
         Assert.True(started.Succeeded, started.Message);
@@ -75,13 +95,27 @@ public sealed class InstallationTests
         return added.Value!;
     }
 
-    internal static Task<OperationResult<InstallationTechnicianView>> RegisterPanelAndInverterAsync(InstallationWorkflowTestContext ctx, Guid projectId, Guid technician, string suffix = "1")
-        => ctx.Installations().RegisterAssetsAsync(technician, projectId,
-        [
-            new AssetInput("PANEL", null, "Jinko", "Tiger Neo 550", $"JK-PNL-{suffix}-001", "R1-C1", 144),
-            new AssetInput("PANEL", null, "Jinko", "Tiger Neo 550", $"JK-PNL-{suffix}-002", "R1-C2", 144),
-            new AssetInput("INVERTER", null, "Huawei", "SUN2000-5KTL", $"HW-INV-{suffix}", "Garage", 120),
-        ], None);
+    /// <summary>
+    /// Registers exactly the contracted panels and inverters (each unit an asset referencing its catalog product, warranty from the catalog),
+    /// as a technician does when the installation matches the accepted quotation.
+    /// </summary>
+    internal static async Task<OperationResult<InstallationTechnicianView>> RegisterPanelAndInverterAsync(InstallationWorkflowTestContext ctx, Guid projectId, Guid technician, string suffix = "1")
+    {
+        var contractId = (await ctx.Db.InstallationProjects.AsNoTracking().SingleAsync(p => p.Id == projectId)).ContractId;
+        var quotationId = (await ctx.Db.CustomerContracts.AsNoTracking().SingleAsync(c => c.Id == contractId)).QuotationId;
+        var lines = await ctx.Db.QuotationLines.AsNoTracking().Where(l => l.QuotationId == quotationId && l.ProductId != null)
+            .Join(ctx.Db.Products.AsNoTracking(), l => l.ProductId, p => p.Id, (l, p) => new { p.Id, p.ProductType, p.Brand, p.Model, l.Quantity }).ToListAsync();
+        var assets = new List<AssetInput>();
+        foreach (var line in lines)
+        {
+            var type = line.ProductType == SmartSolar.Modules.Catalog.Constants.ProductTypes.Inverter ? "INVERTER"
+                : line.ProductType == SmartSolar.Modules.Catalog.Constants.ProductTypes.SolarPanel ? "PANEL" : null;
+            if (type is null) continue;
+            for (var i = 1; i <= (int)line.Quantity; i++)
+                assets.Add(new AssetInput(type, line.Id, line.Brand ?? "Brand", line.Model ?? "Model", $"{type[..3]}-{suffix}-{line.Id:N}"[..30] + $"-{i:000}", $"P{assets.Count + 1}", null));
+        }
+        return await ctx.Installations().RegisterAssetsAsync(technician, projectId, assets, None);
+    }
 
     /// <summary>Only the given technician is schedulable from here on (other seeded technicians are switched off directly).</summary>
     private static async Task OnlySchedulableAsync(InstallationWorkflowTestContext ctx, params Guid[] technicians)
@@ -113,7 +147,7 @@ public sealed class InstallationTests
         Assert.Null(project.ResponsibleTechnician);
         Assert.Equal("Binh Tan", project.Zone!.Name);
         Assert.Equal(3, project.Checklist.Count);
-        Assert.All(project.Checklist, i => Assert.False(i.IsRequired));
+        Assert.All(project.Checklist, i => Assert.True(i.IsRequired));   // EVN, PCCC and structural are mandatory unless waived with a reason
         Assert.Equal(InstallationStatuses.PendingAssignment, Assert.Single(project.Events).ToStatus);
         Assert.Equal(InstallationErrorCodes.ProjectExists, (await ctx.Installations().CreateProjectAsync(manager.Id, signed.ContractId, None)).ErrorCode);
         Assert.Equal(1, await ctx.Db.InstallationProjects.CountAsync(p => p.ContractId == signed.ContractId));
@@ -464,8 +498,38 @@ public sealed class InstallationTests
         Assert.Equal(InstallationErrorCodes.EvidenceRequired, (await installs.UpdateChecklistItemAsync(paid.ManagerId, project.ProjectId, item.ItemId, required.Revision,
             new ChecklistUpdate(true, "SATISFIED", null, null), None)).ErrorCode);
         var permit = await ctx.VerifiedFileAsync(paid.ManagerId, FilePurposes.ProjectDocument, "pdf");
-        Assert.True((await installs.UpdateChecklistItemAsync(paid.ManagerId, project.ProjectId, item.ItemId, required.Revision,
-            new ChecklistUpdate(true, "SATISFIED", permit, "Approval letter"), None)).Succeeded);
+        var grid = (await installs.UpdateChecklistItemAsync(paid.ManagerId, project.ProjectId, item.ItemId, required.Revision,
+            new ChecklistUpdate(true, "SATISFIED", permit, "Approval letter"), None)).Value!;
+        // D-04: the other mandatory prerequisites still block the start. A Manager note alone never exempts one: without an approved
+        // exemption rule the item must be satisfied; a mandatory item cannot be made optional either.
+        Assert.Equal(InstallationErrorCodes.ChecklistIncomplete, (await installs.StartProjectAsync(tech, project.ProjectId, None)).ErrorCode);
+        var fire = grid.Checklist.Single(i => i.Code == "FIRE_SAFETY_APPROVAL");
+        var structural = grid.Checklist.Single(i => i.Code == "STRUCTURAL_ASSESSMENT");
+        Assert.Equal(InstallationErrorCodes.WaiverReasonRequired, (await installs.UpdateChecklistItemAsync(paid.ManagerId, project.ProjectId, fire.ItemId, grid.Revision,
+            new ChecklistUpdate(true, "NOT_APPLICABLE", null, " "), None)).ErrorCode);
+        Assert.Equal(InstallationErrorCodes.PrerequisiteMandatory, (await installs.UpdateChecklistItemAsync(paid.ManagerId, project.ProjectId, structural.ItemId, grid.Revision,
+            new ChecklistUpdate(false, "PENDING", null, "Roof assessed during the on-site survey"), None)).ErrorCode);
+        var noRule = await installs.UpdateChecklistItemAsync(paid.ManagerId, project.ProjectId, fire.ItemId, grid.Revision,
+            new ChecklistUpdate(true, "NOT_APPLICABLE", null, "Single-family house below the PCCC review scope (inspector note #12)"), None);
+        Assert.Equal(InstallationErrorCodes.ExemptionNotAuthorized, noRule.ErrorCode);
+        Assert.Equal(400, OperationResultControllerBase.StatusFor(InstallationErrorCodes.WaiverReasonRequired));
+        Assert.Equal(409, OperationResultControllerBase.StatusFor(InstallationErrorCodes.ExemptionNotAuthorized));
+
+        // Once an approved rule allows PCCC to be not applicable, the exemption still needs the reason and a verified supporting document.
+        ctx.InstallationOptions.ExemptiblePrerequisiteCodes = ["FIRE_SAFETY_APPROVAL"];
+        var exemptionNoDocument = await installs.UpdateChecklistItemAsync(paid.ManagerId, project.ProjectId, fire.ItemId, grid.Revision,
+            new ChecklistUpdate(true, "NOT_APPLICABLE", null, "Below the PCCC review scope (inspector note #12)"), None);
+        Assert.Equal(InstallationErrorCodes.ExemptionEvidenceRequired, exemptionNoDocument.ErrorCode);
+        Assert.Equal(400, OperationResultControllerBase.StatusFor(InstallationErrorCodes.ExemptionEvidenceRequired));
+        var exemptionLetter = await ctx.VerifiedFileAsync(paid.ManagerId, FilePurposes.ProjectDocument, "pdf");
+        var waivedFire = (await installs.UpdateChecklistItemAsync(paid.ManagerId, project.ProjectId, fire.ItemId, grid.Revision,
+            new ChecklistUpdate(true, "NOT_APPLICABLE", exemptionLetter, "Below the PCCC review scope (inspector note #12)"), None)).Value!;
+        Assert.Contains(waivedFire.Events, e => e.EventType == InstallationEventTypes.ChecklistUpdated && e.Detail!.Contains("waived: Below the PCCC review scope"));
+        Assert.Equal(InstallationErrorCodes.ChecklistIncomplete, (await installs.StartProjectAsync(tech, project.ProjectId, None)).ErrorCode);
+        var structuralReport = await ctx.VerifiedFileAsync(paid.ManagerId, FilePurposes.ProjectDocument, "pdf");
+        var waivedStructural = (await installs.UpdateChecklistItemAsync(paid.ManagerId, project.ProjectId, structural.ItemId, waivedFire.Revision,
+            new ChecklistUpdate(true, "SATISFIED", structuralReport, "Structural report"), None)).Value!;
+        Assert.All(waivedStructural.Checklist, i => Assert.True(i.IsRequired));
 
         Assert.True((await installs.GetForTechnicianAsync(tech, project.ProjectId, None)).Value!.CanStart);
         var started = (await installs.StartProjectAsync(tech, project.ProjectId, None)).Value!;
@@ -516,15 +580,30 @@ public sealed class InstallationTests
         Assert.Equal(InstallationErrorCodes.EvidenceRequired, (await installs.ReportCompletionAsync(tech, project.ProjectId, "Done", null, None)).ErrorCode);
         await AddCompletionEvidenceAsync(ctx, project.ProjectId, tech);
         Assert.Equal(InstallationErrorCodes.AssetsRequired, (await installs.ReportCompletionAsync(tech, project.ProjectId, "Done", null, None)).ErrorCode);
-        Assert.True((await installs.RegisterAssetsAsync(tech, project.ProjectId, [new AssetInput("PANEL", null, "Jinko", "Tiger Neo", "ONLY-PANEL", null, 144)], None)).Succeeded);
+        Assert.Equal(InstallationErrorCodes.AssetProductInvalid,
+            (await installs.RegisterAssetsAsync(tech, project.ProjectId, [new AssetInput("PANEL", null, "Jinko", "Tiger Neo", "ONLY-PANEL", null, null)], None)).ErrorCode);
+        var quotationId = (await ctx.Db.CustomerContracts.AsNoTracking().SingleAsync(c => c.Id == project.ContractId)).QuotationId;
+        var contractedPanel = (await ctx.Db.QuotationLines.AsNoTracking().SingleAsync(l => l.QuotationId == quotationId && l.Quantity == 12m)).ProductId;
+        Assert.True((await installs.RegisterAssetsAsync(tech, project.ProjectId, [new AssetInput("PANEL", contractedPanel, "Jinko", "Tiger Neo", "ONLY-PANEL", null, null)], None)).Succeeded);
         Assert.Equal(InstallationErrorCodes.AssetsRequired, (await installs.ReportCompletionAsync(tech, project.ProjectId, "Done", null, None)).ErrorCode);
 
         Assert.True((await RegisterPanelAndInverterAsync(ctx, project.ProjectId, tech)).Succeeded);
         Assert.Equal(InstallationErrorCodes.DuplicateSerial, (await RegisterPanelAndInverterAsync(ctx, project.ProjectId, tech)).ErrorCode);
         Assert.Equal(InstallationErrorCodes.DuplicateSerial, (await installs.RegisterAssetsAsync(tech, project.ProjectId,
-            [new AssetInput("METER", null, "EVN", "M1", "SAME", null, 12), new AssetInput("METER", null, "evn", "M1", " same ", null, 12)], None)).ErrorCode);
+            [new AssetInput("METER", null, "EVN", "M1", "SAME", null, null), new AssetInput("METER", null, "evn", "M1", " same ", null, null)], None)).ErrorCode);
         Assert.Equal(CommonErrorCodes.ValidationFailed, (await installs.RegisterAssetsAsync(tech, project.ProjectId,
             [new AssetInput("ROOF", null, "X", "Y", "Z", null, 12)], None)).ErrorCode);
+
+        // D-05: the extra panel makes the installation differ from the contract (13 panels for 12): a Manager approves it with a reason.
+        var differs = await installs.ReportCompletionAsync(tech, project.ProjectId, "All panels installed and commissioned.", null, None);
+        Assert.Equal(InstallationErrorCodes.SubstitutionApprovalRequired, differs.ErrorCode);
+        Assert.Contains("\"InstalledQuantity\":13", JsonSerializer.Serialize(differs.Details));
+        var manager = (await ctx.Db.InstallationProjects.AsNoTracking().SingleAsync(p => p.Id == project.ProjectId)).ManagerUserId;
+        var revision = (await installs.GetForManagerAsync(project.ProjectId, None)).Value!.Revision;
+        Assert.Equal(InstallationErrorCodes.ReasonRequired, (await installs.ApproveSubstitutionAsync(manager, project.ProjectId, revision, " ", None)).ErrorCode);
+        var approved = (await installs.ApproveSubstitutionAsync(manager, project.ProjectId, revision, "One spare panel to fill the roof row", None)).Value!;
+        Assert.Equal(EquipmentComparisonStatuses.CustomerApprovalRequired, approved.Equipment!.Status);
+        Assert.Equal(InstallationErrorCodes.InvalidState, (await installs.ApproveSubstitutionAsync(manager, project.ProjectId, approved.Revision, "again", None)).ErrorCode);
 
         var reported = (await installs.ReportCompletionAsync(tech, project.ProjectId, "All panels installed and commissioned.", null, None)).Value!;
         Assert.Equal(InstallationStatuses.PendingCustomerAcceptance, reported.Status);
@@ -545,6 +624,8 @@ public sealed class InstallationTests
         await AddCompletionEvidenceAsync(ctx, project.ProjectId, tech);
         Assert.True((await RegisterPanelAndInverterAsync(ctx, project.ProjectId, tech)).Succeeded);
         await installs.ReportCompletionAsync(tech, project.ProjectId, "Done", null, None);
+        // BL-17: while the customer judges round 1, round 1 is shown (not the next round).
+        Assert.Equal(1, (await installs.GetForCustomerAsync(paid.CustomerId, project.ProjectId, None)).Value!.CurrentRound);
 
         Assert.Equal(CommonErrorCodes.ValidationFailed, (await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, false, " ", None)).ErrorCode);
         var rework = (await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, false, "Cable tray loose on the east side", None)).Value!;
@@ -571,7 +652,7 @@ public sealed class InstallationTests
         Assert.Empty(await ctx.SchedulingWithInstallations().ListUpcomingInstallationAssignmentsAsync(tech, ctx.Clock.GetUtcNow(), None));
 
         var handover = (await installs.GetHandoverAsync(paid.CustomerId, false, project.ProjectId, None)).Value!;
-        Assert.Equal(3, handover.Assets.Count);
+        Assert.Equal(13, handover.Assets.Count);   // the contracted 12 panels and 1 inverter
         Assert.Equal(2, handover.Evidence.Count);
         Assert.Equal(2, handover.Acceptances.Count);
         Assert.Equal("Installer", handover.TechnicianName);

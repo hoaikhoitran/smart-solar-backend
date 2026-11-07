@@ -57,6 +57,44 @@ public sealed class AdminProductsController : ControllerBase
     }
 
     /// <summary>
+    /// Management list: the public filters plus <c>status</c> = ACTIVE | INACTIVE | ALL (default ALL), so inactive products can
+    /// be found and reactivated after a page refresh. Soft-deleted products are never listed. ADMIN and MANAGER only.
+    /// </summary>
+    [HttpGet]
+    [ProducesResponseType(typeof(ApiResponse<SmartSolar.Modules.Common.Paging.PagedResult<ProductResponse>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> List(
+        [FromQuery] ProductListRequest request,
+        [FromQuery] string? status,
+        [FromServices] SmartSolar.Modules.Catalog.ListProducts.ListProductsHandler listHandler,
+        [FromServices] IValidator<SmartSolar.Modules.Catalog.ListProducts.ListProductsQuery> listValidator,
+        CancellationToken cancellationToken)
+    {
+        SmartSolar.Modules.Catalog.Enums.ProductStatus? filter = null;
+        if (!string.IsNullOrWhiteSpace(status) && !string.Equals(status.Trim(), "ALL", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!ProductStatusCodes.TryParse(status, out var parsed))
+                return BadRequest(Failure(AuthErrorCodes.ValidationFailed, "One or more fields are invalid.",
+                    new Dictionary<string, string[]> { ["status"] = [$"'status' must be {ProductStatusCodes.Active}, {ProductStatusCodes.Inactive} or ALL."] }));
+            filter = parsed;
+        }
+
+        var query = new SmartSolar.Modules.Catalog.ListProducts.ListProductsQuery(
+            request.Search, request.ProductType, request.Category, request.Brand, request.MinPower, request.MaxPower, request.MinPrice, request.MaxPrice,
+            request.Page ?? SmartSolar.Modules.Catalog.ListProducts.ListProductsQuery.DefaultPage,
+            request.PageSize ?? SmartSolar.Modules.Catalog.ListProducts.ListProductsQuery.DefaultPageSize,
+            request.SortBy, request.SortDirection);
+        var validation = await listValidator.ValidateAsync(query, cancellationToken);
+        if (!validation.IsValid)
+            return BadRequest(Failure(AuthErrorCodes.ValidationFailed, "One or more fields are invalid.",
+                ValidationDetails.From(validation)));
+
+        var page = await listHandler.HandleForManagementAsync(query, filter, cancellationToken);
+        return Ok(Success(new SmartSolar.Modules.Common.Paging.PagedResult<ProductResponse>(
+            page.Items.Select(ProductResponse.From).ToList(), page.Page, page.PageSize, page.TotalItems, page.TotalPages)));
+    }
+
+    /// <summary>
     /// Management detail of a product in any status (soft-deleted products are not found).
     /// Like every admin catalog action it shares the controller's catalog-write limit.
     /// </summary>
@@ -301,9 +339,7 @@ public sealed class AdminProductsController : ControllerBase
             return null;
         }
 
-        var details = validation.Errors
-            .GroupBy(e => e.PropertyName)
-            .ToDictionary(g => g.Key, g => g.Select(e => e.ErrorMessage).ToArray());
+        var details = ValidationDetails.From(validation);
 
         return BadRequest(Failure(
             AuthErrorCodes.ValidationFailed,

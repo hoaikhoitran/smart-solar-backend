@@ -50,7 +50,8 @@ public sealed record AppointmentSnapshot(
     string? AssignmentSource,
     string? AssignmentReason,
     DateTimeOffset? CompletedAt,
-    int Revision);
+    int Revision,
+    Guid? CrossZoneAuthorizationId = null);
 
 /// <summary>A survey request seen from the scheduling side (owner, site, active appointment).</summary>
 public sealed record SurveyRequestSchedulingContext(
@@ -220,9 +221,12 @@ public interface ISchedulingUnitOfWork
     Task<IReadOnlyList<CustomerSurveyRequestRow>> ListCustomerSurveyRequestsAsync(Guid customerUserId, CancellationToken cancellationToken);
     Task<IReadOnlyList<AppointmentSnapshot>> ListAppointmentHistoryAsync(Guid surveyRequestId, CancellationToken cancellationToken);
 
-    /// <summary>ACCEPTED, ASSIGNED and COMPLETED appointments of this technician ending after <paramref name="fromUtc"/>.</summary>
-    Task<IReadOnlyList<(AppointmentSnapshot Appointment, string PropertyName, string Province, string? District)>> ListTechnicianAppointmentsAsync(
-        Guid technicianUserId, DateTimeOffset fromUtc, CancellationToken cancellationToken);
+    /// <summary>
+    /// ACCEPTED, ASSIGNED and COMPLETED appointments of this technician. With <paramref name="includePast"/> false: those ending
+    /// after <paramref name="nowUtc"/> plus overdue ones (ACCEPTED/ASSIGNED whose end passed, survey not completed). With true: all.
+    /// </summary>
+    Task<IReadOnlyList<TechnicianAppointmentRow>> ListTechnicianAppointmentsAsync(
+        Guid technicianUserId, DateTimeOffset nowUtc, bool includePast, CancellationToken cancellationToken);
 
     /// <summary>A confirmed (ACCEPTED/ASSIGNED/COMPLETED) job of this technician, or null.</summary>
     Task<TechnicianJobDetail?> GetTechnicianJobAsync(Guid technicianUserId, Guid appointmentId, CancellationToken cancellationToken);
@@ -265,6 +269,9 @@ public interface ISchedulingUnitOfWork
 
     /// <summary>True while the request's on-site survey report is IN_PROGRESS (the confirmed technician started it on site).</summary>
     Task<bool> HasOnSiteSurveyInProgressAsync(Guid surveyRequestId, CancellationToken cancellationToken);
+
+    /// <summary>The technician a recorded cross-zone authorization was given for (null when it does not exist).</summary>
+    Task<Guid?> GetCrossZoneAuthorizedTechnicianAsync(Guid authorizationId, CancellationToken cancellationToken);
 
     /// <summary>PENDING_ACCEPTANCE appointments whose deadline passed and that have not started yet (worker input).</summary>
     Task<IReadOnlyList<Guid>> ListDueEscalationsAsync(DateTimeOffset nowUtc, int limit, CancellationToken cancellationToken);
@@ -416,3 +423,7 @@ public interface ISchedulingUnitOfWork
     Task<SalesOwnerUpdate> SetSalesOwnerAsync(Guid surveyRequestId, Guid saleUserId, DateTimeOffset nowUtc, CancellationToken cancellationToken);
     void AddSurveyRequestEvent(SurveyRequestEvent surveyRequestEvent);
 }
+
+/// <summary>One confirmed appointment of a technician with its site's display location (official commune name when the site has a code).</summary>
+public sealed record TechnicianAppointmentRow(AppointmentSnapshot Appointment, string PropertyName, string Province, string? District, string? Ward,
+    string? CommuneName);

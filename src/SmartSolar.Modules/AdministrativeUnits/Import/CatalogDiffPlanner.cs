@@ -64,6 +64,14 @@ public static class CatalogDiffPlanner
             if (existing.UnitType != row.UnitType) changed.Add(new(row.Code, "unitType", existing.UnitType, row.UnitType));
             if (existing.ValidTo is not null) reopened.Add(row.Code);
         }
+        // Reference points: only communes listed in the optional file change; an unlisted commune keeps its stored point.
+        foreach (var point in dataset.ReferencePoints)
+        {
+            if (!stored.TryGetValue(point.CommuneCode, out var existing)) continue;   // a new commune gets its point when it is added
+            if (existing.ReferenceLatitude != point.Latitude || existing.ReferenceLongitude != point.Longitude || existing.ReferencePointSource != point.Source)
+                changed.Add(new(point.CommuneCode, "referencePoint",
+                    existing.ReferenceLatitude is null ? null : $"{existing.ReferenceLatitude},{existing.ReferenceLongitude}", $"{point.Latitude},{point.Longitude}"));
+        }
         var closed = communes.Where(c => c.ValidTo is null && !incoming.ContainsKey(c.Code)).Select(c => c.Code).OrderBy(c => c, StringComparer.Ordinal).ToList();
 
         var storedLegacy = legacy.ToDictionary(l => (l.CommuneCode, l.MatchKey));

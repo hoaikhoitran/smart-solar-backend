@@ -46,7 +46,8 @@ public static class SimulationDetailMapper
             computed.Energy,
             computed.Climate,
             computed.Warnings,
-            SimulationLimitations.For(computed.Installation.ShadingWindow));
+            SimulationLimitations.For(computed.Installation.ShadingWindow),
+            Shading: computed.Shading);
 
     /// <summary>A cached result as one viewer sees it: staleness and selection against the current pre-survey.</summary>
     public static SimulationDetail ForViewer(CachedSimulation cached, SimulationSource source)

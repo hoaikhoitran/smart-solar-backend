@@ -50,7 +50,11 @@ builder.Services.AddKnowledgeBaseRateLimiting(builder.Configuration);
 builder.Services.AddSystemSettingsModule(builder.Configuration);
 builder.Services.AddSystemSettingsRateLimiting(builder.Configuration);
 builder.Services.AddForwardedHeaders(builder.Configuration);
-builder.Services.AddControllers();
+// Enums are written as stable UPPER_SNAKE_CASE strings (e.g. "PENDING", "ROOFTOP"), like the other status codes of the API.
+// Reading still accepts the numeric values older clients send, so requests stay backwards compatible.
+builder.Services.AddControllers().AddJsonOptions(options =>
+    options.JsonSerializerOptions.Converters.Add(
+        new System.Text.Json.Serialization.JsonStringEnumConverter(System.Text.Json.JsonNamingPolicy.SnakeCaseUpper, allowIntegerValues: true)));
 builder.Services.AddEnvelopedModelValidation();
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
@@ -59,6 +63,7 @@ builder.Services.AddSwaggerGen(options =>
      options.CustomSchemaIds(
         type => type.FullName?.Replace('+', '.') ?? type.Name
     );
+    options.OperationFilter<SmartSolar.Api.Extensions.StandardErrorResponsesOperationFilter>();
 
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
@@ -85,6 +90,8 @@ builder.Services.AddSwaggerGen(options =>
         }
     });
 });
+builder.Services.AddSingleton<SmartSolar.Api.Middlewares.ISchemaMigrationProbe, SmartSolar.Api.Middlewares.EfSchemaMigrationProbe>();
+builder.Services.AddSingleton<SmartSolar.Api.Middlewares.SchemaReadiness>();
 var app = builder.Build();
 
 if (app.Services.GetRequiredService<SmartSolar.Modules.Common.Features.FeatureOptions>().UsesLegacyFlag)
@@ -98,6 +105,8 @@ app.LogEmailDeliveryReadiness();
 
 // Configure the HTTP request pipeline.
 app.UseMiddleware<ExceptionHandlingMiddleware>();
+// Before anything touches the database: an older schema answers 503 SCHEMA_NOT_READY instead of failing per query.
+app.UseMiddleware<SmartSolar.Api.Middlewares.SchemaReadinessMiddleware>();
 app.UseEnvelopedStatusCodes();
 
 if (app.Environment.IsDevelopment())

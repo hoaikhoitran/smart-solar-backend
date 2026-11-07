@@ -48,6 +48,7 @@ public sealed class OnSiteSurveyReportConfiguration : IEntityTypeConfiguration<O
         builder.Property(x => x.MeasuredLatitude).HasColumnName("measured_latitude").HasPrecision(9, 6);
         builder.Property(x => x.MeasuredLongitude).HasColumnName("measured_longitude").HasPrecision(9, 6);
         builder.Property(x => x.Notes).HasColumnName("notes").HasMaxLength(4000);
+        builder.Property(x => x.BillOfMaterialsJson).HasColumnName("bill_of_materials").HasColumnType("jsonb");
         builder.Property(x => x.Version).HasColumnName("version").IsRequired();
         builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using SmartSolar.Modules.Common.Persistence;
 using SmartSolar.Modules.Common.Results;
 using SmartSolar.Modules.Files;
@@ -8,13 +9,23 @@ namespace SmartSolar.Modules.OnSiteSurveys;
 
 public sealed record ObstacleInput(string Kind, string? Description, decimal? HeightM, decimal? AreaM2);
 
+/// <summary>One confirmed line of the bill of materials: a catalog product and its quantity in the product's own unit. No price.</summary>
+public sealed record BillOfMaterialsItem(Guid ProductId, decimal Quantity);
+
+/// <summary>
+/// The technician's confirmed equipment (<see cref="Materials"/>: panels, inverters, mounting, cables…) and priced service items
+/// (<see cref="ServiceItems"/>: catalog products of type INSTALLATION_LABOR, TRANSPORT or OTHER_SERVICE). Prices always come from
+/// the catalog when the quotation is generated.
+/// </summary>
+public sealed record BillOfMaterialsInput(IReadOnlyList<BillOfMaterialsItem>? Materials, IReadOnlyList<BillOfMaterialsItem>? ServiceItems, string? InstallationNotes);
+
 /// <summary>Survey fields. In a draft every field is optional; completion requires the measured essentials.</summary>
 public sealed record OnSiteSurveyData(
     string? RoofType, string? RoofMaterial, decimal? RoofLengthM, decimal? RoofWidthM, decimal? UsableAreaM2,
     decimal? TiltDegree, decimal? AzimuthDegree, string? RoofCondition, string? ElectricalCabinetNotes,
     string? ElectricalConnectionNotes, string? InstallationFeasibility, string? ProposedInverterLocation,
     string? ProposedPanelLayoutNotes, decimal? MeasuredLatitude, decimal? MeasuredLongitude, string? Notes,
-    IReadOnlyList<ObstacleInput>? Obstacles);
+    IReadOnlyList<ObstacleInput>? Obstacles, BillOfMaterialsInput? BillOfMaterials = null);
 
 public sealed record SaveOnSiteSurveyCommand(Guid TechnicianUserId, Guid AppointmentId, int? ExpectedRevision, OnSiteSurveyData Data);
 public sealed record AddOnSiteSurveyAttachmentCommand(Guid TechnicianUserId, Guid AppointmentId, Guid FileId, string Category, string? Caption);
@@ -28,7 +39,8 @@ public sealed record AmendmentView(int AmendmentNumber, Guid AuthorUserId, strin
 public sealed record OnSiteSurveyView(
     Guid ReportId, Guid SurveyRequestId, Guid AppointmentId, Guid TechnicianUserId, string Status, int Version, int Revision,
     DateTimeOffset? StartedAt, DateTimeOffset? CompletedAt, OnSiteSurveyData Data, IReadOnlyList<ObstacleView> Obstacles,
-    IReadOnlyList<AttachmentView> Attachments, IReadOnlyList<AmendmentView> Amendments, DateTimeOffset UpdatedAt);
+    IReadOnlyList<AttachmentView> Attachments, IReadOnlyList<AmendmentView> Amendments, DateTimeOffset UpdatedAt,
+    string? AutomaticQuotationOutcome = null);
 
 public sealed class OnSiteSurveyOptions
 {
@@ -49,7 +61,8 @@ public sealed class OnSiteSurveyOptions
 /// makes it available to Sales for quotation (no approval step).
 /// </summary>
 public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, FileService files, OnSiteSurveyOptions options,
-    SmartSolar.Modules.SystemSettings.ISchedulingPolicyProvider policies, TimeProvider time)
+    SmartSolar.Modules.SystemSettings.ISchedulingPolicyProvider policies, TimeProvider time,
+    Quotations.QuotationHandlers? quotations = null, Microsoft.Extensions.Logging.ILogger<OnSiteSurveyHandlers>? logger = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -85,6 +98,8 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
                 return OperationResult<bool>.Fail(OnSiteSurveyErrorCodes.AlreadyCompleted, "The survey is completed; submit an amendment instead.");
             ApplyData(report, command.Data);
             if (command.Data.Obstacles is { } obstacles) await unitOfWork.ReplaceObstaclesAsync(report.Id, Obstacles(report.Id, obstacles), token);
+            // Like obstacles: an omitted bill of materials keeps the saved one.
+            if (command.Data.BillOfMaterials is { } bom) report.BillOfMaterialsJson = SerializeBillOfMaterials(bom);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
     }
@@ -162,9 +177,13 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
 
         var existing = await unitOfWork.FindReportBySurveyRequestAsync(context!.SurveyRequestId, false, cancellationToken);
         if (existing is { Status: OnSiteSurveyStatuses.Completed })
-            return OperationResult<OnSiteSurveyView>.Ok(await ViewAsync(existing, cancellationToken));
+        {
+            // Repeating the completion retries the automatic quotation (idempotent) without touching the survey.
+            var again = await ViewAsync(existing, cancellationToken);
+            return OperationResult<OnSiteSurveyView>.Ok(again with { AutomaticQuotationOutcome = await GenerateQuotationAsync(existing.SurveyRequestId, command.TechnicianUserId, cancellationToken) });
+        }
 
-        return await MutateAsync(context, command.ExpectedRevision, allowCreate: false, async (report, now, token) =>
+        var completed = await MutateAsync(context, command.ExpectedRevision, allowCreate: false, async (report, now, token) =>
         {
             if (report.Status != OnSiteSurveyStatuses.InProgress)
                 return OperationResult<bool>.Fail(OnSiteSurveyErrorCodes.NotStarted, "Start the survey on site before completing it.");
@@ -173,6 +192,8 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
             var attachments = await unitOfWork.GetAttachmentsAsync(report.Id, token);
             if (!attachments.Any(a => a.Category == "ROOF"))
                 return OperationResult<bool>.Fail(OnSiteSurveyErrorCodes.EvidenceRequired, "At least one verified ROOF photo is required.");
+            if (await CheckBillOfMaterialsAgainstCatalogAsync(ParseBillOfMaterials(report.BillOfMaterialsJson), token) is { } bomErrors)
+                return OperationResult<bool>.Fail(OnSiteSurveyErrorCodes.BillOfMaterialsInvalid, "The bill of materials is not valid against the catalog.", bomErrors);
 
             report.Status = OnSiteSurveyStatuses.Completed;
             report.CompletedAt = now;
@@ -185,6 +206,30 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
                 return OperationResult<bool>.Fail(CommonErrorCodes.InvalidState, "The survey request is not in the Scheduled state.");
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
+        if (!completed.Succeeded) return completed;
+
+        // The survey is committed first; the quotation is generated in its own transaction (idempotent, retryable by
+        // completing again or through the Sales "generate" endpoint), so a pricing problem never undoes the survey.
+        return OperationResult<OnSiteSurveyView>.Ok(completed.Value! with
+        {
+            AutomaticQuotationOutcome = await GenerateQuotationAsync(completed.Value!.SurveyRequestId, command.TechnicianUserId, cancellationToken),
+        });
+    }
+
+    /// <summary>Runs the automatic quotation when it is wired (production); returns its outcome, or null when not wired.</summary>
+    private async Task<string?> GenerateQuotationAsync(Guid surveyRequestId, Guid actorUserId, CancellationToken cancellationToken)
+    {
+        if (quotations is null) return null;
+        try
+        {
+            return (await quotations.GenerateStandardQuotationAsync(surveyRequestId, actorUserId, cancellationToken)).Outcome;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The survey stays completed; Sales can retry the generation. Nothing partial is stored (one transaction).
+            logger?.LogError(ex, "Automatic quotation for survey request {SurveyRequestId} failed.", surveyRequestId);
+            return Quotations.AutomaticQuotationOutcomes.Failed;
+        }
     }
 
     /// <summary>Correction after completion: changed fields are applied, the previous values are recorded and Version is incremented.</summary>
@@ -203,16 +248,30 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
             if (!verified.Succeeded) return verified.As<OnSiteSurveyView>();
         }
 
-        return await MutateAsync(context!, command.ExpectedRevision, allowCreate: false, async (report, now, token) =>
+        var amended = await MutateAsync(context!, command.ExpectedRevision, allowCreate: false, async (report, now, token) =>
         {
             if (report.Status != OnSiteSurveyStatuses.Completed)
                 return OperationResult<bool>.Fail(OnSiteSurveyErrorCodes.NotCompleted, "Only completed surveys are amended; edit the draft instead.");
+            // Once a contract exists the survey is part of a commercial commitment: it is never changed underneath it. A post-contract change
+            // needs the (not yet defined) commercial change process instead.
+            if (context!.SurveyRequestStatus is nameof(PreSurvey.Enums.SurveyRequestStatus.Cancelled) or nameof(PreSurvey.Enums.SurveyRequestStatus.Closed))
+                return OperationResult<bool>.Fail(OnSiteSurveyErrorCodes.RequestClosed, "The survey request was withdrawn or closed; its survey is history.");
+            if (await unitOfWork.HasLiveContractAsync(context.SurveyRequestId, token))
+                return OperationResult<bool>.Fail(OnSiteSurveyErrorCodes.CommerciallyLocked,
+                    "A contract exists for this request; the survey can no longer be amended. A change after contracting needs a commercial change process.");
             var before = DataOf(report, null);
             var merged = Merge(before, command.Changes);
             var completeness = Validate(merged, forCompletion: true);
             if (completeness is not null) return OperationResult<bool>.Fail(CommonErrorCodes.ValidationFailed, "The amended survey would be incomplete.", completeness);
 
             var changes = Diff(before, merged);
+            if (command.Changes.BillOfMaterials is { } bom)
+            {
+                if (await CheckBillOfMaterialsAgainstCatalogAsync(bom, token) is { } bomErrors)
+                    return OperationResult<bool>.Fail(OnSiteSurveyErrorCodes.BillOfMaterialsInvalid, "The bill of materials is not valid against the catalog.", bomErrors);
+                changes["billOfMaterials"] = new { old = ParseBillOfMaterials(report.BillOfMaterialsJson), @new = bom };
+                report.BillOfMaterialsJson = SerializeBillOfMaterials(bom);
+            }
             if (command.Changes.Obstacles is { } obstacles)
             {
                 var old = (await unitOfWork.GetObstaclesAsync(report.Id, token)).Select(o => new ObstacleInput(o.Kind, o.Description, o.HeightM, o.AreaM2)).ToList();
@@ -242,6 +301,22 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
             report.Version++;
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
+        if (!amended.Succeeded) return amended;
+
+        // Quotations based on the previous version stop being issuable/acceptable by themselves (version checks) and show up in the
+        // Sales review queue; the SURVEY_AMENDED event is their audit record. It is idempotent and not critical: a failure is logged.
+        if (quotations is not null)
+        {
+            try
+            {
+                await quotations.RecordSurveyAmendedAsync(amended.Value!.SurveyRequestId, amended.Value.Version, command.TechnicianUserId, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger?.LogError(ex, "Recording the survey amendment on quotations of survey request {SurveyRequestId} failed.", amended.Value!.SurveyRequestId);
+            }
+        }
+        return amended;
     }
 
     // ------------------------------------------------------------------ helpers
@@ -332,7 +407,8 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
         r.RoofType, r.RoofMaterial, r.RoofLengthM, r.RoofWidthM, r.UsableAreaM2, r.TiltDegree, r.AzimuthDegree, r.RoofCondition,
         r.ElectricalCabinetNotes, r.ElectricalConnectionNotes, r.InstallationFeasibility, r.ProposedInverterLocation, r.ProposedPanelLayoutNotes,
         r.MeasuredLatitude, r.MeasuredLongitude, r.Notes,
-        obstacles?.Select(o => new ObstacleInput(o.Kind, o.Description, o.HeightM, o.AreaM2)).ToList());
+        obstacles?.Select(o => new ObstacleInput(o.Kind, o.Description, o.HeightM, o.AreaM2)).ToList(),
+        ParseBillOfMaterials(r.BillOfMaterialsJson));
 
     private static void ApplyData(OnSiteSurveyReport r, OnSiteSurveyData d)
     {
@@ -358,7 +434,8 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
     private static Dictionary<string, object?> Diff(OnSiteSurveyData before, OnSiteSurveyData after)
     {
         var diff = new Dictionary<string, object?>();
-        foreach (var property in typeof(OnSiteSurveyData).GetProperties().Where(p => p.Name != nameof(OnSiteSurveyData.Obstacles)))
+        foreach (var property in typeof(OnSiteSurveyData).GetProperties()
+                     .Where(p => p.Name is not (nameof(OnSiteSurveyData.Obstacles) or nameof(OnSiteSurveyData.BillOfMaterials))))
         {
             var (old, @new) = (property.GetValue(before), property.GetValue(after));
             if (!Equals(old, @new)) diff[JsonNamingPolicy.CamelCase.ConvertName(property.Name)] = new { old, @new };
@@ -399,6 +476,17 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
                 $"Kinds must be one of {string.Join(", ", OnSiteSurveyVocabulary.ObstacleKinds)}.");
             Check(obstacles.All(o => o.HeightM is null or >= 0 and <= 100 && o.AreaM2 is null or >= 0 and <= 10000), "obstacles", "Invalid obstacle size.");
         }
+        if (d.BillOfMaterials is { } bom)
+        {
+            var materials = bom.Materials ?? [];
+            var services = bom.ServiceItems ?? [];
+            var all = materials.Concat(services).ToList();
+            Check(materials.Count + services.Count <= MaxBillOfMaterialsItems, "billOfMaterials", $"At most {MaxBillOfMaterialsItems} items.");
+            Check(all.All(i => i.ProductId != Guid.Empty), "billOfMaterials", "Every item needs a catalog productId.");
+            Check(all.All(i => i.Quantity is > 0 and <= MaxItemQuantity), "billOfMaterials", $"Every quantity must be greater than 0 and at most {MaxItemQuantity}.");
+            Check(all.Select(i => i.ProductId).Distinct().Count() == all.Count, "billOfMaterials", "A product may appear only once; add the quantities together.");
+            Check(bom.InstallationNotes is null || bom.InstallationNotes.Length <= 2000, "billOfMaterials", "installationNotes must be at most 2000 characters.");
+        }
 
         if (forCompletion)
         {
@@ -414,6 +502,52 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
             Check(!string.IsNullOrWhiteSpace(d.ElectricalCabinetNotes), "electricalCabinetNotes", "Required.");
         }
 
+        return errors.Count == 0 ? null : errors;
+    }
+
+    public const int MaxBillOfMaterialsItems = 100;
+    public const decimal MaxItemQuantity = 100_000m;
+
+    /// <summary>Units counted in whole pieces: their quantity must be a whole number (no 1.5 panels).</summary>
+    private static readonly string[] CountedUnits = ["PCS", "PC", "SET", "UNIT", "EA"];
+
+    private static string SerializeBillOfMaterials(BillOfMaterialsInput bom)
+        => JsonSerializer.Serialize(new BillOfMaterialsInput(bom.Materials ?? [], bom.ServiceItems ?? [], Trim(bom.InstallationNotes, 2000)), Json);
+
+    public static BillOfMaterialsInput? ParseBillOfMaterials(string? json)
+        => string.IsNullOrWhiteSpace(json) ? null : JsonSerializer.Deserialize<BillOfMaterialsInput>(json, Json);
+
+    /// <summary>
+    /// Every item must be an existing, active catalog product of the right kind: materials are equipment (never a service type),
+    /// service items are INSTALLATION_LABOR / TRANSPORT / OTHER_SERVICE; counted units need whole quantities. Prices are not checked
+    /// here: a missing price is a quotation exception for Sales, not a technician error.
+    /// </summary>
+    private async Task<Dictionary<string, string[]>?> CheckBillOfMaterialsAgainstCatalogAsync(BillOfMaterialsInput? bom, CancellationToken token)
+    {
+        if (bom is null) return null;
+        var materials = bom.Materials ?? [];
+        var services = bom.ServiceItems ?? [];
+        var ids = materials.Concat(services).Select(i => i.ProductId).Distinct().ToList();
+        if (ids.Count == 0) return null;
+        var products = (await unitOfWork.GetCatalogProductsAsync(ids, token)).ToDictionary(p => p.ProductId);
+        var errors = new Dictionary<string, string[]>();
+        void Check(IReadOnlyList<BillOfMaterialsItem> items, string field, bool mustBeService)
+        {
+            for (var i = 0; i < items.Count; i++)
+            {
+                var item = items[i];
+                string? problem = !products.TryGetValue(item.ProductId, out var product) ? "is not a catalog product"
+                    : !product.IsActive ? "is not active in the catalog"
+                    : Catalog.Constants.ProductTypes.IsService(product.ProductType) != mustBeService
+                        ? (mustBeService ? "is not a service product (INSTALLATION_LABOR, TRANSPORT, OTHER_SERVICE)" : "is a service; list it under serviceItems")
+                    : CountedUnits.Contains(product.Unit.Trim().ToUpperInvariant()) && decimal.Truncate(item.Quantity) != item.Quantity
+                        ? $"is counted in {product.Unit}; the quantity must be a whole number"
+                    : null;
+                if (problem is not null) errors[$"billOfMaterials.{field}[{i}]"] = [$"Product {item.ProductId} {problem}."];
+            }
+        }
+        Check(materials, "materials", mustBeService: false);
+        Check(services, "serviceItems", mustBeService: true);
         return errors.Count == 0 ? null : errors;
     }
 

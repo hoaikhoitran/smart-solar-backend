@@ -157,6 +157,11 @@ public sealed record EscalatedAppointmentView(
     bool OwnedByMe,
     bool HasEligibleTechnician);
 
+/// <summary>
+/// One of the technician's confirmed jobs. <see cref="IsOverdue"/>: the scheduled end passed but the survey was not completed
+/// (staff recover it by rescheduling). <see cref="CommuneName"/> is the official ward/commune name (null when the site has no
+/// commune code); <see cref="Ward"/> is the free-text value stored on the site.
+/// </summary>
 public sealed record TechnicianAppointmentListItem(
     Guid AppointmentId,
     string AppointmentType,
@@ -167,7 +172,11 @@ public sealed record TechnicianAppointmentListItem(
     string PropertyName,
     string Province,
     string? District,
-    DateTimeOffset? AssignedAt);
+    DateTimeOffset? AssignedAt,
+    Guid? SurveyRequestId = null,
+    string? Ward = null,
+    string? CommuneName = null,
+    bool IsOverdue = false);
 
 public sealed record TechnicianJobView(
     Guid AppointmentId,
@@ -185,7 +194,8 @@ public sealed record TechnicianJobView(
     TechnicianJobProperty Property,
     TechnicianJobPreSurvey PreSurvey,
     SelectedSimulationSummary? SelectedSimulation,
-    string? SimulationDetailPath);
+    string? SimulationDetailPath,
+    bool IsOverdue = false);
 
 public sealed record TechnicianJobCustomer(string FullName, string? Phone, string? Email);
 

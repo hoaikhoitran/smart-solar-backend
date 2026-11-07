@@ -2,6 +2,7 @@ using SmartSolar.Modules.PreSurvey.Entities;
 using SmartSolar.Modules.PreSurvey.GetMySurveyRequests;
 using SmartSolar.Modules.PreSurvey.GetPendingSurveyRequests;
 using SmartSolar.Modules.PreSurvey.GetSurveyRequestDetail;
+using SmartSolar.Modules.PreSurvey.ListMine;
 
 namespace SmartSolar.Modules.PreSurvey.Contracts.Persistence;
 
@@ -65,5 +66,12 @@ public interface IPreSurveyUnitOfWork
     Task<SurveyRequestDetail?> GetSurveyRequestDetailAsync(
     Guid surveyRequestId,
     CancellationToken cancellationToken);
-  
+
+    /// <summary>One page of the sites of the customer linked to <paramref name="userId"/> (by name), and the total count.</summary>
+    Task<(IReadOnlyList<CustomerSiteListItem> Items, int Total)> ListCustomerSitesAsync(
+        Guid userId, int skip, int take, CancellationToken cancellationToken);
+
+    /// <summary>One page of that customer's pre-surveys (optionally one status), by UpdatedAt or CreatedAt, and the total count.</summary>
+    Task<(IReadOnlyList<CustomerPreSurveyListItem> Items, int Total)> ListCustomerPreSurveysAsync(
+        Guid userId, Enums.PreSurveyStatus? status, bool sortByCreatedAt, bool ascending, int skip, int take, CancellationToken cancellationToken);
 }

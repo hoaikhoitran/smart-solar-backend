@@ -58,7 +58,18 @@ public sealed class CreateSimulationHandlerTests
         Assert.Equal(2, detail.Energy.Scenarios.Count);
         Assert.Equal(EnergyScenarioRoles.PrimaryConservativeReference, detail.Energy.Scenarios[0].Role);
         Assert.Equal(EnergyScenarioRoles.Comparison, detail.Energy.Scenarios[1].Role);
-        Assert.Equal(Math.Round(1400m * detail.Layout.InstalledCapacityKwp, 2), detail.Energy.AnnualEnergyKwh);
+        // The PVGIS typical-year baseline is unchanged; the headline energy is after the water tank's shading estimate.
+        Assert.Equal(Math.Round(1400m * detail.Layout.InstalledCapacityKwp, 2), detail.Energy.AnnualEnergyBeforeShadingKwh);
+        var shading = detail.Shading!;
+        Assert.Equal((ComponentStatusCodes.Succeeded, ShadingMethods.RayCast3dPvgisHourlyLinear), (shading.Status, shading.Method));
+        Assert.Equal(detail.Energy.AnnualEnergyAfterShadingKwh, detail.Energy.AnnualEnergyKwh);
+        Assert.True(detail.Energy.AnnualEnergyKwh <= detail.Energy.AnnualEnergyBeforeShadingKwh);
+        Assert.Equal(detail.Energy.AnnualEnergyBeforeShadingKwh - shading.AnnualEnergyLossKwh, detail.Energy.AnnualEnergyKwh);
+        Assert.Equal(detail.Energy.AnnualEnergyKwh, detail.Energy.Monthly.Sum(m => m.EnergyKwh));
+        Assert.DoesNotContain(detail.Warnings, w => w.Code == SimulationWarningCodes.ObstacleShadingNotModeled);
+        var hourly = Assert.Single(ctx.PvEnergy.HourlyRequests);   // same system as the primary (building) scenario
+        Assert.Equal((PvgisMountingPlaces.Building, 15m, 180m, detail.Layout.InstalledCapacityKwp, 14m),
+            (hourly.MountingPlace, hourly.TiltDegree, hourly.CompassAzimuthDegree, hourly.PeakPowerKwp, hourly.SystemLossPercent));
         Assert.Equal(12, detail.Energy.Monthly.Count);
         Assert.Contains(detail.Warnings, w => w.Code == SimulationWarningCodes.FlushMountThermalAssumption);
         Assert.Contains(detail.Warnings, w => w.Code == SimulationWarningCodes.BuildingFireCodeNotChecked);
@@ -648,5 +659,85 @@ public sealed class CreateSimulationHandlerTests
 
         Assert.NotNull(before);
         Assert.Equal(before, ctx.DistributedCache.Raw(key));
+    }
+
+    // ------------------------------------------------------------------ shading estimate (synthetic PVGIS data)
+
+    [Fact]
+    public async Task Without_obstacles_flush_shading_succeeds_with_zero_loss_and_no_hourly_call()
+    {
+        await using var ctx = new PreSurveyTestContext();
+        var (user, draft) = await ctx.SeedDraftWithSurfaceAsync([]);
+        var product = await ctx.SeedPanelProductAsync();
+
+        var detail = (await ctx.CreateSimulationHandler().HandleAsync(Flush(user.Id, draft.Id, product.Id), CancellationToken.None)).Simulation!;
+
+        var shading = detail.Shading!;
+        Assert.Equal((ComponentStatusCodes.Succeeded, ShadingReasons.NoOccluders, 0m, 0), (shading.Status, shading.Reason, shading.AnnualEnergyLossKwh!.Value, shading.ShadedPanelCount!.Value));
+        Assert.Equal(detail.Layout.Details.Placements.Select(p => p.Index), shading.Panels.Select(p => p.Index));
+        Assert.Equal(detail.Energy.AnnualEnergyBeforeShadingKwh, detail.Energy.AnnualEnergyKwh);
+        Assert.Empty(ctx.PvEnergy.HourlyRequests);
+    }
+
+    [Fact]
+    public async Task A_missing_obstacle_height_makes_shading_unavailable_and_keeps_energy_unshaded()
+    {
+        await using var ctx = new PreSurveyTestContext();
+        var (user, draft) = await ctx.SeedDraftWithSurfaceAsync([new SurfaceObstacle("Unknown", 6m, 4m, 1.5m, 2m, null)]);
+        var product = await ctx.SeedPanelProductAsync();
+
+        var detail = (await ctx.CreateSimulationHandler().HandleAsync(Flush(user.Id, draft.Id, product.Id), CancellationToken.None)).Simulation!;
+
+        Assert.Equal((ComponentStatusCodes.Unavailable, ShadingReasons.ObstacleHeightMissing), (detail.Shading!.Status, detail.Shading.Reason));
+        Assert.Null(detail.Shading.AnnualLossPercent);   // never a fabricated zero
+        Assert.Equal(Math.Round(1400m * detail.Layout.InstalledCapacityKwp, 2), detail.Energy.AnnualEnergyKwh);
+        Assert.Contains(detail.Warnings, w => w.Code == SimulationWarningCodes.ShadingNotApplied);
+        Assert.Contains(detail.Warnings, w => w.Code == SimulationWarningCodes.ObstacleShadingNotModeled);
+        Assert.Empty(ctx.PvEnergy.HourlyRequests);
+    }
+
+    [Fact]
+    public async Task Hourly_provider_failure_or_the_computation_limit_give_explicit_statuses()
+    {
+        await using var ctx = new PreSurveyTestContext();
+        var (user, draft) = await ctx.SeedDraftWithSurfaceAsync([new SurfaceObstacle("Water Tank", 6m, 4m, 1.5m, 2m, 1.8m)]);
+        var product = await ctx.SeedPanelProductAsync();
+        ctx.PvEnergy.HourlyHandler = (_, _) => Task.FromResult(PvHourlyResult.Fail(ProviderFailureCodes.RejectedRequest, "years out of range"));
+
+        var failed = (await ctx.CreateSimulationHandler().HandleAsync(Flush(user.Id, draft.Id, product.Id), CancellationToken.None)).Simulation!;
+        ctx.PvEnergy.HourlyHandler = null;
+        ctx.SimulationOptions.ShadingAnalysis.MaxWorkUnits = 1;
+        var limited = (await ctx.CreateSimulationHandler().HandleAsync(Flush(user.Id, draft.Id, product.Id), CancellationToken.None)).Simulation!;
+
+        Assert.Equal((ComponentStatusCodes.Failed, ShadingReasons.HourlyDataFailed, ProviderFailureCodes.RejectedRequest),
+            (failed.Shading!.Status, failed.Shading.Reason, failed.Shading.Failure!.Code));
+        Assert.Equal(failed.Energy.AnnualEnergyBeforeShadingKwh, failed.Energy.AnnualEnergyKwh);
+        Assert.Equal((ComponentStatusCodes.Unavailable, ShadingReasons.ComputationLimit), (limited.Shading!.Status, limited.Shading.Reason));
+        Assert.NotEqual(failed.SimulationId, limited.SimulationId);   // a failed shading result is not reused
+    }
+
+    [Fact]
+    public async Task Rack_rows_are_ray_cast_and_the_result_survives_the_cache_and_the_snapshot_json()
+    {
+        await using var ctx = new PreSurveyTestContext();
+        var (user, draft) = await ctx.SeedDraftWithSurfaceAsync([]);
+        var product = await ctx.SeedPanelProductAsync();
+
+        var detail = (await ctx.CreateSimulationHandler().HandleAsync(Rack(user.Id, draft.Id, product.Id, tilt: 25m), CancellationToken.None)).Simulation!;
+
+        var shading = detail.Shading!;
+        Assert.Equal((ComponentStatusCodes.Succeeded, (string?)null), (shading.Status, shading.Reason));
+        Assert.Single(ctx.PvEnergy.HourlyRequests);
+        Assert.Equal(detail.Layout.Details.Placements.Select(p => p.Index), shading.Panels.Select(p => p.Index));
+        Assert.All(shading.Panels, p => Assert.InRange(p.AnnualDirectShadedFraction, 0, 1));
+        Assert.Equal(12, shading.Monthly.Count);
+        Assert.Equal(shading.AnnualEnergyAfterShadingKwh, shading.Monthly.Sum(m => m.EnergyAfterShadingKwh));
+
+        var cached = (await ctx.SimulationCache.GetAsync(detail.SimulationId, CancellationToken.None))!;
+        Assert.Equal(shading.AnnualEnergyLossKwh, cached.Detail.Shading!.AnnualEnergyLossKwh);
+        var roundTrip = SnapshotJson.Deserialize<SimulationDetail>(SnapshotJson.Serialize(detail));
+        Assert.Equal(shading.Panels, roundTrip.Shading!.Panels);
+        Assert.Equal(shading.AnnualLossPercent, roundTrip.Shading.AnnualLossPercent);
+        Assert.Equal(detail.Energy.AnnualEnergyBeforeShadingKwh, roundTrip.Energy.AnnualEnergyBeforeShadingKwh);
     }
 }

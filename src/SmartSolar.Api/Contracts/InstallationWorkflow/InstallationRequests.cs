@@ -14,6 +14,9 @@ public sealed record CancelInstallationRequest(string? Reason, int? ExpectedRevi
 /// <summary>Manager/Admin returns a completion report waiting for the customer to rework: <c>reason</c> required (≤500).</summary>
 public sealed record ReturnToReworkRequest(string? Reason, int? ExpectedRevision);
 
+/// <summary>Manager approval of the installed equipment's differences from the contract (reason required).</summary>
+public sealed record SubstitutionApprovalRequest(string? Reason, int? ExpectedRevision);
+
 public sealed record ChecklistRequest(int Revision, bool IsRequired, string? Status, Guid? EvidenceFileId, string? Note);
 
 /// <summary>Technician accept: <c>expectedRevision</c> is optional.</summary>

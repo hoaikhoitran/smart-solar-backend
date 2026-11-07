@@ -386,6 +386,12 @@ public sealed class SimulationSelectionTests
         Assert.True(read.Simulation.IsSelected);
         Assert.Equal(simulation.Layout.Details.Placements.Count, read.Simulation.Layout.Details.Placements.Count);
         Assert.Equal(simulation.Energy.Monthly.Count, read.Simulation.Energy.Monthly.Count);
+        // Surfaces, obstacles, placements, shading and energy all survive the cache expiry.
+        Assert.Equal(simulation.Surface.Obstacles.Count, read.Simulation.Surface.Obstacles.Count);
+        Assert.Equal(simulation.Shading!.Status, read.Simulation.Shading!.Status);
+        Assert.Equal(simulation.Shading.Panels, read.Simulation.Shading.Panels);
+        Assert.Equal(simulation.Energy.AnnualEnergyKwh, read.Simulation.Energy.AnnualEnergyKwh);
+        Assert.Equal(simulation.Energy.AnnualEnergyBeforeShadingKwh, read.Simulation.Energy.AnnualEnergyBeforeShadingKwh);
     }
 
     [Fact]

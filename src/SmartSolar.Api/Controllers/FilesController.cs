@@ -23,6 +23,7 @@ public sealed class FilesController(FileService files, FileUploadUrlService uplo
     /// Step 1 of an upload: a short-lived presigned PUT URL for a new object key under the caller's own prefix. Then PUT the
     /// bytes to that URL with the returned headers (no Bearer token), and register the key with POST /api/files.
     /// </summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Files.UploadUrlView>), StatusCodes.Status200OK)]
     [HttpPost("presigned-upload")]
     [EnableRateLimiting(RateLimitingExtensions.FilesWritePolicy)]
     public async Task<IActionResult> PresignedUpload([FromBody] PresignedUploadRequest request, CancellationToken cancellationToken)
@@ -33,6 +34,7 @@ public sealed class FilesController(FileService files, FileUploadUrlService uplo
             request.ContentType ?? "", request.SizeBytes), cancellationToken));
     }
 
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Files.FileView>), StatusCodes.Status201Created)]
     [HttpPost]
     [EnableRateLimiting(RateLimitingExtensions.FilesWritePolicy)]
     public async Task<IActionResult> Register([FromBody] RegisterFileRequest request, CancellationToken cancellationToken)
@@ -42,11 +44,13 @@ public sealed class FilesController(FileService files, FileUploadUrlService uplo
             : UnauthorizedFailure();
 
     /// <summary>Retries verification of a PENDING_VERIFICATION file (for example after storage was unreachable).</summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Files.FileView>), StatusCodes.Status200OK)]
     [HttpPost("{fileId:guid}/verify")]
     [EnableRateLimiting(RateLimitingExtensions.FilesWritePolicy)]
     public async Task<IActionResult> Verify(Guid fileId, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await files.VerifyAsync(fileId, user, IsStaff(), cancellationToken)) : UnauthorizedFailure();
 
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Files.FileView>), StatusCodes.Status200OK)]
     [HttpGet("{fileId:guid}")]
     [EnableRateLimiting(RateLimitingExtensions.FilesReadPolicy)]
     public async Task<IActionResult> Get(Guid fileId, CancellationToken cancellationToken)

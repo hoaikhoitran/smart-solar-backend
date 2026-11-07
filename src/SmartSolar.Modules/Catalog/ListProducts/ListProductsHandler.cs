@@ -22,6 +22,19 @@ public sealed class ListProductsHandler
     public Task<PagedResult<ProductDto>> HandleAsync(
         ListProductsQuery query,
         CancellationToken cancellationToken)
+        => _unitOfWork.ListActiveProductsAsync(ToCriteria(query), cancellationToken);
+
+    /// <summary>
+    /// ADMIN/MANAGER list: products in <paramref name="status"/> (null = ACTIVE and INACTIVE), so an inactive product can be
+    /// found again and reactivated. Soft-deleted products are never listed.
+    /// </summary>
+    public Task<PagedResult<ProductDto>> HandleForManagementAsync(
+        ListProductsQuery query,
+        Enums.ProductStatus? status,
+        CancellationToken cancellationToken)
+        => _unitOfWork.ListManagedProductsAsync(ToCriteria(query), status, cancellationToken);
+
+    private static ProductSearchCriteria ToCriteria(ListProductsQuery query)
     {
         // Without an explicit sort the newest products come first; an explicit
         // sort field defaults to ascending.
@@ -33,7 +46,7 @@ public sealed class ListProductsHandler
             ? query.SortBy is null
             : string.Equals(query.SortDirection, ProductSortOptions.Descending, StringComparison.OrdinalIgnoreCase);
 
-        var criteria = new ProductSearchCriteria(
+        return new ProductSearchCriteria(
             NullIfBlank(query.Search),
             NullIfBlank(query.ProductType) is { } productType ? ProductTypes.Normalize(productType) : null,
             NullIfBlank(query.Category),
@@ -46,8 +59,6 @@ public sealed class ListProductsHandler
             query.PageSize,
             sortBy,
             descending);
-
-        return _unitOfWork.ListActiveProductsAsync(criteria, cancellationToken);
     }
 
     private static string? NullIfBlank(string? value)

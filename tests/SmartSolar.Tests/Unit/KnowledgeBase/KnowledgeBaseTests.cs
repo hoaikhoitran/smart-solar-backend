@@ -222,7 +222,7 @@ public sealed class KnowledgeBaseTests
         await rig.Ingestion().RunDueAsync(10, None);
         var user = await rig.AdminAsync();
 
-        var answer = await rig.Chat().AskAsync(user, null, "Tấm pin bảo hành bao lâu?", "m1", None);
+        var answer = await rig.Chat().AskAsync(user, null, "Tấm pin bảo hành bao lâu?", "m1", None, KnowledgeAudience.Staff);
         Assert.True(answer.Succeeded, answer.Message);
         Assert.True(answer.Value!.Grounded);
         var citation = Assert.Single(answer.Value.Answer.Citations);
@@ -231,12 +231,12 @@ public sealed class KnowledgeBaseTests
         Assert.Equal(doc.Versions![0].VersionId, Assert.Single(rig.Rag.LastAnswerRequest!.AllowedVersions).VersionId);
         Assert.False(string.IsNullOrWhiteSpace(answer.Value.Notice));
 
-        var session = await rig.Chat().GetSessionAsync(user, answer.Value.SessionId, None);
+        var session = await rig.Chat().GetSessionAsync(user, answer.Value.SessionId, None, KnowledgeAudience.Staff);
         Assert.Equal(2, session.Value!.Messages.Count);
         Assert.Single(await rig.Chat().ListSessionsAsync(user, None));
         // Another user cannot read the session.
-        Assert.Equal(KnowledgeErrorCodes.SessionNotFound, (await rig.Chat().GetSessionAsync(admin, answer.Value.SessionId, None)).ErrorCode);
-        Assert.Equal(KnowledgeErrorCodes.SessionNotFound, (await rig.Chat().AskAsync(admin, answer.Value.SessionId, "Hi", null, None)).ErrorCode);
+        Assert.Equal(KnowledgeErrorCodes.SessionNotFound, (await rig.Chat().GetSessionAsync(admin, answer.Value.SessionId, None, KnowledgeAudience.Staff)).ErrorCode);
+        Assert.Equal(KnowledgeErrorCodes.SessionNotFound, (await rig.Chat().AskAsync(admin, answer.Value.SessionId, "Hi", null, None, KnowledgeAudience.Staff)).ErrorCode);
     }
 
     [Fact]
@@ -245,7 +245,7 @@ public sealed class KnowledgeBaseTests
         await using var ctx = InstallationWorkflowTestContext.Create();
         var rig = new Rig(ctx);
         var user = await rig.AdminAsync();
-        var answer = await rig.Chat().AskAsync(user, null, "Giá điện mặt trời?", null, None);
+        var answer = await rig.Chat().AskAsync(user, null, "Giá điện mặt trời?", null, None, KnowledgeAudience.Staff);
         Assert.True(answer.Succeeded);
         Assert.False(answer.Value!.Grounded);
         Assert.Equal(ChatService.InsufficientAnswer, answer.Value.Answer.Content);
@@ -262,7 +262,7 @@ public sealed class KnowledgeBaseTests
         await rig.PublishedAsync(admin);
         rig.Rag.Answer = _ => new RagAnswerResult(true, null, "Chắc là 25 năm.", true, [], 500, 30, "fake", 1, 1);
 
-        var answer = await rig.Chat().AskAsync(admin, null, "Bảo hành inverter?", null, None);
+        var answer = await rig.Chat().AskAsync(admin, null, "Bảo hành inverter?", null, None, KnowledgeAudience.Staff);
         Assert.Equal(ChatService.InsufficientAnswer, answer.Value!.Answer.Content);
         Assert.Empty(answer.Value.Answer.Citations);
     }
@@ -279,7 +279,7 @@ public sealed class KnowledgeBaseTests
             Assert.True((await rig.Documents().UnpublishAsync(doc.DocumentId, doc.Revision, None)).Succeeded);
         };
 
-        var answer = await rig.Chat().AskAsync(admin, null, "Tấm pin bảo hành bao lâu?", null, None);
+        var answer = await rig.Chat().AskAsync(admin, null, "Tấm pin bảo hành bao lâu?", null, None, KnowledgeAudience.Staff);
         Assert.False(answer.Value!.Grounded);
         Assert.Empty(answer.Value.Answer.Citations);
         Assert.Equal(0, await ctx.Db.ChatCitations.CountAsync());
@@ -292,9 +292,9 @@ public sealed class KnowledgeBaseTests
         var rig = new Rig(ctx);
         var admin = await rig.AdminAsync();
         await rig.PublishedAsync(admin);
-        var first = (await rig.Chat().AskAsync(admin, null, "Câu 1", "a", None)).Value!;
-        var second = (await rig.Chat().AskAsync(admin, first.SessionId, "Câu 2", "b", None)).Value!;
-        var retry = (await rig.Chat().AskAsync(admin, first.SessionId, "Câu 2", "b", None)).Value!;
+        var first = (await rig.Chat().AskAsync(admin, null, "Câu 1", "a", None, KnowledgeAudience.Staff)).Value!;
+        var second = (await rig.Chat().AskAsync(admin, first.SessionId, "Câu 2", "b", None, KnowledgeAudience.Staff)).Value!;
+        var retry = (await rig.Chat().AskAsync(admin, first.SessionId, "Câu 2", "b", None, KnowledgeAudience.Staff)).Value!;
 
         Assert.Equal(second.Answer.MessageId, retry.Answer.MessageId);
         Assert.Equal(2, rig.Rag.AnswerCalls);
@@ -313,9 +313,9 @@ public sealed class KnowledgeBaseTests
         var admin = await rig.AdminAsync();
         await rig.PublishedAsync(admin);
 
-        Assert.True((await rig.Chat().AskAsync(admin, null, "1", null, None)).Succeeded);
-        Assert.True((await rig.Chat().AskAsync(admin, null, "2", null, None)).Succeeded);
-        Assert.Equal(KnowledgeErrorCodes.QuotaExceeded, (await rig.Chat().AskAsync(admin, null, "3", null, None)).ErrorCode);
+        Assert.True((await rig.Chat().AskAsync(admin, null, "1", null, None, KnowledgeAudience.Staff)).Succeeded);
+        Assert.True((await rig.Chat().AskAsync(admin, null, "2", null, None, KnowledgeAudience.Staff)).Succeeded);
+        Assert.Equal(KnowledgeErrorCodes.QuotaExceeded, (await rig.Chat().AskAsync(admin, null, "3", null, None, KnowledgeAudience.Staff)).ErrorCode);
         var usage = await ctx.Db.RagUsageDaily.AsNoTracking().SingleAsync(u => u.UserId == admin);
         Assert.Equal(0, await ctx.Db.RagUsageReservations.CountAsync());
         Assert.Equal(2 * 900, usage.InputTokens);
@@ -325,19 +325,19 @@ public sealed class KnowledgeBaseTests
 
         // A new day resets the allowance.
         ctx.Clock.Now += TimeSpan.FromDays(1);
-        Assert.True((await rig.Chat().AskAsync(admin, null, "4", null, None)).Succeeded);
+        Assert.True((await rig.Chat().AskAsync(admin, null, "4", null, None, KnowledgeAudience.Staff)).Succeeded);
 
         // Concurrency: with one generation in flight the second is refused.
         rig.Options.MaxConcurrentGenerationsPerUser = 1;
         var uow = new KnowledgeUnitOfWork(ctx.Db);
         var today = DateOnly.FromDateTime(ctx.Clock.GetUtcNow().UtcDateTime);
         Assert.True((await uow.TryReserveUsageAsync(admin, today, 100, rig.Options, ctx.Clock.GetUtcNow(), ctx.Clock.GetUtcNow().AddMinutes(3), None)).Reserved);
-        Assert.Equal(KnowledgeErrorCodes.TooManyConcurrent, (await rig.Chat().AskAsync(admin, null, "5", null, None)).ErrorCode);
+        Assert.Equal(KnowledgeErrorCodes.TooManyConcurrent, (await rig.Chat().AskAsync(admin, null, "5", null, None, KnowledgeAudience.Staff)).ErrorCode);
 
         // Global token ceiling.
         var someone = await rig.AdminAsync();
         rig.Options.GlobalDailyTokens = 10;
-        Assert.Equal(KnowledgeErrorCodes.QuotaExceeded, (await rig.Chat().AskAsync(someone, null, "6", null, None)).ErrorCode);
+        Assert.Equal(KnowledgeErrorCodes.QuotaExceeded, (await rig.Chat().AskAsync(someone, null, "6", null, None, KnowledgeAudience.Staff)).ErrorCode);
         var refused = await ctx.Db.RagUsageDaily.AsNoTracking().SingleAsync(u => u.UserId == someone);
         Assert.Equal(0, refused.Requests);
         Assert.Equal(0, await ctx.Db.RagUsageReservations.CountAsync(r => r.UserId == someone));
@@ -352,8 +352,8 @@ public sealed class KnowledgeBaseTests
         await rig.PublishedAsync(admin);
         rig.Rag.Unavailable = true;
 
-        Assert.Equal(KnowledgeErrorCodes.ServiceUnavailable, (await rig.Chat().AskAsync(admin, null, "Hello", null, None)).ErrorCode);
-        Assert.Equal(KnowledgeErrorCodes.MessageTooLong, (await rig.Chat().AskAsync(admin, null, new string('a', rig.Options.MaxQuestionCharacters + 1), null, None)).ErrorCode);
+        Assert.Equal(KnowledgeErrorCodes.ServiceUnavailable, (await rig.Chat().AskAsync(admin, null, "Hello", null, None, KnowledgeAudience.Staff)).ErrorCode);
+        Assert.Equal(KnowledgeErrorCodes.MessageTooLong, (await rig.Chat().AskAsync(admin, null, new string('a', rig.Options.MaxQuestionCharacters + 1), null, None, KnowledgeAudience.Staff)).ErrorCode);
         var usage = await ctx.Db.RagUsageDaily.AsNoTracking().SingleAsync(u => u.UserId == admin);
         Assert.Equal(0, await ctx.Db.RagUsageReservations.CountAsync());
         Assert.Equal(0, await ctx.Db.ChatMessages.CountAsync());

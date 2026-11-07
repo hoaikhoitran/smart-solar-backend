@@ -12,5 +12,9 @@ public enum SurveyRequestStatus
     Pending = 1,
     Scheduled = 4,
     Completed = 5,
-    Cancelled = 6
+    /// <summary>Withdrawn by the customer (closure_reason_code CUSTOMER_WITHDREW). Older rows may have no closure metadata.</summary>
+    Cancelled = 6,
+
+    /// <summary>Closed by its Sales owner without an installation (NOT_FEASIBLE, CUSTOMER_DECLINED, NO_RESPONSE, OTHER). Terminal.</summary>
+    Closed = 7
 }

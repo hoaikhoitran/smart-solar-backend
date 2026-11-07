@@ -39,6 +39,10 @@ public sealed class AdministrativeCommuneConfiguration : IEntityTypeConfiguratio
             t.HasCheckConstraint("ck_administrative_commune_code", AdministrativeCatalogSql.DigitsCheck("code", 5));
             t.HasCheckConstraint("ck_administrative_commune_unit_type", $"unit_type IN ({AdministrativeCatalogSql.List(CommuneUnitTypes.All)})");
             t.HasCheckConstraint("ck_administrative_commune_validity", "valid_to IS NULL OR valid_to > valid_from");
+            // A reference point is all three values (latitude, longitude, source) or none, inside the WGS 84 range.
+            t.HasCheckConstraint("ck_administrative_commune_reference_point",
+                "(reference_latitude IS NULL) = (reference_longitude IS NULL) AND (reference_latitude IS NULL) = (reference_point_source IS NULL) "
+                + "AND (reference_latitude IS NULL OR (reference_latitude BETWEEN -90 AND 90 AND reference_longitude BETWEEN -180 AND 180))");
         });
         builder.HasKey(x => x.Code);
         builder.Property(x => x.Code).HasColumnName("code").HasMaxLength(5).ValueGeneratedNever();
@@ -49,6 +53,9 @@ public sealed class AdministrativeCommuneConfiguration : IEntityTypeConfiguratio
         builder.Property(x => x.ValidFrom).HasColumnName("valid_from").IsRequired();
         builder.Property(x => x.ValidTo).HasColumnName("valid_to").IsRequired(false);
         builder.Property(x => x.DatasetKey).HasColumnName("dataset_key").HasMaxLength(100).IsRequired();
+        builder.Property(x => x.ReferenceLatitude).HasColumnName("reference_latitude").HasPrecision(9, 6);
+        builder.Property(x => x.ReferenceLongitude).HasColumnName("reference_longitude").HasPrecision(9, 6);
+        builder.Property(x => x.ReferencePointSource).HasColumnName("reference_point_source").HasMaxLength(300);
         // FK target of property_site (province_code, commune_code): a site can only reference a commune of its own province.
         builder.HasAlternateKey(x => new { x.ProvinceCode, x.Code }).HasName("ux_administrative_commune_province_code");
         builder.HasIndex(x => new { x.ProvinceCode, x.Name }).HasDatabaseName("ix_administrative_commune_province_name");

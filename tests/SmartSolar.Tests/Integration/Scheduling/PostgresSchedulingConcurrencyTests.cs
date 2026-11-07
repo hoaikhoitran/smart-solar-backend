@@ -500,4 +500,37 @@ public sealed class PostgresSchedulingConcurrencyTests
                 : !active && results[0] is SchedulingErrorCodes.NoZoneCoverage or SchedulingErrorCodes.ScheduleConflict or SchedulingErrorCodes.NoZoneTechnician,
             $"booked={booked} active={active} results={string.Join(",", results)}");
     }
+
+    [PostgresFact]
+    public async Task Two_staff_recovering_the_same_overdue_appointment_leave_exactly_one_replacement()
+    {
+        // Arrange: an accepted appointment whose end has passed (overdue).
+        await using var database = await PostgresTestDatabase.CreateAsync();
+        await using var ctx = CreateOn(database.NewContext());
+        var tech = await ctx.SeedTechnicianAsync("Tech", BinhTan);
+        var request = await ctx.SeedSurveyRequestAsync(BinhTan);
+        var appointment = await ctx.BookAsync(request, At(9));
+        Assert.True((await ctx.AcceptAsync(tech.Id, appointment.Id)).Succeeded);
+        var owner = await ctx.ClaimAsync(request);
+        var manager = await ctx.SeedStaffAsync("Manager", RoleCodes.Manager);
+        var overdueNow = (await ctx.AppointmentAsync(appointment.Id)).EndsAt.AddMinutes(1).ToUniversalTime();
+        var nextDay = Day.AddDays(1);
+
+        // Act: the Sales owner and a Manager recover it at the same moment, to different times.
+        var results = await RaceAsync(database, 2, (db, i) =>
+        {
+            var racer = On(db);
+            racer.Clock.Now = overdueNow;
+            return racer.SalesReschedule().HandleAsync(i == 0
+                ? new SalesRescheduleCommand(owner.Id, request.Request.Id, At(10, 0, nextDay), "Sales recovery", null)
+                : new SalesRescheduleCommand(manager.Id, request.Request.Id, At(13, 0, nextDay), "Manager recovery", null, IsManager: true), None);
+        });
+
+        // Assert: one wins; the request has exactly one active appointment, which replaces the overdue one.
+        Assert.Single(results, r => r.Succeeded);
+        await using var check = database.NewContext();
+        var active = await check.TechnicianAppointments.Where(a => a.SurveyRequestId == request.Request.Id && a.Status != AppointmentStatuses.Cancelled).ToListAsync();
+        var replacement = Assert.Single(active);
+        Assert.Equal(replacement.Id, (await check.TechnicianAppointments.SingleAsync(a => a.Id == appointment.Id)).ReplacedByAppointmentId);
+    }
 }

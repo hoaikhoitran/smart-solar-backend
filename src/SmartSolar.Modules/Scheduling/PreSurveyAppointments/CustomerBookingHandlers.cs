@@ -89,14 +89,20 @@ internal static class SlotGrid
 {
     public static async Task<(AppointmentWindow? Window, string? Code, string? Reason)> ResolveAsync(
         ISchedulingUnitOfWork unitOfWork, TechnicianEligibility eligibility, WorkingCalendar calendar, Guid propertySiteId,
-        DateTimeOffset requested, DateTimeOffset now, CancellationToken cancellationToken)
+        DateTimeOffset requested, DateTimeOffset now, CancellationToken cancellationToken, Guid? crossZoneTechnicianId = null)
     {
         var policy = await eligibility.PolicyAsync(cancellationToken);
         var coverage = await unitOfWork.GetSiteCoverageAsync(propertySiteId, cancellationToken);
-        if (AppointmentReservationService.CoverageError(coverage) is { } error) return (null, error.ErrorCode, error.Message);
+        // A job a Manager authorized across zones is planned on its authorized technician's working days, and a missing or
+        // unserviceable zone does not block it (exactly the rule the dispatch itself used).
+        var coverageError = crossZoneTechnicianId is null
+            ? AppointmentReservationService.CoverageError(coverage)
+            : AppointmentAssignmentService.DispatchCoverageError(coverage, crossZone: true);
+        if (coverageError is { } error) return (null, error.ErrorCode, error.Message);
 
         var date = calendar.LocalDateOf(requested);
-        var technicians = await eligibility.LoadDaysAsync(date, new TechnicianScope(ZoneIds: coverage.ZoneIds), cancellationToken);
+        var scope = crossZoneTechnicianId is { } authorized ? new TechnicianScope(TechnicianIds: [authorized]) : new TechnicianScope(ZoneIds: coverage.ZoneIds);
+        var technicians = await eligibility.LoadDaysAsync(date, scope, cancellationToken);
         var windows = calendar.CandidateWindows(date, technicians);
         if (windows.Count == 0) windows = calendar.CandidateWindows(date);   // explain grid errors even with nobody working
         return calendar.TryResolveBookable(requested, now, policy.Booking, windows, out var window, out var reason)
@@ -325,7 +331,8 @@ public sealed class AppointmentMover(
         string? EventReason,
         Guid? AssignTechnicianUserId,
         string? AssignmentReason,
-        Func<SurveyRequestSchedulingContext, DateTimeOffset, bool>? StillAllowed = null);
+        Func<SurveyRequestSchedulingContext, DateTimeOffset, bool>? StillAllowed = null,
+        bool RecoveringOverdue = false);
 
     public async Task<SchedulingResult<AppointmentSnapshot>> MoveAsync(MoveSpec spec, CancellationToken cancellationToken)
     {
@@ -341,10 +348,27 @@ public sealed class AppointmentMover(
         return SchedulingResult<AppointmentSnapshot>.Fail(SchedulingErrorCodes.ConcurrencyConflict, "The appointment changed meanwhile. Reload and try again.");
     }
 
-    /// <summary>A background change only: same row, same start, still changeable, and the caller's own rules still allow it.</summary>
+    /// <summary>
+    /// A background change only: same row, same start, still changeable, still in the future (or, when recovering an overdue
+    /// appointment, still overdue), and the caller's own rules still allow it.
+    /// </summary>
     private bool StillSameChange(MoveSpec spec, SurveyRequestSchedulingContext context, AppointmentSnapshot fresh)
-        => fresh.Id == spec.Current.Id && fresh.StartsAt == spec.Current.StartsAt && AppointmentStatuses.IsChangeable(fresh.Status)
-           && fresh.StartsAt > time.GetUtcNow() && spec.StillAllowed?.Invoke(context, time.GetUtcNow()) != false;
+    {
+        var now = time.GetUtcNow();
+        var timeStillValid = spec.RecoveringOverdue ? AppointmentStatuses.IsOverdue(fresh.Status, fresh.EndsAt, now) : fresh.StartsAt > now;
+        return fresh.Id == spec.Current.Id && fresh.StartsAt == spec.Current.StartsAt && AppointmentStatuses.IsChangeable(fresh.Status)
+               && timeStillValid && spec.StillAllowed?.Invoke(context, now) != false;
+    }
+
+    /// <summary>
+    /// The technician of the appointment when a Manager authorized them across zones for it (the recorded authorization is theirs);
+    /// otherwise null. Only that technician may keep the job outside the zone rule.
+    /// </summary>
+    public static async Task<Guid?> AuthorizedCrossZoneTechnicianAsync(ISchedulingUnitOfWork unitOfWork, AppointmentSnapshot current, CancellationToken cancellationToken)
+        => current.CrossZoneAuthorizationId is { } authorizationId && current.AssignedTechnicianUserId is { } technician
+           && await unitOfWork.GetCrossZoneAuthorizedTechnicianAsync(authorizationId, cancellationToken) == technician
+            ? technician
+            : null;
 
     private async Task<SchedulingResult<AppointmentSnapshot>> MoveOnceAsync(MoveSpec spec, CancellationToken cancellationToken)
     {
@@ -358,9 +382,15 @@ public sealed class AppointmentMover(
         {
             if (keep is { } technician)
             {
-                outcome = await assignments.ReserveForTechnicianAsync(Spec(spec, technician), spec.ActorUserId, Apply(spec, technician), cancellationToken);
+                // A Manager's cross-zone authorization belongs to the technician it was given for: that technician keeps the job across a
+                // reschedule (only the zone rule is skipped, every other rule still applies). It never transfers to another technician, and
+                // a cross-zone job is never silently handed to an in-zone technician: if the authorized one cannot take the new time, the
+                // reschedule is refused and the original appointment stays as it is.
+                var authorized = await AuthorizedCrossZoneTechnicianAsync(unitOfWork, spec.Current, cancellationToken) == technician;
+                outcome = await assignments.ReserveForTechnicianAsync(Spec(spec, technician), spec.ActorUserId, Apply(spec, technician), cancellationToken,
+                    crossZone: authorized);
                 if (outcome.ErrorCode == ApplyResult.StaleCode) return Fail(outcome);
-                if (!outcome.Succeeded && (spec.AssignTechnicianUserId is not null || !SchedulingErrorCodes.IsEligibilityCode(outcome.ErrorCode!)))
+                if (!outcome.Succeeded && (spec.AssignTechnicianUserId is not null || authorized || !SchedulingErrorCodes.IsEligibilityCode(outcome.ErrorCode!)))
                     return SchedulingResult<AppointmentSnapshot>.Fail(outcome.ErrorCode!, outcome.Message! + " The original appointment is unchanged.");
             }
             if (outcome is not { Succeeded: true })
@@ -419,7 +449,8 @@ public sealed class AppointmentMover(
             next.AcceptanceDeadlineAt = old.AcceptanceDeadlineAt;
             next.AcceptanceWindowMinutes = old.AcceptanceWindowMinutes;
             next.SettingsVersion = old.SettingsVersion;
-            next.CrossZoneAuthorizationId = old.CrossZoneAuthorizationId;
+            // The authorization was given for one technician: it follows the job only when that technician keeps it.
+            next.CrossZoneAuthorizationId = technician == old.AssignedTechnicianUserId ? old.CrossZoneAuthorizationId : null;
             if (spec.AssignTechnicianUserId is not null)
             {
                 next.Status = AppointmentStatuses.Assigned;
@@ -485,7 +516,8 @@ public sealed class RescheduleSurveyAppointmentHandler(
         if (await AppointmentMover.OnSiteSurveyStartedAsync(unitOfWork, current, cancellationToken))
             return AppointmentAssignmentService.OnSiteSurveyStarted<BookingConfirmation>();
 
-        var (window, code, reason) = await SlotGrid.ResolveAsync(unitOfWork, eligibility, calendar, context.PropertySiteId, command.StartsAt, now, cancellationToken);
+        var (window, code, reason) = await SlotGrid.ResolveAsync(unitOfWork, eligibility, calendar, context.PropertySiteId, command.StartsAt, now, cancellationToken,
+            await AppointmentMover.AuthorizedCrossZoneTechnicianAsync(unitOfWork, current, cancellationToken));
         if (window is null) return CapacityFailures.Fail<BookingConfirmation>(code!, reason!);
 
         var moved = await mover.MoveAsync(new AppointmentMover.MoveSpec(context, current, window, command.CustomerUserId, command.Note,

@@ -348,4 +348,64 @@ public sealed class AdministrativeCatalogTests
         Assert.DoesNotContain("s3cr3t-value", output.ToString());
         Assert.DoesNotContain("   at ", output.ToString());
     }
+
+    // ------------------------------------------------------------------ commune reference points (optional file)
+
+    /// <summary>Adds commune-reference-points.csv and declares its checksum in the manifest. Coordinates used below are SYNTHETIC.</summary>
+    private static CatalogDatasetFiles WithReferencePoints(string csv, bool declare = true)
+    {
+        var files = AdministrativeCatalogTestData.Files();
+        var bytes = Encoding.UTF8.GetBytes(csv);
+        var map = files.Files.ToDictionary(p => p.Key, p => p.Value);
+        map[CatalogDatasetFiles.ReferencePointsFileName] = bytes;
+        var manifest = System.Text.Json.Nodes.JsonNode.Parse(files.ManifestJson)!;
+        if (declare) manifest["files"]![CatalogDatasetFiles.ReferencePointsFileName] = CatalogDatasetFiles.Sha256(bytes);
+        return new CatalogDatasetFiles(manifest.ToJsonString(), map);
+    }
+
+    private const string PointHeader = "commune_code,latitude,longitude,source\n";
+
+    [Fact]
+    public void Reference_points_are_matched_by_code_inside_viet_nam_with_a_source()
+    {
+        var valid = Validate(WithReferencePoints(PointHeader + "26740,10.776900,106.700900,SYNTHETIC test source\n"));
+        var invalid = Validate(WithReferencePoints(PointHeader
+            + "99999,10.7,106.7,src\n"          // not a commune of the dataset
+            + "26740,48.85,2.35,src\n"          // outside Viet Nam
+            + "26743,10.1234567,106.7,src\n"    // more than 6 decimals
+            + "26824,10.85,106.75,\n"           // no source
+            + "27442,10.76,106.60,src\n27442,10.77,106.61,src\n"));   // ambiguous: two points for one code
+        var undeclared = Validate(WithReferencePoints(PointHeader + "26740,10.7769,106.7009,src\n", declare: false));
+
+        Assert.True(valid.IsValid, string.Join("; ", valid.Errors));
+        Assert.Equal(("26740", 10.776900m, 106.700900m, "SYNTHETIC test source"),
+            (valid.ReferencePoints[0].CommuneCode, valid.ReferencePoints[0].Latitude, valid.ReferencePoints[0].Longitude, valid.ReferencePoints[0].Source));
+        Assert.Contains(invalid.Errors, e => e.Contains(":2:") && e.Contains("not a commune"));
+        Assert.Contains(invalid.Errors, e => e.Contains(":3:") && e.Contains("latitude"));
+        Assert.Contains(invalid.Errors, e => e.Contains(":4:") && e.Contains("latitude"));
+        Assert.Contains(invalid.Errors, e => e.Contains(":5:") && e.Contains("source is required"));
+        Assert.Contains(invalid.Errors, e => e.Contains(":7:") && e.Contains("ambiguous"));
+        Assert.Contains(undeclared.Errors, e => e.Contains("files.commune-reference-points.csv"));
+        Assert.True(Validate(AdministrativeCatalogTestData.Files()).IsValid);   // the file stays optional
+    }
+
+    [Fact]
+    public async Task Applying_reference_points_stores_them_and_communes_without_one_stay_null()
+    {
+        // Arrange: the official catalog is applied first; then the same dataset key with a reference-point file is a new dataset key.
+        await using var ctx = SchedulingTestContext.Create();
+        var files = WithReferencePoints(PointHeader + "26740,10.776900,106.700900,SYNTHETIC test source\n");
+        var manifest = System.Text.Json.Nodes.JsonNode.Parse(files.ManifestJson)!;
+        manifest["datasetKey"] = "vn-2025-07-01-hcm-79-points-test";
+
+        // Act
+        var result = await new AdministrativeCatalogImporter(ctx.Db, ctx.Clock).RunAsync(new CatalogDatasetFiles(manifest.ToJsonString(), files.Files), apply: true, "tester", None);
+        var communes = (await new AdministrativeUnitQueries(ctx.Catalog, ctx.Clock).CommunesAsync("79", null, null, None)).Value!;
+
+        // Assert
+        Assert.True(result.Applied, string.Join("; ", result.Report.Errors.Concat(result.Refusals)));
+        var saiGon = communes.Single(c => c.Code == "26740").ReferencePoint!;
+        Assert.Equal((10.776900m, 106.700900m, "SYNTHETIC test source", "COMMUNE_REFERENCE_POINT"), (saiGon.Latitude, saiGon.Longitude, saiGon.Source, saiGon.Kind));
+        Assert.Equal(167, communes.Count(c => c.ReferencePoint is null));   // no invented coordinates
+    }
 }

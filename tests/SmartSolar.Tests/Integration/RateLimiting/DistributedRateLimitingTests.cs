@@ -170,9 +170,10 @@ public sealed class DistributedRateLimitingTests
     [RedisFact]
     public async Task Two_replicas_backed_by_real_redis_share_one_limit()
     {
+        var instance = $"smartsolar-test-{Guid.NewGuid():N}:";
         var settings = new Dictionary<string, string?>
         {
-            ["Redis:Enabled"] = "true", ["Redis:ConnectionString"] = RedisFactAttribute.ConnectionString, ["Redis:InstanceName"] = $"smartsolar-test-{Guid.NewGuid():N}:",
+            ["Redis:Enabled"] = "true", ["Redis:ConnectionString"] = RedisFactAttribute.ConnectionString, ["Redis:InstanceName"] = instance,
             ["RateLimiting:RagChat:PermitLimit"] = "3",
         };
         using var first = Enabled(new FakeStorageObjectVerifier(), new FakeRagServiceClient(), settings);
@@ -181,10 +182,24 @@ public sealed class DistributedRateLimitingTests
         var clients = new[] { CatalogEndpointsTests.ClientFor(first, RoleCodes.Customer, user), CatalogEndpointsTests.ClientFor(second, RoleCodes.Customer, user) };
 
         var statuses = new List<HttpStatusCode>();
-        for (var i = 0; i < 6; i++) statuses.Add((await AskAsync(clients[i % 2], i)).StatusCode);
+        var elapsed = new List<long>();
+        for (var i = 0; i < 6; i++)
+        {
+            var started = Environment.TickCount64;
+            statuses.Add((await AskAsync(clients[i % 2], i)).StatusCode);
+            elapsed.Add(Environment.TickCount64 - started);
+        }
 
-        Assert.Equal(3, statuses.Count(s => s == HttpStatusCode.OK));
-        Assert.Equal(3, statuses.Count(s => s == HttpStatusCode.TooManyRequests));
+        // Evidence for a failure: one counter key per fixed window, so a split count means the asks crossed a
+        // window boundary, and a single key at 6 with an extra OK means a replica fell back to its local window.
+        await using var redis = await StackExchange.Redis.ConnectionMultiplexer.ConnectAsync(RedisFactAttribute.ConnectionString!);
+        var server = redis.GetServer(redis.GetEndPoints()[0]);
+        var counters = new List<string>();
+        foreach (var key in server.Keys(pattern: instance + "*ratelimit*")) counters.Add($"{key}={await redis.GetDatabase().StringGetAsync(key)}");
+        var evidence = $"statuses=[{string.Join(", ", statuses.Select((s, i) => $"{(int)s} in {elapsed[i]} ms"))}]; redis=[{string.Join(", ", counters)}]";
+
+        Assert.True(statuses.Count(s => s == HttpStatusCode.OK) == 3, evidence);
+        Assert.True(statuses.Count(s => s == HttpStatusCode.TooManyRequests) == 3, evidence);
     }
 }
 

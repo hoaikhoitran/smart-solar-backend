@@ -24,6 +24,40 @@ public sealed class FakePvEnergyEstimator : IPvEnergyEstimator
         return Handler is null ? Synthetic(request) : await Handler(request, cancellationToken);
     }
 
+    /// <summary>Optional override of the hourly series; default returns <see cref="SyntheticHourly"/>.</summary>
+    public Func<PvHourlyRequest, CancellationToken, Task<PvHourlyResult>>? HourlyHandler { get; set; }
+
+    private readonly List<PvHourlyRequest> _hourlyRequests = new();
+
+    public IReadOnlyList<PvHourlyRequest> HourlyRequests { get { lock (_gate) return _hourlyRequests.ToList(); } }
+
+    public async Task<PvHourlyResult> GetHourlySeriesAsync(PvHourlyRequest request, CancellationToken cancellationToken)
+    {
+        lock (_gate) _hourlyRequests.Add(request);
+        return HourlyHandler is null ? SyntheticHourly(request) : await HourlyHandler(request, cancellationToken);
+    }
+
+    /// <summary>
+    /// SYNTHETIC hourly series (not PVGIS data): one row per UTC hour of <c>years</c> years from the request's start year.
+    /// With the sun height h at mid-hour: Gb = 800·sin h, Gd = 100·sin h + 20, Gr = 10 (W/m², daytime only) and
+    /// P = kWp·1000·0.8·(Gb + Gd + Gr)/1000 W. H_sun is the computed sun height at the row timestamp (minute 10).
+    /// </summary>
+    public static PvHourlyResult SyntheticHourly(PvHourlyRequest request, int? years = null)
+    {
+        var rows = new List<PvHourlyRecord>();
+        var last = years is { } n ? request.StartYear + n - 1 : request.EndYear;
+        for (var t = new DateTimeOffset(request.StartYear, 1, 1, 0, 0, 0, TimeSpan.Zero); t.Year <= last; t = t.AddHours(1))
+        {
+            var mid = SmartSolar.Modules.SolarSimulation.Shading.SunPositionCalculator.Calculate((double)request.Latitude, (double)request.Longitude, t.AddMinutes(30));
+            var stamp = SmartSolar.Modules.SolarSimulation.Shading.SunPositionCalculator.Calculate((double)request.Latitude, (double)request.Longitude, t.AddMinutes(10));
+            var sin = Math.Max(0, Math.Sin(mid.ElevationDegree * Math.PI / 180));
+            double gb = 800 * sin, gd = sin > 0 ? 100 * sin + 20 : 0, gr = sin > 0 ? 10 : 0;
+            rows.Add(new PvHourlyRecord(t, 10, (double)request.PeakPowerKwp * 1000 * 0.8 * (gb + gd + gr) / 1000, gb, gd, gr, stamp.ElevationDegree));
+        }
+        return PvHourlyResult.Success(new PvHourlySeries(rows, new PvProviderMetadata("PVGIS", "5.3", "SYNTHETIC-DB", "SYNTHETIC", request.StartYear, last,
+            "SYNTHETIC", request.MountingPlace, "crystSi", true, request.PeakPowerKwp, request.SystemLossPercent, request.TiltDegree, 0m, DateTimeOffset.UtcNow)));
+    }
+
     public static PvEnergyResult Synthetic(PvEnergyRequest request)
     {
         var yield = request.MountingPlace == PvgisMountingPlaces.Building ? 1400m : 1450m;

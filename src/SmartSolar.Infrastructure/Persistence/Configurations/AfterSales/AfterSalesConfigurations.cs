@@ -260,6 +260,11 @@ public sealed class ServiceItemConfiguration : IEntityTypeConfiguration<ServiceI
         {
             t.HasCheckConstraint("ck_service_item_coverage", $"coverage IN ({AfterSalesSql.In(ItemCoverages.All)})");
             t.HasCheckConstraint("ck_service_item_status", $"status IN ({AfterSalesSql.In(ItemStatuses.All)})");
+            // Manufacturer coverage only with a computed equipment warranty end, never on a guessed or missing date.
+            t.HasCheckConstraint("ck_service_item_manufacturer_warranty",
+                $"coverage <> '{ItemCoverages.ManufacturerWarranty}' OR equipment_warranty_ends_at IS NOT NULL");
+            t.HasCheckConstraint("ck_service_item_equipment_warranty_source",
+                $"equipment_warranty_source IS NULL OR equipment_warranty_source IN ({AfterSalesSql.In(SmartSolar.Modules.Installations.EquipmentWarrantySources.All)})");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -273,6 +278,9 @@ public sealed class ServiceItemConfiguration : IEntityTypeConfiguration<ServiceI
         builder.Property(x => x.IsSupplementary).HasColumnName("is_supplementary").IsRequired();
         builder.Property(x => x.QuotationId).HasColumnName("quotation_id");
         builder.Property(x => x.CoverageReason).HasColumnName("coverage_reason").HasMaxLength(1000);
+        builder.Property(x => x.EquipmentWarrantyMonths).HasColumnName("equipment_warranty_months");
+        builder.Property(x => x.EquipmentWarrantySource).HasColumnName("equipment_warranty_source").HasMaxLength(30);
+        builder.Property(x => x.EquipmentWarrantyEndsAt).HasColumnName("equipment_warranty_ends_at");
         builder.Property(x => x.WorkResult).HasColumnName("work_result").HasMaxLength(2000);
         builder.Property(x => x.PartsUsed).HasColumnName("parts_used").HasMaxLength(1000);
         builder.Property(x => x.ReportedByUserId).HasColumnName("reported_by_user_id").IsRequired();

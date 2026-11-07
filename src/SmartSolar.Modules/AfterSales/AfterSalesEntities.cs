@@ -348,6 +348,13 @@ public sealed class ServiceItem
 
     public Guid? QuotationId { get; set; }
     public string? CoverageReason { get; set; }
+
+    // ---- equipment (manufacturer) warranty facts of the item's asset, snapshotted when the coverage is decided (history, not live data)
+    public int? EquipmentWarrantyMonths { get; set; }
+    public string? EquipmentWarrantySource { get; set; }
+    /// <summary>Null while the manufacturer-warranty start rule is undecided; MANUFACTURER_WARRANTY coverage requires it (database check).</summary>
+    public DateTimeOffset? EquipmentWarrantyEndsAt { get; set; }
+
     public string? WorkResult { get; set; }
     public string? PartsUsed { get; set; }
     public Guid ReportedByUserId { get; set; }
@@ -371,7 +378,14 @@ public static class ItemCoverages
 
     public const string Chargeable = "CHARGEABLE";
 
-    public static readonly IReadOnlyList<string> All = [Pending, InstallationWarranty, RepairWarranty, DisasterProtection, Chargeable];
+    /// <summary>
+    /// Covered by the equipment manufacturer's warranty: a category separate from the installation (workmanship) warranty. Not decidable
+    /// yet: the warranty start rule and the claim handling / payer are undecided, so the handler refuses it and the database requires a
+    /// computed equipment warranty end.
+    /// </summary>
+    public const string ManufacturerWarranty = "MANUFACTURER_WARRANTY";
+
+    public static readonly IReadOnlyList<string> All = [Pending, InstallationWarranty, RepairWarranty, DisasterProtection, Chargeable, ManufacturerWarranty];
 
     /// <summary>Coverages that need a customer quotation.</summary>
     public static bool NeedsQuotation(string coverage) => coverage is Chargeable or DisasterProtection;
@@ -716,6 +730,12 @@ public static class AfterSalesErrorCodes
 {
     public const string ProjectNotFound = "AFTER_SALES_PROJECT_NOT_FOUND";
     public const string NotHandedOver = "AFTER_SALES_NOT_HANDED_OVER";
+    /// <summary>MANUFACTURER_WARRANTY cannot be decided until its start rule and claim handling are approved (409).</summary>
+    public const string ManufacturerWarrantyPolicyPending = "AFTER_SALES_MANUFACTURER_WARRANTY_POLICY_PENDING";
+    /// <summary>The asset's warranty duration is not verified catalog data (legacy or none): no dates are derived from it (409).</summary>
+    public const string WarrantySourceUnverified = "AFTER_SALES_WARRANTY_SOURCE_UNVERIFIED";
+    /// <summary>The activation date is already recorded; changing it is not a defined process (409).</summary>
+    public const string WarrantyActivationRecorded = "AFTER_SALES_WARRANTY_ACTIVATION_RECORDED";
     public const string RequestNotFound = "SERVICE_REQUEST_NOT_FOUND";
     public const string ItemNotFound = "SERVICE_ITEM_NOT_FOUND";
     public const string VisitNotFound = "SERVICE_VISIT_NOT_FOUND";

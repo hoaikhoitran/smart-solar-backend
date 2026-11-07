@@ -1,3 +1,4 @@
+using SmartSolar.Modules.Common.Time;
 using SmartSolar.Modules.Common.Persistence;
 using SmartSolar.Modules.Common.Results;
 using SmartSolar.Modules.Installations;
@@ -30,6 +31,8 @@ public sealed class ServiceManagerHandlers(
     InstallationSchedulePlanner planner,
     ISchedulingPolicyProvider policies,
     AfterSalesViews views,
+    WorkingCalendar calendar,
+    SmartSolar.Modules.Files.FileService files,
     TimeProvider time)
 {
     // ================================================================== queries
@@ -82,7 +85,7 @@ public sealed class ServiceManagerHandlers(
             var latest = entitlement.ExtendedUntil ?? term.EndsAt!.Value;
             if (input.CompanyCaused) latest = term.EndsAt!.Value.AddDays(policy.Get(AfterSalesSettingKeys.DelayedMaintenanceExtensionDays));
             if (startsAt < entitlement.PeriodStartsAt || endsAt > latest)
-                return Fail(AfterSalesErrorCodes.OutsidePeriod, $"The visit must be between {entitlement.PeriodStartsAt:O} and {latest:O}.");
+                return Fail(AfterSalesErrorCodes.OutsidePeriod, $"The visit must be between {DisplayTime.Format(entitlement.PeriodStartsAt, calendar.TimeZone)} and {DisplayTime.Format(latest, calendar.TimeZone)}.");
             if (input.CompanyCaused && endsAt > term.EndsAt) extendedUntil = latest;
         }
 
@@ -151,11 +154,11 @@ public sealed class ServiceManagerHandlers(
                 else if (openVisit is not null) detail += $"; moved: {reason}";
                 AfterSalesHistory.Record(data, EventSubjects.Request, requestId, openVisit is null ? "VISIT_SCHEDULED" : "VISIT_RESCHEDULED", managerUserId, detail, now);
                 AfterSalesWorkflow.Move(data, tracked, ServiceRequestStatuses.Scheduled, managerUserId, null, now);
-                AfterSalesHistory.Notify(data, input.TechnicianUserId, "VISIT_ASSIGNED", $"New {purpose} visit {tracked.RequestNumber} on {startsAt:O}.", now, requestId);
+                AfterSalesHistory.Notify(data, input.TechnicianUserId, "VISIT_ASSIGNED", $"New {purpose} visit {tracked.RequestNumber} on {DisplayTime.Format(startsAt, calendar.TimeZone)}.", now, requestId);
                 AfterSalesHistory.Notify(data, tracked.CustomerUserId, "VISIT_SCHEDULED",
                     visit.CustomerConfirmationRequired
-                        ? $"We propose {startsAt:O} for {tracked.RequestNumber}; please confirm the appointment."
-                        : $"Your {purpose.ToLowerInvariant()} visit for {tracked.RequestNumber} is planned for {startsAt:O}.", now, requestId);
+                        ? $"We propose {DisplayTime.Format(startsAt, calendar.TimeZone)} for {tracked.RequestNumber}; please confirm the appointment."
+                        : $"Your {purpose.ToLowerInvariant()} visit for {tracked.RequestNumber} is planned for {DisplayTime.Format(startsAt, calendar.TimeZone)}.", now, requestId);
                 await data.SaveChangesAsync(token);
                 return (OperationResult<bool>.Ok(true), true);
             }, cancellationToken);
@@ -223,15 +226,32 @@ public sealed class ServiceManagerHandlers(
                     ItemCoverages.InstallationWarranty when !request.WithinInstallationWarranty => "The installation warranty had ended when the fault was reported.",
                     ItemCoverages.RepairWarranty when !request.WithinRepairWarranty => "No paid-repair warranty covered this installation when the fault was reported.",
                     ItemCoverages.DisasterProtection when claim?.Status != ClaimStatuses.Approved => "Approve the disaster-protection claim first.",
+                    ItemCoverages.ManufacturerWarranty => null,
                     ItemCoverages.Chargeable or ItemCoverages.InstallationWarranty or ItemCoverages.RepairWarranty or ItemCoverages.DisasterProtection => null,
                     _ => "Unknown coverage.",
                 };
                 if (problem is not null) return Bad(problem);
+                // Manufacturer warranty is its own category, but not decidable yet: when it starts and who handles / pays the claim are undecided.
+                if (decision.Coverage == ItemCoverages.ManufacturerWarranty)
+                    return OperationResult<bool>.Fail(AfterSalesErrorCodes.ManufacturerWarrantyPolicyPending,
+                        "Manufacturer-warranty coverage cannot be decided yet: its start rule and claim handling are not approved. Record the facts and decide another category or wait.");
+                var asset = item.AssetId is { } linked ? await data.FindAssetAsync(linked, false, token) : null;
+                // Snapshot of the equipment-warranty facts the decision was made with (later catalog or asset changes do not rewrite it).
+                item.EquipmentWarrantyMonths = asset?.WarrantyMonths;
+                item.EquipmentWarrantySource = asset?.WarrantySource;
+                item.EquipmentWarrantyEndsAt = asset?.WarrantyEndsAt;
                 item.Coverage = decision.Coverage;
                 item.CoverageReason = Text.Trim(decision.Reason, 1000);
                 if (!ItemCoverages.NeedsQuotation(item.Coverage)) item.Status = ItemStatuses.Authorized;
                 item.UpdatedAt = now;
-                AfterSalesHistory.Record(data, EventSubjects.Request, requestId, "COVERAGE_DECIDED", managerUserId, $"item {item.Id}: {item.Coverage}; {item.CoverageReason}", now);
+                // The decision names the category it used; the item's equipment (manufacturer) warranty is recorded as a separate fact, so an
+                // ended installation warranty is never mistaken for an ended equipment warranty. Who handles a manufacturer claim is not defined yet.
+                var equipment = asset is null ? "no installed asset linked"
+                    : asset.WarrantyMonths is { } months
+                        ? $"equipment warranty {months} months ({asset.WarrantySource ?? "unknown source"}), start not determined, asset registered {asset.RegisteredAt:yyyy-MM-dd} UTC"
+                        : "equipment warranty unknown (no catalog warranty)";
+                AfterSalesHistory.Record(data, EventSubjects.Request, requestId, "COVERAGE_DECIDED", managerUserId,
+                    $"item {item.Id}: {item.Coverage}; {item.CoverageReason}; considered: {equipment}", now);
             }
             // Work already on site (a supplementary item found during repair) does not change the request status until the report.
             if (request.Status is not (ServiceRequestStatuses.InProgress or ServiceRequestStatuses.Scheduled))
@@ -434,6 +454,50 @@ public sealed class ServiceManagerHandlers(
         }
     }
 
+    /// <summary>
+    /// Records the verified, product-specific activation (start) date of an asset's manufacturer warranty, with the verified document that
+    /// proves it and a reason. Only for a duration that comes from the catalog product (never from an unverified legacy value). The end is
+    /// start + catalog months in the business calendar. Recorded once: a correction process is not defined. This makes eligibility a fact;
+    /// it does not decide coverage, which stays refused until the claim handling and payer are approved.
+    /// </summary>
+    public async Task<OperationResult<AssetView>> RecordWarrantyActivationAsync(Guid managerUserId, Guid assetId, DateTimeOffset? activatedAt, Guid? evidenceFileId,
+        string? reason, CancellationToken cancellationToken)
+    {
+        var why = Text.Trim(reason, 500);
+        if (why is null) return OperationResult<AssetView>.Fail(AfterSalesErrorCodes.ReasonRequired, "A reason is required.");
+        if (activatedAt is not { } start || start > time.GetUtcNow())
+            return OperationResult<AssetView>.Fail(AfterSalesErrorCodes.ValidationFailed, "activatedAt is required and cannot be in the future.");
+        if (evidenceFileId is not { } fileId)
+            return OperationResult<AssetView>.Fail(AfterSalesErrorCodes.ValidationFailed, "A verified document proving the activation date is required.");
+        var verified = await files.RequireVerifiedAsync([fileId], SmartSolar.Modules.Files.FilePurposes.ProjectDocument, null, cancellationToken);
+        if (!verified.Succeeded) return verified.As<AssetView>();
+        var asset = await data.FindAssetAsync(assetId, false, cancellationToken);
+        if (asset is null) return OperationResult<AssetView>.Fail(AfterSalesErrorCodes.AssetNotFound, "Asset was not found.");
+        try
+        {
+            var outcome = await data.ExecuteInTransactionAsync<OperationResult<InstalledAsset>>(async token =>
+            {
+                var tracked = (await data.FindAssetAsync(assetId, true, token))!;
+                if (tracked.WarrantySource != EquipmentWarrantySources.CatalogProduct || tracked.WarrantyMonths is not { } months)
+                    return (OperationResult<InstalledAsset>.Fail(AfterSalesErrorCodes.WarrantySourceUnverified,
+                        "The asset has no verified catalog warranty duration; no end date is derived from an unverified value."), false);
+                if (tracked.WarrantyStartsAt is not null)
+                    return (OperationResult<InstalledAsset>.Fail(AfterSalesErrorCodes.WarrantyActivationRecorded, "The warranty activation date is already recorded."), false);
+                tracked.WarrantyStartsAt = start.ToUniversalTime();
+                tracked.WarrantyEndsAt = AfterSalesRules.AddMonths(start, months, calendar.TimeZone);
+                AfterSalesHistory.Record(data, EventSubjects.Asset, assetId, "WARRANTY_ACTIVATION_RECORDED", managerUserId,
+                    $"start {tracked.WarrantyStartsAt:O}, end {tracked.WarrantyEndsAt:O} ({months} months, catalog); evidence {fileId}; {why}", time.GetUtcNow());
+                await data.SaveChangesAsync(token);
+                return (OperationResult<InstalledAsset>.Ok(tracked), true);
+            }, cancellationToken);
+            return outcome.Succeeded ? OperationResult<AssetView>.Ok(AfterSalesViews.Asset(outcome.Value!)) : outcome.As<AssetView>();
+        }
+        catch (PersistenceConflictException)
+        {
+            return OperationResult<AssetView>.Fail(AfterSalesErrorCodes.WarrantyActivationRecorded, "The asset changed meanwhile. Reload and try again.");
+        }
+    }
+
     // ================================================================== helpers
 
     /// <summary>Cancels open visits, open quotations (support released) and open Sales tasks; frees a maintenance visit for re-booking.</summary>
@@ -447,7 +511,7 @@ public sealed class ServiceManagerHandlers(
         {
             var claim = await data.FindClaimForRequestAsync(request.Id, true, token);
             var term = claim?.SubscriptionId is { } id ? await data.FindSubscriptionAsync(id, true, token) : null;
-            if (claim is not null && term is not null) AfterSalesWorkflow.Release(claim, term, paid.DisasterSupportAmount, now);
+            if (claim is not null && term is not null) AfterSalesWorkflow.Release(data, claim, term, paid.DisasterSupportAmount, now);
             paid.Status = QuotationStatuses.Cancelled;
             paid.UpdatedAt = now;
             paid.Revision++;

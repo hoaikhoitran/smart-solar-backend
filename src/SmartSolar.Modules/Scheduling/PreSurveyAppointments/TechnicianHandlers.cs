@@ -23,12 +23,20 @@ public sealed class TechnicianJobHandlers(
     WorkingCalendar calendar,
     TimeProvider time)
 {
-    public async Task<IReadOnlyList<TechnicianAppointmentListItem>> ListAsync(Guid technicianUserId, CancellationToken cancellationToken)
-        => (await unitOfWork.ListTechnicianAppointmentsAsync(technicianUserId, time.GetUtcNow(), cancellationToken))
-            .Select(x => new TechnicianAppointmentListItem(x.Appointment.Id, x.Appointment.AppointmentType,
+    public Task<IReadOnlyList<TechnicianAppointmentListItem>> ListAsync(Guid technicianUserId, CancellationToken cancellationToken)
+        => ListAsync(technicianUserId, includePast: false, cancellationToken);
+
+    /// <summary>Confirmed jobs: upcoming and overdue ones; <paramref name="includePast"/> adds completed past jobs (history).</summary>
+    public async Task<IReadOnlyList<TechnicianAppointmentListItem>> ListAsync(Guid technicianUserId, bool includePast, CancellationToken cancellationToken)
+    {
+        var now = time.GetUtcNow();
+        var rows = await unitOfWork.ListTechnicianAppointmentsAsync(technicianUserId, now, includePast, cancellationToken);
+        return rows.Select(x => new TechnicianAppointmentListItem(x.Appointment.Id, x.Appointment.AppointmentType,
                 TimeZoneInfo.ConvertTime(x.Appointment.StartsAt, calendar.TimeZone), TimeZoneInfo.ConvertTime(x.Appointment.EndsAt, calendar.TimeZone),
-                x.Appointment.Status, x.Appointment.AssignmentSource, x.PropertyName, x.Province, x.District, x.Appointment.AssignedAt))
+                x.Appointment.Status, x.Appointment.AssignmentSource, x.PropertyName, x.Province, x.District, x.Appointment.AssignedAt,
+                x.Appointment.SurveyRequestId, x.Ward, x.CommuneName, AppointmentStatuses.IsOverdue(x.Appointment.Status, x.Appointment.EndsAt, now)))
             .ToList();
+    }
 
     public async Task<SchedulingResult<TechnicianJobView>> GetAsync(Guid technicianUserId, Guid appointmentId, CancellationToken cancellationToken)
     {
@@ -43,11 +51,12 @@ public sealed class TechnicianJobHandlers(
             a.Status, a.AssignmentSource, a.AssignedAt, a.AcceptedAt, a.CustomerNote, job.SurveyRequestId, a.Revision,
             new TechnicianJobCustomer(job.CustomerName, job.CustomerPhone, job.CustomerEmail),
             new TechnicianJobProperty(job.PropertySiteId, job.PropertyName, job.Province, job.District, job.Ward, job.StreetLine,
-                job.Latitude, job.Longitude, job.InstallationSurfaceType?.ToString(), job.SurfaceMaterial),
+                job.Latitude, job.Longitude, job.InstallationSurfaceType?.ToString().ToUpperInvariant(), job.SurfaceMaterial),
             new TechnicianJobPreSurvey(job.PreSurveyId, job.TotalAreaM2, job.UsableAreaM2, job.SurfaceLengthM, job.SurfaceWidthM,
                 job.TiltDegree, job.AzimuthDegree, job.HasObstruction, SurfaceObstacleSerializer.Deserialize(job.ObstaclesJson)?.Count ?? 0),
             job.SelectedSimulation,
-            job.SelectedSimulation is { } s ? $"/api/pre-surveys/{job.PreSurveyId}/simulations/{s.SimulationId}" : null));
+            job.SelectedSimulation is { } s ? $"/api/pre-surveys/{job.PreSurveyId}/simulations/{s.SimulationId}" : null,
+            AppointmentStatuses.IsOverdue(a.Status, a.EndsAt, time.GetUtcNow())));
     }
 
     /// <summary>Open future appointments in the technician's active zones, each with an advisory canAccept + reason.</summary>
@@ -88,7 +97,7 @@ public sealed class TechnicianJobHandlers(
                 TimeZoneInfo.ConvertTime(a.StartsAt, calendar.TimeZone), TimeZoneInfo.ConvertTime(a.EndsAt, calendar.TimeZone),
                 a.Status, a.AcceptanceDeadlineAt is { } d ? TimeZoneInfo.ConvertTime(d, calendar.TimeZone) : null, a.Revision,
                 ZoneView.From(row.Zone), row.PropertyName, row.Province, row.District, row.Ward,
-                row.InstallationSurfaceType?.ToString(), row.TotalAreaM2, row.UsableAreaM2, reason is null, reason, rehoming));
+                row.InstallationSurfaceType?.ToString().ToUpperInvariant(), row.TotalAreaM2, row.UsableAreaM2, reason is null, reason, rehoming));
         }
         return views.OrderBy(v => v.StartsAt).ToList();
     }

@@ -234,12 +234,7 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
     private static async Task PopulateEveryTableAsync(InstallationWorkflowTestContext ctx, InstallationTests.Paid paid, Guid projectId, Guid leader)
     {
         var installs = ctx.Installations();
-        var view = (await installs.GetForManagerAsync(projectId, None)).Value!;
-        var document = await ctx.VerifiedFileAsync(paid.ManagerId, SmartSolar.Modules.Files.FilePurposes.ProjectDocument, "pdf");
-        var item = view.Checklist![0];
-        var satisfied = await installs.UpdateChecklistItemAsync(paid.ManagerId, projectId, item.ItemId, view.Revision,
-            new ChecklistUpdate(item.IsRequired, ChecklistStatuses.Satisfied, document, "Approved"), None);
-        Assert.True(satisfied.Succeeded, satisfied.Message);
+        await InstallationTests.SatisfyPrerequisitesAsync(ctx, projectId);
 
         ctx.Clock.Now = At(8, 30, Day.AddDays(1)).ToUniversalTime();
         Assert.True((await installs.StartProjectAsync(leader, projectId, None)).Succeeded);
@@ -247,8 +242,12 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
         Assert.True((await InstallationTests.RegisterPanelAndInverterAsync(ctx, projectId, leader)).Succeeded);
         var catalogPanel = await ctx.ProductAsync("PG-ASSET-PNL", 2_000_000m);
         Assert.True((await installs.RegisterAssetsAsync(leader, projectId,
-            [new AssetInput("PANEL", catalogPanel.Id, "Jinko", "Tiger Neo 550", "JK-CATALOG-001", "R2-C1", 144)], None)).Succeeded);
+            [new AssetInput("PANEL", catalogPanel.Id, "Jinko", "Tiger Neo 550", "JK-CATALOG-001", "R2-C1", null)], None)).Succeeded);
+        // The extra, uncontracted panel is a substitution: Manager approval before the report, customer agreement before the handover.
+        var revision = (await installs.GetForManagerAsync(projectId, None)).Value!.Revision;
+        Assert.True((await installs.ApproveSubstitutionAsync(paid.ManagerId, projectId, revision, "Extra panel agreed on site", None)).Succeeded);
         Assert.True((await installs.ReportCompletionAsync(leader, projectId, "All panels installed.", null, None)).Succeeded);
+        Assert.True((await installs.CustomerApproveSubstitutionAsync(paid.CustomerId, projectId, None)).Succeeded);
         var accepted = await installs.DecideAcceptanceAsync(paid.CustomerId, projectId, true, null, None);
         Assert.True(accepted.Succeeded, accepted.Message);
 
@@ -282,7 +281,9 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
         await new SmartSolar.Modules.KnowledgeBase.KnowledgeIngestionService(uow, new SmartSolar.Infrastructure.Persistence.FileStore(ctx.Db), rag, options, ctx.Clock,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<SmartSolar.Modules.KnowledgeBase.KnowledgeIngestionService>.Instance).RunDueAsync(10, None);
         var ready = (await documents.GetAsync(doc.DocumentId, None)).Value!;
-        Assert.True((await documents.PublishAsync(doc.DocumentId, ready.Versions![0].VersionId, ready.Revision, None)).Succeeded);
+        var published = (await documents.PublishAsync(doc.DocumentId, ready.Versions![0].VersionId, ready.Revision, None)).Value!;
+        Assert.True((await documents.SetAudienceAsync(admin, doc.DocumentId, published.Revision, SmartSolar.Modules.KnowledgeBase.KnowledgeAudiences.Customer,
+            "Customer-safe warranty FAQ", None)).Succeeded);
         var chat = new SmartSolar.Modules.KnowledgeBase.ChatService(uow, rag, options, ctx.Clock,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<SmartSolar.Modules.KnowledgeBase.ChatService>.Instance);
         var answer = await chat.AskAsync(paid.CustomerId, null, "Bảo hành bao lâu?", "q-1", None);
@@ -292,6 +293,26 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
         Assert.True((await uow.TryReserveUsageAsync(paid.CustomerId, DateOnly.FromDateTime(now.UtcDateTime), 100, options, now, now.AddMinutes(3), None)).Reserved);
 
         await PopulateRevisionBranchesAsync(ctx);
+        await PopulateTerminalBranchAsync(ctx);
+    }
+
+    /// <summary>A third request: its quotation rejected by the customer, a revision draft, then the request withdrawn (M-1 rows and foreign keys).</summary>
+    private static async Task PopulateTerminalBranchAsync(InstallationWorkflowTestContext ctx)
+    {
+        ctx.Clock.Now = DefaultNow.ToUniversalTime();
+        var (survey, issued) = await QuotationTests.IssuedAsync(ctx, "Third customer");
+        var quotations = ctx.Quotations();
+        Assert.True((await quotations.RejectAsync(survey.Request.Customer.Id, issued.QuotationId, "Too expensive", None)).Succeeded);
+        Assert.True((await quotations.CreateRevisionAsync(survey.Sales.Id, issued.QuotationId, None)).Succeeded);
+        var withdrawn = await quotations.WithdrawRequestAsync(survey.Request.Customer.Id, survey.Request.Request.Id, "Moving", None);
+        Assert.True(withdrawn.Succeeded, withdrawn.Message);
+
+        // M-7: a fourth request whose initial DRAFT contract is discarded, then the request is closed.
+        ctx.Clock.Now = DefaultNow.ToUniversalTime();
+        var ready = await ContractTests.AcceptedQuotationAsync(ctx, "Fourth customer");
+        var draft = (await ctx.Contracts().CreateAsync(ready.Survey.Sales.Id, ready.QuotationId, "Terms", None)).Value!;
+        Assert.True((await ctx.Contracts().DiscardAsync(ready.Survey.Sales.Id, draft.ContractId, draft.Revision, "Customer withdrew", None)).Succeeded);
+        Assert.True((await quotations.CloseRequestAsync(ready.Survey.Sales.Id, ready.Survey.Request.Request.Id, "CUSTOMER_DECLINED", null, None)).Succeeded);
     }
 
     /// <summary>A second request: on-site amendment with a file, quotation document and revision, contract amendment.</summary>
@@ -309,12 +330,17 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
         var quotations = ctx.Quotations();
         var pdf = await ctx.VerifiedFileAsync(survey.Sales.Id, SmartSolar.Modules.Files.FilePurposes.QuotationDocument, "pdf");
         Assert.True((await quotations.AttachDocumentAsync(survey.Sales.Id, issued.QuotationId, pdf, None)).Succeeded);
+        // The amendment made the issued v1 outdated: Sales revises it, confirms the lines against survey v2, issues and the customer accepts v2.
         var revision = await quotations.CreateRevisionAsync(survey.Sales.Id, issued.QuotationId, None);
         Assert.True(revision.Succeeded, revision.Message);
-        Assert.True((await quotations.AcceptAsync(survey.Request.Customer.Id, issued.QuotationId, None)).Succeeded);
+        var confirmed = await quotations.ConfirmSurveyVersionAsync(survey.Sales.Id, revision.Value!.QuotationId, revision.Value.Revision, "Re-measured roof checked", None);
+        Assert.True(confirmed.Succeeded, confirmed.Message);
+        var v2 = await quotations.IssueAsync(survey.Sales.Id, confirmed.Value!.QuotationId, confirmed.Value.Revision, None);
+        Assert.True(v2.Succeeded, v2.Message);
+        Assert.True((await quotations.AcceptAsync(survey.Request.Customer.Id, v2.Value!.QuotationId, None)).Succeeded);
 
         var contracts = ctx.Contracts();
-        var draft = (await contracts.CreateAsync(survey.Sales.Id, issued.QuotationId, "Terms", None)).Value!;
+        var draft = (await contracts.CreateAsync(survey.Sales.Id, v2.Value.QuotationId, "Terms", None)).Value!;
         var contract = (await contracts.IssueAsync(survey.Sales.Id, draft.ContractId, draft.Revision, None)).Value!;
         var amendment = await contracts.CreateAmendmentAsync(survey.Sales.Id, contract.ContractId, "Amended terms", None);
         Assert.True(amendment.Succeeded, amendment.Message);

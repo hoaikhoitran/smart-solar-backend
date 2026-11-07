@@ -52,12 +52,14 @@ public sealed class CustomerAfterSalesController(
     public async Task<IActionResult> List(CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Ok(Contracts.ApiResponse<object>.Success(await requests.ListAsync(user, cancellationToken), HttpContext.GetTraceId())) : UnauthorizedFailure();
 
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.AfterSales.ServiceRequestView>), StatusCodes.Status200OK)]
     [HttpGet("requests/{requestId:guid}")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> Get(Guid requestId, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await requests.GetAsync(user, requestId, cancellationToken)) : UnauthorizedFailure();
 
     /// <summary>A short-lived presigned GET URL for one evidence photo of the customer's own request (ids come from the request's <c>evidence</c>).</summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Files.AttachedFileUrlView>), StatusCodes.Status200OK)]
     [HttpGet("requests/{requestId:guid}/evidence/{evidenceId:guid}/url")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> EvidenceUrl(Guid requestId, Guid evidenceId, [FromQuery] string? disposition, CancellationToken cancellationToken)
@@ -183,12 +185,14 @@ public sealed class TechnicianAfterSalesController(TechnicianServiceHandlers vis
     public async Task<IActionResult> List(CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Ok(Contracts.ApiResponse<object>.Success(await visits.ListAsync(user, cancellationToken), HttpContext.GetTraceId())) : UnauthorizedFailure();
 
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.AfterSales.TechnicianVisitView>), StatusCodes.Status200OK)]
     [HttpGet("{visitId:guid}")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> Get(Guid visitId, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await visits.GetAsync(user, visitId, cancellationToken)) : UnauthorizedFailure();
 
     /// <summary>A short-lived presigned GET URL for one evidence photo of the visit's request (ids come from the visit's <c>evidence</c>).</summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Files.AttachedFileUrlView>), StatusCodes.Status200OK)]
     [HttpGet("{visitId:guid}/evidence/{evidenceId:guid}/url")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> EvidenceUrl(Guid visitId, Guid evidenceId, [FromQuery] string? disposition, CancellationToken cancellationToken)
@@ -300,6 +304,7 @@ public sealed class SalesAfterSalesController(SalesTaskHandlers tasks, ServiceQu
         => CurrentUserId() is { } user ? Respond(await tasks.RecordFollowUpAsync(user, taskId, new FollowUpInput(body.ContactedAt, body.Result, body.Note, body.Outcome), cancellationToken))
             : UnauthorizedFailure();
 
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.AfterSales.ServiceRequestView>), StatusCodes.Status200OK)]
     [HttpGet("requests/{requestId:guid}")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> GetRequest(Guid requestId, CancellationToken cancellationToken) => Respond(await requests.GetAsync(requestId, cancellationToken));
@@ -328,11 +333,13 @@ public sealed class ManagerAfterSalesController(ServiceManagerHandlers requests,
     public async Task<IActionResult> List([FromQuery] string? status, [FromQuery] string? kind, CancellationToken cancellationToken)
         => Ok(Contracts.ApiResponse<object>.Success(await requests.ListAsync(status, kind, cancellationToken), HttpContext.GetTraceId()));
 
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.AfterSales.ServiceRequestView>), StatusCodes.Status200OK)]
     [HttpGet("requests/{requestId:guid}")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> Get(Guid requestId, CancellationToken cancellationToken) => Respond(await requests.GetAsync(requestId, cancellationToken));
 
     /// <summary>A short-lived presigned GET URL for one evidence photo of any request.</summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Files.AttachedFileUrlView>), StatusCodes.Status200OK)]
     [HttpGet("requests/{requestId:guid}/evidence/{evidenceId:guid}/url")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> EvidenceUrl(Guid requestId, Guid evidenceId, [FromQuery] string? disposition, CancellationToken cancellationToken)
@@ -389,6 +396,22 @@ public sealed class ManagerAfterSalesController(ServiceManagerHandlers requests,
     [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
     public async Task<IActionResult> NotFulfilled(Guid requestId, [FromBody] ReasonRequest body, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await requests.ConfirmCannotFulfillAsync(user, requestId, body.Reason, cancellationToken)) : UnauthorizedFailure();
+
+    /// <summary>Records the verified manufacturer-warranty activation date of a catalog-warranty asset (once, with a verified document and a reason).</summary>
+    [HttpPost("assets/{assetId:guid}/warranty-activation")]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
+    public async Task<IActionResult> RecordWarrantyActivation(Guid assetId, [FromBody] WarrantyActivationRequest body, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        DateTimeOffset? activatedAt = null;
+        if (body.ActivatedAt is not null)
+        {
+            if (!SmartSolar.Api.Contracts.Scheduling.IsoTimestamp.TryParse(body.ActivatedAt, out var parsed))
+                return Invalid("activatedAt", "'activatedAt' must be ISO 8601 with an offset.");
+            activatedAt = parsed;
+        }
+        return Respond(await requests.RecordWarrantyActivationAsync(user, assetId, activatedAt, body.EvidenceFileId, body.Reason, cancellationToken));
+    }
 
     [HttpPut("assets/{assetId:guid}")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]

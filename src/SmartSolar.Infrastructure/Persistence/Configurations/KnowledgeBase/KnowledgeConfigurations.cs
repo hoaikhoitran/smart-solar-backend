@@ -14,6 +14,7 @@ public sealed class KnowledgeDocumentConfiguration : IEntityTypeConfiguration<Kn
         {
             t.HasCheckConstraint("ck_knowledge_document_status", $"status IN ({string.Join(", ", DocumentStatuses.All.Select(s => $"'{s}'"))})");
             t.HasCheckConstraint("ck_knowledge_document_published", $"(status = '{DocumentStatuses.Published}') = (published_version_id IS NOT NULL)");
+            t.HasCheckConstraint("ck_knowledge_document_audience", $"audience IN ({string.Join(", ", KnowledgeAudiences.All.Select(a => $"'{a}'"))})");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -27,8 +28,11 @@ public sealed class KnowledgeDocumentConfiguration : IEntityTypeConfiguration<Kn
         builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
         builder.Property(x => x.ArchivedAt).HasColumnName("archived_at");
+        // Every existing document becomes INTERNAL: nothing is exposed to customers by the migration.
+        builder.Property(x => x.Audience).HasColumnName("audience").HasMaxLength(20).IsRequired().HasDefaultValue(KnowledgeAudiences.Internal);
         builder.Property(x => x.Revision).HasColumnName("revision").IsConcurrencyToken().IsRequired();
         builder.HasIndex(x => x.Status).HasDatabaseName("ix_knowledge_document_status");
+        builder.HasIndex(x => new { x.Status, x.Audience }).HasDatabaseName("ix_knowledge_document_status_audience");
         builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.CreatedByUserId).OnDelete(DeleteBehavior.Restrict);
         // The latest / published version must exist AND belong to this document: composite FKs onto the
         // version's (id, document_id) alternate key. NULL means "none" (MATCH SIMPLE skips the check).
@@ -150,6 +154,8 @@ public sealed class ChatMessageConfiguration : IEntityTypeConfiguration<ChatMess
             t.HasCheckConstraint("ck_chat_message_role", $"role IN ('{ChatRoles.User}', '{ChatRoles.Assistant}')");
             t.HasCheckConstraint("ck_chat_message_status",
                 $"status IN ('{ChatMessageStatuses.Completed}', '{ChatMessageStatuses.InsufficientContext}', '{ChatMessageStatuses.Failed}')");
+            t.HasCheckConstraint("ck_chat_message_retrieval_audience",
+                $"retrieval_audience IS NULL OR retrieval_audience IN ({string.Join(", ", KnowledgeAudiences.All.Select(a => $"'{a}'"))})");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -163,6 +169,7 @@ public sealed class ChatMessageConfiguration : IEntityTypeConfiguration<ChatMess
         builder.Property(x => x.CompletionTokens).HasColumnName("completion_tokens");
         builder.Property(x => x.Model).HasColumnName("model").HasMaxLength(100);
         builder.Property(x => x.LatencyMs).HasColumnName("latency_ms");
+        builder.Property(x => x.RetrievalAudience).HasColumnName("retrieval_audience").HasMaxLength(20);
         builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.HasIndex(x => new { x.SessionId, x.CreatedAt }).HasDatabaseName("ix_chat_message_session_created_at");
         builder.HasIndex(x => new { x.SessionId, x.ClientMessageId }).IsUnique().HasFilter("client_message_id IS NOT NULL").HasDatabaseName("ux_chat_message_client_id");
@@ -299,5 +306,28 @@ public sealed class RagConfigurationConfiguration : IEntityTypeConfiguration<Rag
             .HasConstraintName("fk_rag_configuration_user_account_activated_by_user_id");
         builder.HasIndex(x => x.CreatedByUserId).HasDatabaseName("ix_rag_configuration_created_by_user_id");
         builder.HasIndex(x => x.ActivatedByUserId).HasDatabaseName("ix_rag_configuration_activated_by_user_id");
+    }
+}
+
+public sealed class KnowledgeDocumentAudienceChangeConfiguration : IEntityTypeConfiguration<KnowledgeDocumentAudienceChange>
+{
+    public void Configure(EntityTypeBuilder<KnowledgeDocumentAudienceChange> builder)
+    {
+        builder.ToTable("knowledge_document_audience_change", t =>
+        {
+            var audiences = string.Join(", ", KnowledgeAudiences.All.Select(a => $"'{a}'"));
+            t.HasCheckConstraint("ck_knowledge_document_audience_change_values", $"from_audience IN ({audiences}) AND to_audience IN ({audiences}) AND from_audience <> to_audience");
+        });
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.DocumentId).HasColumnName("document_id").IsRequired();
+        builder.Property(x => x.FromAudience).HasColumnName("from_audience").HasMaxLength(20).IsRequired();
+        builder.Property(x => x.ToAudience).HasColumnName("to_audience").HasMaxLength(20).IsRequired();
+        builder.Property(x => x.ActorUserId).HasColumnName("actor_user_id").IsRequired();
+        builder.Property(x => x.Reason).HasColumnName("reason").HasMaxLength(1000).IsRequired();
+        builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+        builder.HasIndex(x => new { x.DocumentId, x.CreatedAt }).HasDatabaseName("ix_knowledge_document_audience_change_document_created_at");
+        builder.HasOne<KnowledgeDocument>().WithMany().HasForeignKey(x => x.DocumentId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.ActorUserId).OnDelete(DeleteBehavior.Restrict);
     }
 }

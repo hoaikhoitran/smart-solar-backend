@@ -37,11 +37,14 @@ public sealed class TechnicianAvailabilityController(TechnicianAvailabilityHandl
 public sealed class TechnicianAppointmentsController(TechnicianJobHandlers jobs, TechnicianScheduleHandler schedules, WorkingCalendar calendar, TimeProvider time)
     : SchedulingControllerBase
 {
+    /// <summary>Confirmed jobs: upcoming and overdue (<c>isOverdue</c>) ones; <c>includePast=true</c> also returns completed past jobs.</summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<System.Collections.Generic.IReadOnlyList<SmartSolar.Modules.Scheduling.PreSurveyAppointments.TechnicianAppointmentListItem>>), StatusCodes.Status200OK)]
     [HttpGet("appointments")]
     [EnableRateLimiting(RateLimitingExtensions.SchedulingReadPolicy)]
-    public async Task<IActionResult> List(CancellationToken cancellationToken)
-        => CurrentUserId() is { } userId ? Ok(await jobs.ListAsync(userId, cancellationToken)) : UnauthorizedFailure();
+    public async Task<IActionResult> List([FromQuery] bool includePast = false, CancellationToken cancellationToken = default)
+        => CurrentUserId() is { } userId ? Ok(await jobs.ListAsync(userId, includePast, cancellationToken)) : UnauthorizedFailure();
 
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Scheduling.PreSurveyAppointments.TechnicianJobView>), StatusCodes.Status200OK)]
     [HttpGet("appointments/{appointmentId:guid}")]
     [EnableRateLimiting(RateLimitingExtensions.SchedulingReadPolicy)]
     public async Task<IActionResult> Get(Guid appointmentId, CancellationToken cancellationToken)

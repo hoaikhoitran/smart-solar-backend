@@ -72,13 +72,7 @@ namespace SmartSolar.Api.Controllers
 
         if (!validation.IsValid)
         {
-            var details = validation.Errors
-                .GroupBy(x => x.PropertyName)
-                .ToDictionary(
-                    group => group.Key,
-                    group => group
-                        .Select(x => x.ErrorMessage)
-                        .ToArray());
+            var details = ValidationDetails.From(validation);
 
             return BadRequest(
                 Failure(
@@ -147,13 +141,7 @@ namespace SmartSolar.Api.Controllers
 
         if (!validation.IsValid)
         {
-            var details = validation.Errors
-                .GroupBy(x => x.PropertyName)
-                .ToDictionary(
-                    group => group.Key,
-                    group => group
-                        .Select(x => x.ErrorMessage)
-                        .ToArray());
+            var details = ValidationDetails.From(validation);
 
             return BadRequest(
                 Failure(
@@ -245,13 +233,7 @@ namespace SmartSolar.Api.Controllers
 
         if (!validation.IsValid)
         {
-            var details = validation.Errors
-                .GroupBy(x => x.PropertyName)
-                .ToDictionary(
-                    group => group.Key,
-                    group => group
-                        .Select(x => x.ErrorMessage)
-                        .ToArray());
+            var details = ValidationDetails.From(validation);
 
             return BadRequest(
                 Failure(

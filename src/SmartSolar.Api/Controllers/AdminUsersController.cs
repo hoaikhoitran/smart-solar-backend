@@ -126,7 +126,7 @@ public sealed class AdminUsersController(
 
     private IActionResult ValidationFailure(FluentValidation.Results.ValidationResult validation)
         => BadRequest(Failure(AdminUserErrorCodes.ValidationFailed, "One or more fields are invalid.",
-            validation.Errors.GroupBy(e => e.PropertyName).ToDictionary(g => g.Key, g => g.Select(e => e.ErrorMessage).ToArray())));
+            ValidationDetails.From(validation)));
 
     private ApiResponse<object> Failure(string code, string message, object? details = null)
         => ApiResponse<object>.Failure(new ApiError(code, message, details), HttpContext.GetTraceId());

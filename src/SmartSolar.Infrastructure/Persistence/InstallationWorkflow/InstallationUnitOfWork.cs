@@ -83,6 +83,49 @@ public sealed class InstallationUnitOfWork(AppDbContext db) : TransactionalUnitO
     public Task<bool> SerialExistsAsync(string manufacturer, string serialNumber, CancellationToken cancellationToken)
         => Db.InstalledAssets.AsNoTracking().AnyAsync(a => a.Manufacturer == manufacturer && a.SerialNumber == serialNumber, cancellationToken);
 
+    public async Task<SimulatedProductionView?> GetSelectedSimulationAsync(Guid surveyRequestId, CancellationToken cancellationToken)
+    {
+        var simulationId = await Db.SurveyRequests.AsNoTracking().Where(s => s.Id == surveyRequestId).Select(s => s.PreSurvey.SelectedSimulationId).FirstOrDefaultAsync(cancellationToken);
+        if (simulationId is null) return null;
+        return await Db.SelectedSimulations.AsNoTracking().Where(s => s.SimulationId == simulationId)
+            .Select(s => new SimulatedProductionView(s.SimulationId, s.SelectedAt, s.AlgorithmVersion, s.EnergyStatus, s.PanelCount, s.InstalledCapacityKwp,
+                s.AnnualEnergyKwh, s.SpecificYieldKwhPerKwpYear))
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    public Task<Guid> GetContractQuotationIdAsync(Guid contractId, CancellationToken cancellationToken)
+        => Db.CustomerContracts.AsNoTracking().Where(c => c.Id == contractId).Select(c => c.QuotationId).FirstAsync(cancellationToken);
+
+    public Task<EquipmentSubstitution?> GetActiveSubstitutionAsync(Guid projectId, bool track, CancellationToken cancellationToken)
+        => (track ? Db.EquipmentSubstitutions : Db.EquipmentSubstitutions.AsNoTracking())
+            .FirstOrDefaultAsync(s => s.ProjectId == projectId
+                && (s.Status == EquipmentSubstitutionStatuses.CustomerApprovalPending || s.Status == EquipmentSubstitutionStatuses.Approved), cancellationToken);
+
+    public async Task<IReadOnlyList<EquipmentSubstitution>> ListSubstitutionsAsync(Guid projectId, CancellationToken cancellationToken)
+        => (await Db.EquipmentSubstitutions.AsNoTracking().Where(s => s.ProjectId == projectId).ToListAsync(cancellationToken)).OrderBy(s => s.CreatedAt).ToList();
+
+    public async Task<IReadOnlyList<EquipmentSubstitutionItem>> GetSubstitutionItemsAsync(IReadOnlyCollection<Guid> substitutionIds, CancellationToken cancellationToken)
+        => await Db.EquipmentSubstitutionItems.AsNoTracking().Where(i => substitutionIds.Contains(i.SubstitutionId)).ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<ContractedEquipment>> GetContractedEquipmentAsync(Guid contractId, CancellationToken cancellationToken)
+    {
+        var quotationId = await Db.CustomerContracts.AsNoTracking().Where(c => c.Id == contractId).Select(c => (Guid?)c.QuotationId).FirstOrDefaultAsync(cancellationToken);
+        if (quotationId is null) return [];
+        var lines = await Db.QuotationLines.AsNoTracking().Where(l => l.QuotationId == quotationId && l.ProductId != null)
+            .Join(Db.Products.AsNoTracking(), l => l.ProductId, p => p.Id, (l, p) => new { ProductId = p.Id, p.ProductType, l.Name, l.Quantity })
+            .ToListAsync(cancellationToken);
+        return lines.Where(l => SmartSolar.Modules.Catalog.Constants.ProductTypes.Normalize(l.ProductType)
+                is SmartSolar.Modules.Catalog.Constants.ProductTypes.SolarPanel or SmartSolar.Modules.Catalog.Constants.ProductTypes.Inverter)
+            .GroupBy(l => l.ProductId)
+            .Select(g => new ContractedEquipment(g.Key, SmartSolar.Modules.Catalog.Constants.ProductTypes.Normalize(g.First().ProductType), g.First().Name, g.Sum(l => l.Quantity)))
+            .ToList();
+    }
+
+    public async Task<IReadOnlyDictionary<Guid, AssetCatalogProduct>> GetAssetProductsAsync(IReadOnlyCollection<Guid> productIds, CancellationToken cancellationToken)
+        => await Db.Products.AsNoTracking().Where(p => productIds.Contains(p.Id) && p.DeletedAt == null)
+            .Select(p => new AssetCatalogProduct(p.Id, p.ProductType, p.WarrantyMonth))
+            .ToDictionaryAsync(p => p.ProductId, cancellationToken);
+
     public async Task<IReadOnlyDictionary<Guid, string>> GetUserNamesAsync(IReadOnlyCollection<Guid> userIds, CancellationToken cancellationToken)
     {
         var ids = userIds.ToList();

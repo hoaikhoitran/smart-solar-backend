@@ -18,7 +18,9 @@ public sealed record AssignTechnicianCommand(Guid SaleUserId, Guid SurveyRequest
 /// <summary>Manager/Admin override on an appointment (no ownership requirement).</summary>
 public sealed record OverrideTechnicianCommand(Guid ManagerUserId, Guid AppointmentId, Guid TechnicianUserId, string? Reason, int? ExpectedRevision = null);
 
-public sealed record SalesRescheduleCommand(Guid SaleUserId, Guid SurveyRequestId, DateTimeOffset StartsAt, string? Reason, Guid? TechnicianUserId);
+/// <summary>Reschedule by the Sales owner, or by a Manager/Admin (<paramref name="IsManager"/>: no ownership requirement).</summary>
+public sealed record SalesRescheduleCommand(Guid SaleUserId, Guid SurveyRequestId, DateTimeOffset StartsAt, string? Reason, Guid? TechnicianUserId,
+    bool IsManager = false);
 
 public sealed record SetSalesOwnerCommand(Guid ActorUserId, Guid SurveyRequestId, Guid SaleUserId, string? Reason);
 
@@ -189,9 +191,11 @@ public sealed class EscalatedAppointmentsHandler(ISchedulingUnitOfWork unitOfWor
 }
 
 /// <summary>
-/// Sales-managed rescheduling of an owned request. The new time is re-validated: the confirmed technician keeps
-/// the job when still eligible; passing technicianUserId assigns that technician (reason required). The old
-/// appointment is cancelled (RESCHEDULED_BY_SALES) and replaced in one transaction.
+/// Sales-managed rescheduling of an owned request (or by a Manager/Admin). The new time is re-validated: the confirmed technician
+/// keeps the job when still eligible; passing technicianUserId assigns that technician (reason required). The old appointment
+/// is cancelled (RESCHEDULED_BY_SALES) and replaced in one transaction, so its history and the replacement link are kept.
+/// An OVERDUE appointment (its end passed, survey never completed) can be recovered the same way, with a mandatory reason that
+/// is recorded in the RESCHEDULED event. An appointment that is still running (started, not ended) cannot be changed.
 /// </summary>
 public sealed class SalesRescheduleHandler(
     ISchedulingUnitOfWork unitOfWork,
@@ -205,7 +209,7 @@ public sealed class SalesRescheduleHandler(
         var context = await unitOfWork.GetSurveyRequestContextAsync(command.SurveyRequestId, cancellationToken);
         if (context is null)
             return SchedulingResult<SalesRescheduleView>.Fail(SchedulingErrorCodes.SurveyRequestNotFound, "Survey request was not found.");
-        if (context.AssignedSaleId != command.SaleUserId)
+        if (!command.IsManager && context.AssignedSaleId != command.SaleUserId)
             return SchedulingResult<SalesRescheduleView>.Fail(SchedulingErrorCodes.SurveyRequestNotOwned, "Only the Sales owner can reschedule. Claim this survey request first.");
         if (context.ActiveAppointment is not { } current)
             return SchedulingResult<SalesRescheduleView>.Fail(SchedulingErrorCodes.BookingNotFound, "There is no active appointment to reschedule.");
@@ -213,26 +217,37 @@ public sealed class SalesRescheduleHandler(
         var now = time.GetUtcNow();
         if (!AppointmentStatuses.IsChangeable(current.Status))
             return SchedulingResult<SalesRescheduleView>.Fail(SchedulingErrorCodes.InvalidBookingState, "Completed appointments cannot be rescheduled.");
-        if (current.StartsAt <= now)
-            return SchedulingResult<SalesRescheduleView>.Fail(SchedulingErrorCodes.InvalidBookingState, "Past or ongoing appointments cannot be rescheduled.");
+        var overdue = AppointmentStatuses.IsOverdue(current.Status, current.EndsAt, now);
+        if (current.StartsAt <= now && !overdue)
+            return SchedulingResult<SalesRescheduleView>.Fail(SchedulingErrorCodes.InvalidBookingState,
+                "The appointment is in progress; it can be recovered once its scheduled end has passed.");
+        if (overdue && string.IsNullOrWhiteSpace(command.Reason))
+            return SchedulingResult<SalesRescheduleView>.Fail(SchedulingErrorCodes.RecoveryReasonRequired, "A reason is required to recover an overdue appointment.");
         if (command.TechnicianUserId is not null && string.IsNullOrWhiteSpace(command.Reason))
             return SchedulingResult<SalesRescheduleView>.Fail(SchedulingErrorCodes.AssignmentReasonRequired, "A reason is required when assigning a technician.");
 
-        if (Appointments.SameStart(current, command.StartsAt) && command.TechnicianUserId is null)
+        if (!overdue && Appointments.SameStart(current, command.StartsAt) && command.TechnicianUserId is null)
             return SchedulingResult<SalesRescheduleView>.Ok(await ViewAsync(current, null, cancellationToken));
         // The technician is on site: neither the time nor the technician may change (re-checked under the locks by the mover).
         if (await AppointmentMover.OnSiteSurveyStartedAsync(unitOfWork, current, cancellationToken))
             return AppointmentAssignmentService.OnSiteSurveyStarted<SalesRescheduleView>();
 
-        var (window, code, reason) = await SlotGrid.ResolveAsync(unitOfWork, eligibility, calendar, context.PropertySiteId, command.StartsAt, now, cancellationToken);
+        // The cross-zone technician keeps their authorization only when Sales keeps them (an explicit other technician gets none).
+        var crossZoneTechnician = await AppointmentMover.AuthorizedCrossZoneTechnicianAsync(unitOfWork, current, cancellationToken);
+        if (command.TechnicianUserId is { } chosen && chosen != crossZoneTechnician) crossZoneTechnician = null;
+        var (window, code, reason) = await SlotGrid.ResolveAsync(unitOfWork, eligibility, calendar, context.PropertySiteId, command.StartsAt, now, cancellationToken,
+            crossZoneTechnician);
         if (window is null) return SchedulingResult<SalesRescheduleView>.Fail(code!, reason!);
 
+        // The audit reason of the RESCHEDULED event; an overdue recovery is marked so it can be found in the history.
+        var eventReason = overdue ? $"OVERDUE_RECOVERY: {command.Reason!.Trim()}" : command.Reason?.Trim() ?? "SALES_RESCHEDULE";
         var moved = await mover.MoveAsync(new AppointmentMover.MoveSpec(context, current, window, command.SaleUserId, null,
-            CancellationReasons.RescheduledBySales, command.Reason?.Trim() ?? "SALES_RESCHEDULE", command.TechnicianUserId, command.Reason?.Trim(),
+            CancellationReasons.RescheduledBySales, eventReason, command.TechnicianUserId, command.Reason?.Trim(),
             // Retried only after background changes (hold moved, escalation): a concurrent (re)assignment or acceptance is a decision
             // Sales did not see, so exactly one of the two wins and this one reports a conflict.
-            (fresh, _) => fresh.AssignedSaleId == command.SaleUserId && fresh.ActiveAppointment is { } a
-                          && a.AssignedTechnicianUserId == current.AssignedTechnicianUserId && AppointmentStatuses.IsConfirmed(a.Status) == AppointmentStatuses.IsConfirmed(current.Status)),
+            (fresh, _) => (command.IsManager || fresh.AssignedSaleId == command.SaleUserId) && fresh.ActiveAppointment is { } a
+                          && a.AssignedTechnicianUserId == current.AssignedTechnicianUserId && AppointmentStatuses.IsConfirmed(a.Status) == AppointmentStatuses.IsConfirmed(current.Status),
+            RecoveringOverdue: overdue),
             cancellationToken);
         return moved.Succeeded
             ? SchedulingResult<SalesRescheduleView>.Ok(await ViewAsync(moved.Value!, current.Id, cancellationToken))

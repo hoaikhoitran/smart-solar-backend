@@ -258,7 +258,7 @@ public sealed class TechnicianServiceHandlers(IAfterSalesUnitOfWork data, FileSe
                 item.UpdatedAt = now;
                 repairedPaidWork |= ItemCoverages.NeedsQuotation(item.Coverage);
             }
-            var replacementError = await AddReplacementsAsync(request, replacements, now, token);
+            var replacementError = await AddReplacementsAsync(request, replacements, technicianUserId, now, token);
             if (replacementError is not null) return replacementError;
 
             // A same-visit repair keeps the inspection report in front of the work report.
@@ -329,7 +329,8 @@ public sealed class TechnicianServiceHandlers(IAfterSalesUnitOfWork data, FileSe
 
     // ================================================================== helpers
 
-    private async Task<OperationResult<bool>?> AddReplacementsAsync(ServiceRequest request, IReadOnlyList<ReplacementInput> replacements, DateTimeOffset now, CancellationToken token)
+    private async Task<OperationResult<bool>?> AddReplacementsAsync(ServiceRequest request, IReadOnlyList<ReplacementInput> replacements, Guid technicianUserId,
+        DateTimeOffset now, CancellationToken token)
     {
         foreach (var input in replacements)
         {
@@ -348,9 +349,10 @@ public sealed class TechnicianServiceHandlers(IAfterSalesUnitOfWork data, FileSe
             {
                 Id = Guid.NewGuid(), ProjectId = request.ProjectId, AssetType = old.AssetType, ProductId = null, Manufacturer = manufacturer, Model = model,
                 SerialNumber = serial, PositionCode = old.PositionCode, Status = InstalledAssetStatuses.PendingAcceptance, ReplacesAssetId = old.Id,
-                ServiceRequestId = request.Id, Specifications = specifications, RegisteredByUserId = old.RegisteredByUserId, RegisteredAt = now,
+                // The replacement is registered by the technician who installed it, not by the original installer.
+                ServiceRequestId = request.Id, Specifications = specifications, RegisteredByUserId = technicianUserId, RegisteredAt = now,
             });
-            AfterSalesHistory.Record(data, EventSubjects.Asset, old.Id, "ASSET_REPLACEMENT_RECORDED", null, $"{old.SerialNumber} → {serial} ({request.RequestNumber})", now);
+            AfterSalesHistory.Record(data, EventSubjects.Asset, old.Id, "ASSET_REPLACEMENT_RECORDED", technicianUserId, $"{old.SerialNumber} → {serial} ({request.RequestNumber})", now);
         }
         return null;
     }

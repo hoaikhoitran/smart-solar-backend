@@ -20,11 +20,27 @@ public sealed class CatalogUnitOfWork : ICatalogUnitOfWork
         _db = db;
     }
 
-    public async Task<PagedResult<ProductDto>> ListActiveProductsAsync(
+    public Task<PagedResult<ProductDto>> ListActiveProductsAsync(
+        ProductSearchCriteria criteria,
+        CancellationToken cancellationToken)
+        => PageAsync(ActiveProducts(), criteria, cancellationToken);
+
+    public Task<PagedResult<ProductDto>> ListManagedProductsAsync(
+        ProductSearchCriteria criteria,
+        ProductStatus? status,
+        CancellationToken cancellationToken)
+    {
+        var products = _db.Products.AsNoTracking().Where(p => p.DeletedAt == null);
+        if (status is { } wanted) products = products.Where(p => p.Status == wanted);
+        return PageAsync(products, criteria, cancellationToken);
+    }
+
+    private async Task<PagedResult<ProductDto>> PageAsync(
+        IQueryable<Product> source,
         ProductSearchCriteria criteria,
         CancellationToken cancellationToken)
     {
-        var query = Filter(ActiveProducts(), criteria);
+        var query = Filter(source, criteria);
 
         var totalItems = await query.CountAsync(cancellationToken);
 

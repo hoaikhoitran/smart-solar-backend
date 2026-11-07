@@ -12,12 +12,12 @@ public sealed class QuotationTests
         => new(LaborCost: 5_000_000m, TransportCost: 1_000_000m, OtherServiceCost: 0m, DiscountAmount: discount, TaxRatePercent: tax,
             ValidUntil: ctx.Clock.Now.AddDays(validDays), Terms: "Payment 100% before installation", Notes: null);
 
-    /// <summary>Survey completed, draft with 12 panels and 1 inverter, issued. Returns the issued view.</summary>
+    /// <summary>Survey completed, draft with 12 panels and 1 inverter (catalog INVERTER), issued. Returns the issued view.</summary>
     public static async Task<(ConfirmedSurvey Survey, QuotationView Issued)> IssuedAsync(InstallationWorkflowTestContext ctx, string customer = "Customer")
     {
         var s = await ctx.QuotableSurveyAsync(customer);
         var panel = await ctx.ProductAsync($"PNL-{Guid.NewGuid():N}"[..20], 2_500_000m);
-        var inverter = await ctx.ProductAsync($"INV-{Guid.NewGuid():N}"[..20], 12_345_678m);
+        var inverter = await InverterAsync(ctx, $"{Guid.NewGuid():N}"[..12], 12_345_678m);
         var q = ctx.Quotations();
         var draft = (await q.CreateAsync(s.Sales.Id, s.Request.Request.Id, new QuotationHeaderInput(5_000_000m, 1_000_000m, 0m, 0m, 8m,
             ctx.Clock.Now.AddDays(30), "Terms", null), CancellationToken.None)).Value!;
@@ -222,7 +222,7 @@ public sealed class QuotationTests
         Assert.Equal(0m, removed.Value.EquipmentSubtotal);
     }
 
-    private static async Task<Modules.Catalog.Entities.Product> InverterAsync(InstallationWorkflowTestContext ctx, string model, decimal price)
+    internal static async Task<Modules.Catalog.Entities.Product> InverterAsync(InstallationWorkflowTestContext ctx, string model, decimal price)
     {
         var inverter = PreSurveyTestContext.NewPanelProduct($"INV-{model}", ratedPowerW: null, widthMm: null, heightMm: null,
             productType: Modules.Catalog.Constants.ProductTypes.Inverter, spec: "{\"ratedAcPowerW\":5000,\"phase\":\"SINGLE_PHASE\"}");
@@ -230,6 +230,7 @@ public sealed class QuotationTests
         inverter.Brand = "Huawei";
         inverter.Model = model;
         inverter.UnitPrice = price;
+        inverter.WarrantyMonth = 120;   // the manufacturer warranty of the catalog product (the only source of an asset's warranty)
         ctx.Db.Products.Add(inverter);
         await ctx.Db.SaveChangesAsync();
         ctx.Db.ChangeTracker.Clear();
@@ -269,9 +270,12 @@ public sealed class QuotationTests
         row.UnitPrice = 1m;
         await ctx.Db.SaveChangesAsync();
         ctx.Db.ChangeTracker.Clear();
-        var reloaded = (await q.GetForCustomerAsync(s.Request.Customer.Id, issued.Value.QuotationId, CancellationToken.None)).Value!;
+        var reloaded = (await q.GetForSalesAsync(s.Sales.Id, false, issued.Value.QuotationId, CancellationToken.None)).Value!;
         Assert.Equal(("Inverter SUN2000-5K", 15_000_000m, (decimal?)15_000_000m), (reloaded.Lines[0].Name, reloaded.Lines[0].UnitPrice, reloaded.Lines[0].CatalogUnitPrice));
         Assert.Equal(issued.Value.TotalAmount, reloaded.TotalAmount);
+        // D-09: the customer sees the quoted selling price, never the internal catalog reference price.
+        var customerView = (await q.GetForCustomerAsync(s.Request.Customer.Id, issued.Value.QuotationId, CancellationToken.None)).Value!;
+        Assert.Equal((15_000_000m, (decimal?)null), (customerView.Lines[0].UnitPrice, customerView.Lines[0].CatalogUnitPrice));
     }
 
     [Theory]

@@ -39,5 +39,10 @@ public sealed class InterleavingPreSurveyUnitOfWork(IPreSurveyUnitOfWork inner) 
     public Task<IReadOnlyList<PendingSurveyRequestItem>> GetPendingSurveyRequestsAsync(CancellationToken cancellationToken) => inner.GetPendingSurveyRequestsAsync(cancellationToken);
     public Task<bool> TryClaimSurveyRequestAsync(Guid surveyRequestId, Guid saleUserId, DateTimeOffset assignedAt, CancellationToken cancellationToken) => inner.TryClaimSurveyRequestAsync(surveyRequestId, saleUserId, assignedAt, cancellationToken);
     public Task<IReadOnlyList<MySurveyRequestItem>> GetSurveyRequestsBySaleAsync(Guid saleUserId, CancellationToken cancellationToken) => inner.GetSurveyRequestsBySaleAsync(saleUserId, cancellationToken);
+    public Task<(IReadOnlyList<SmartSolar.Modules.PreSurvey.ListMine.CustomerSiteListItem> Items, int Total)> ListCustomerSitesAsync(Guid userId, int skip, int take, CancellationToken cancellationToken)
+        => inner.ListCustomerSitesAsync(userId, skip, take, cancellationToken);
+    public Task<(IReadOnlyList<SmartSolar.Modules.PreSurvey.ListMine.CustomerPreSurveyListItem> Items, int Total)> ListCustomerPreSurveysAsync(Guid userId, PreSurveyStatus? status,
+        bool sortByCreatedAt, bool ascending, int skip, int take, CancellationToken cancellationToken)
+        => inner.ListCustomerPreSurveysAsync(userId, status, sortByCreatedAt, ascending, skip, take, cancellationToken);
     public Task<SurveyRequestDetail?> GetSurveyRequestDetailAsync(Guid surveyRequestId, CancellationToken cancellationToken) => inner.GetSurveyRequestDetailAsync(surveyRequestId, cancellationToken);
 }

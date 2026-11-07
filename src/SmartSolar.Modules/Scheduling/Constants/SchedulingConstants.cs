@@ -40,6 +40,12 @@ public static class AppointmentStatuses
 
     /// <summary>Open or confirmed: the appointment can still be changed (before its start).</summary>
     public static bool IsChangeable(string status) => IsOpen(status) || IsConfirmed(status);
+
+    /// <summary>
+    /// Overdue: the scheduled end has passed but the survey was never completed (the appointment is still open or confirmed;
+    /// completing the on-site survey moves it to COMPLETED). Staff recover it by rescheduling to a future time.
+    /// </summary>
+    public static bool IsOverdue(string status, DateTimeOffset endsAtUtc, DateTimeOffset nowUtc) => IsChangeable(status) && endsAtUtc <= nowUtc;
 }
 
 /// <summary>
@@ -125,6 +131,8 @@ public static class SchedulingErrorCodes
     public const string SurveyRequestNotOwned = "SURVEY_REQUEST_NOT_OWNED";
 
     public const string AssignmentReasonRequired = "ASSIGNMENT_REASON_REQUIRED";
+    /// <summary>Recovering an overdue appointment (reschedule / reassignment after its end) needs an audit reason. 400.</summary>
+    public const string RecoveryReasonRequired = "APPOINTMENT_RECOVERY_REASON_REQUIRED";
 
     /// <summary>The confirmed technician already started the on-site survey: staff cannot hand the appointment to someone else.</summary>
     public const string OnSiteSurveyInProgress = "ONSITE_SURVEY_IN_PROGRESS";

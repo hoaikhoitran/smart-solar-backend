@@ -98,9 +98,7 @@ public sealed class ProductsController : ControllerBase
             return null;
         }
 
-        var details = validation.Errors
-            .GroupBy(e => e.PropertyName)
-            .ToDictionary(g => g.Key, g => g.Select(e => e.ErrorMessage).ToArray());
+        var details = ValidationDetails.From(validation);
 
         return BadRequest(Failure(
             AuthErrorCodes.ValidationFailed,

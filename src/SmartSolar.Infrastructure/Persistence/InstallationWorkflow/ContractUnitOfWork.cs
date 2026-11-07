@@ -20,9 +20,27 @@ public sealed class ContractUnitOfWork(AppDbContext db) : TransactionalUnitOfWor
             lines = lines.Select(l => new { l.LineNumber, l.Sku, l.Name, l.Brand, l.Model, l.Unit, l.Quantity, l.UnitPrice, l.LineTotal, l.Description }),
             q.EquipmentSubtotal, q.LaborCost, q.TransportCost, q.OtherServiceCost, q.Subtotal, q.DiscountAmount, q.TaxRatePercent, q.TaxAmount, q.TotalAmount,
         }, Json);
+        var surveyVersion = await Db.OnSiteSurveyReports.AsNoTracking().Where(r => r.SurveyRequestId == q.SurveyRequestId).Select(r => r.Version).FirstOrDefaultAsync(cancellationToken);
         return new AcceptedQuotationSource(q.Id, q.Version, q.QuoteNumber, q.Status, q.SurveyRequestId, q.CustomerUserId, sale, q.Currency, q.TotalAmount,
-            pricing, q.CustomerSnapshot, q.Terms);
+            pricing, q.CustomerSnapshot, q.Terms, q.OnSiteSurveyVersion, surveyVersion);
     }
+
+    /// <summary>
+    /// Row lock (FOR UPDATE) on the survey request for the current transaction (PostgreSQL). Every path that creates or ends commercial
+    /// records of a request (quotation create/revision/generation, contract creation, withdrawal, closure) takes it FIRST, so they run one
+    /// after another per request: lock order survey_request → quotation → contract everywhere (no deadlock).
+    /// </summary>
+    public async Task LockSurveyRequestAsync(Guid surveyRequestId, CancellationToken cancellationToken)
+    {
+        // SQLite serialises writers itself.
+        if (Db.Database.IsNpgsql())
+            await Db.Database.ExecuteSqlInterpolatedAsync($"SELECT 1 FROM survey_request WHERE id = {surveyRequestId} FOR UPDATE", cancellationToken);
+    }
+
+    public Task<bool> IsSurveyRequestClosedAsync(Guid surveyRequestId, CancellationToken cancellationToken)
+        => Db.SurveyRequests.AsNoTracking().AnyAsync(s => s.Id == surveyRequestId
+            && (s.Status == SmartSolar.Modules.PreSurvey.Enums.SurveyRequestStatus.Cancelled || s.Status == SmartSolar.Modules.PreSurvey.Enums.SurveyRequestStatus.Closed),
+            cancellationToken);
 
     public Task<Guid?> GetAssignedSaleAsync(Guid surveyRequestId, CancellationToken cancellationToken)
         => Db.SurveyRequests.AsNoTracking().Where(s => s.Id == surveyRequestId).Select(s => s.AssignedSaleId).FirstOrDefaultAsync(cancellationToken);
