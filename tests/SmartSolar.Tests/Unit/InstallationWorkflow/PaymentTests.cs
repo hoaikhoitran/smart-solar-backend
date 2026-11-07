@@ -217,4 +217,44 @@ public sealed class PaymentTests
 
         Assert.Equal(PaymentErrorCodes.TooManyAttempts, (await ctx.Payments().CreateOrGetAttemptAsync(customer, contract.ContractId, CancellationToken.None)).ErrorCode);
     }
+
+    [Fact]
+    public async Task A_new_order_code_that_repeats_an_issued_one_is_drawn_again()
+    {
+        // Order codes are the second plus 4 random digits: two attempts in the same second repeat one 1 in 10 000 times.
+        // That is not a payment conflict, so the customer gets a fresh code instead of a refusal.
+        var (ctx, customer, contract) = await SignedAsync();
+        await using var _ = ctx;
+        var codes = new Queue<long>([1_000_001, 1_000_001, 1_000_002]);
+        ctx.OrderCodes = _ => codes.Dequeue();
+        Assert.True((await ctx.Payments().CreateOrGetAttemptAsync(customer, contract.ContractId, CancellationToken.None)).Succeeded);
+        Assert.True((await ctx.Payments().CancelCurrentAsync(customer, contract.ContractId, CancellationToken.None)).Succeeded);
+
+        var again = await ctx.Payments().CreateOrGetAttemptAsync(customer, contract.ContractId, CancellationToken.None);
+
+        Assert.True(again.Succeeded, again.ErrorCode);
+        Assert.Equal(1_000_002, again.Value!.OrderCode);
+        Assert.Empty(codes);
+        var stored = await ctx.Db.PaymentAttempts.AsNoTracking().SingleAsync(a => a.Id == again.Value.PaymentAttemptId);
+        Assert.Equal("SS1000002", stored.Description);
+        Assert.Equal(1, await ctx.Db.PaymentEvents.CountAsync(e => e.PaymentAttemptId == stored.Id && e.EventType == "CREATED"));
+        Assert.Equal("PENDING", ctx.PayOs.Links[1_000_002].Status);
+    }
+
+    [Fact]
+    public async Task Order_code_collisions_are_redrawn_a_bounded_number_of_times()
+    {
+        var (ctx, customer, contract) = await SignedAsync();
+        await using var _ = ctx;
+        var draws = 0;
+        ctx.OrderCodes = _ => { draws++; return 1_000_001; };
+        Assert.True((await ctx.Payments().CreateOrGetAttemptAsync(customer, contract.ContractId, CancellationToken.None)).Succeeded);
+        Assert.True((await ctx.Payments().CancelCurrentAsync(customer, contract.ContractId, CancellationToken.None)).Succeeded);
+
+        var again = await ctx.Payments().CreateOrGetAttemptAsync(customer, contract.ContractId, CancellationToken.None);
+
+        Assert.False(again.Succeeded);
+        Assert.Equal(1 + 3, draws);
+        Assert.Equal(1, await ctx.Db.PaymentAttempts.CountAsync(a => a.ContractId == contract.ContractId));
+    }
 }

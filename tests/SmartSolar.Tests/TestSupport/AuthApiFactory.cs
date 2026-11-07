@@ -95,7 +95,7 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
         // The dispatch sweep starts at host start and would share the single in-memory SQLite connection
         // with the test's requests; a concurrent DbContext then fails (SQLite Error 5) and surfaces as a
         // spurious 401 or 500. Dispatch tests drive DispatchSweepService explicitly.
-        //TMP-REVERT builder.UseSetting("Dispatch:WorkerEnabled", "false");
+        builder.UseSetting("Dispatch:WorkerEnabled", "false");
 
         foreach (var (key, value) in _settings)
         {

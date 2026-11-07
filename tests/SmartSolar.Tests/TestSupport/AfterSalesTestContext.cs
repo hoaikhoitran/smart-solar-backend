@@ -48,7 +48,7 @@ public sealed class AfterSalesTestContext : IAsyncDisposable
     {
         var data = Data(db);
         return new(new PaymentUnitOfWork(db ?? Db), Installation.PayOs.Gateway(), Installation.PaymentOptions, Clock, NullLogger<PaymentService>.Instance,
-            new AfterSalesPaymentSettlement(data, Terms(data)));
+            new AfterSalesPaymentSettlement(data, Terms(data)), Installation.OrderCodes);
     }
 
     public ServiceCustomerHandlers Customer(AppDbContext? db = null)

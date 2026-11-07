@@ -44,9 +44,7 @@ public sealed class PostgresPaymentIntegrityTests
         var whileLive = await ctx.Packages().PurchaseAsync(customer, new PurchaseInput(contract.ContractId, care.Id, null, true), None);
         Assert.Equal(PaymentErrorCodes.CheckoutInProgress, whileLive.ErrorCode);   // one payable checkout per contract
         Assert.True((await ctx.Payments().CancelCurrentAsync(customer, contract.ContractId, None)).Succeeded);
-        var combinedResult = await ctx.Packages().PurchaseAsync(customer, new PurchaseInput(contract.ContractId, care.Id, null, true), None); //TMP-DIAG
-        Assert.True(combinedResult.Succeeded, $"TMP-DIAG {combinedResult.ErrorCode}: {combinedResult.Message} {System.Text.Json.JsonSerializer.Serialize(combinedResult.Details)}"); //TMP-DIAG
-        var combined = combinedResult.Value!.Checkout;
+        var combined = (await ctx.Packages().PurchaseAsync(customer, new PurchaseInput(contract.ContractId, care.Id, null, true), None)).Value!.Checkout;
 
         // Act: the customer completes both; the two PayOS webhooks race.
         var webhooks = new[]
@@ -68,6 +66,35 @@ public sealed class PostgresPaymentIntegrityTests
         Assert.Equal(combinedWon ? PaymentItemStatuses.Settled : PaymentItemStatuses.Pending, contractLine.Status);
         var package = await check.ServiceSubscriptions.AsNoTracking().SingleAsync(s => s.ContractId == contract.ContractId);
         Assert.Equal(combinedWon, package.Status == SubscriptionStatuses.Paid);
+    }
+
+    [PostgresFact]
+    public async Task A_checkout_whose_order_code_repeats_an_issued_one_gets_a_fresh_code()
+    {
+        // Reproduces the intermittent failure of the test above: under the frozen test clock both checkouts drew 7924652005645
+        // (same second, same 4 random digits, 1 in 10 000) and the order-code index turned the combined checkout into
+        // PAYMENT_CHECKOUT_IN_PROGRESS.
+        var (database, ctx) = await WorldAsync();
+        await using var _ = database;
+        await using var __ = ctx;
+        var admin = await ctx.Installation.Scheduling.Inner.SeedUserAsync("Admin");
+        var care = await ctx.PackageAsync(admin.Id, ServicePackageKinds.Maintenance);
+        var (ready, contract) = await ContractTests.SignedAsync(ctx.Installation);
+        var customer = ready.Survey.Request.Customer.Id;
+        var codes = new Queue<long>([7_924_652_005_645, 7_924_652_005_645, 7_924_652_005_646]);
+        ctx.Installation.OrderCodes = _ => codes.Dequeue();
+        Assert.True((await ctx.Payments().CreateOrGetAttemptAsync(customer, contract.ContractId, None)).Succeeded);
+        Assert.True((await ctx.Payments().CancelCurrentAsync(customer, contract.ContractId, None)).Succeeded);
+
+        var combined = await ctx.Packages().PurchaseAsync(customer, new PurchaseInput(contract.ContractId, care.Id, null, true), None);
+
+        Assert.True(combined.Succeeded, combined.ErrorCode);
+        Assert.Equal(7_924_652_005_646, combined.Value!.Checkout.OrderCode);
+        Assert.Empty(codes);
+        await using var check = database.NewContext();
+        Assert.Equal(2, await check.PaymentAttempts.CountAsync(a => a.ContractId == contract.ContractId));
+        Assert.Equal(1, await check.ServiceSubscriptions.CountAsync(s => s.ContractId == contract.ContractId));
+        Assert.Equal(1, await check.PaymentAttemptItems.CountAsync(i => i.PaymentAttemptId == combined.Value.Checkout.PaymentAttemptId && i.ContractId == contract.ContractId));
     }
 
     [PostgresFact]

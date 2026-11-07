@@ -12,20 +12,22 @@ using static SmartSolar.Tests.TestSupport.PostgresRace;
 namespace SmartSolar.Tests.Integration.Persistence;
 
 /// <summary>
-/// Pauses a unit of work right after it took the survey-request lock, so a second transaction can be started against the held lock.
-/// Every other member is forwarded unchanged.
+/// Pauses a unit of work right after it took the survey-request lock (or the lock method named in <see cref="Wrap"/>), so a second
+/// transaction can be started against the held lock. Every other member is forwarded unchanged.
 /// </summary>
 public class LockHoldProxy<T> : DispatchProxy where T : class
 {
     public T Inner { get; set; } = null!;
+    public string HoldOn { get; set; } = "LockSurveyRequestAsync";
     public TaskCompletionSource Locked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public static (T Proxy, LockHoldProxy<T> Control) Wrap(T inner)
+    public static (T Proxy, LockHoldProxy<T> Control) Wrap(T inner, string holdOn = "LockSurveyRequestAsync")
     {
         var proxy = Create<T, LockHoldProxy<T>>();
         var control = (LockHoldProxy<T>)(object)proxy;
         control.Inner = inner;
+        control.HoldOn = holdOn;
         return (proxy, control);
     }
 
@@ -34,7 +36,7 @@ public class LockHoldProxy<T> : DispatchProxy where T : class
         try
         {
             var result = method!.Invoke(Inner, args);
-            return method.Name == "LockSurveyRequestAsync" ? HoldAsync((Task)result!) : result;
+            return method.Name == HoldOn ? HoldAsync((Task)result!) : result;
         }
         catch (TargetInvocationException ex) when (ex.InnerException is not null)
         {
@@ -196,6 +198,68 @@ public sealed class PostgresSalesClosureConcurrencyTests
         Assert.Single(results, r => r.Succeeded);
         var status = (await StateAsync(w)).Quotation;
         Assert.Equal(results[0].Succeeded ? QuotationStatuses.Accepted : QuotationStatuses.Rejected, status);
+    }
+
+    [PostgresFact]
+    public async Task Acceptance_first_then_a_revision_request_waits_on_the_quotation_lock_and_is_refused()
+    {
+        var w = await AcceptedAsync(accept: false);
+        await using var _ = w.Database;
+        await using var dbA = w.Database.NewContext();
+        await using var dbB = w.Database.NewContext();
+        var (held, control) = LockHoldProxy<IQuotationUnitOfWork>.Wrap(new QuotationUnitOfWork(dbA), nameof(IQuotationUnitOfWork.LockAsync));
+        var customer = w.Survey.Request.Customer.Id;
+
+        var accepting = Quotations(w, dbA, held).AcceptAsync(customer, w.QuotationId, None);
+        await control.Locked.Task.WaitAsync(TimeSpan.FromSeconds(30));   // the acceptance holds the quotation row lock
+        var revising = Quotations(w, dbB).RequestRevisionAsync(customer, w.QuotationId, "Please lower the price", None);
+        await WaitUntilBlockedOnLockAsync(w.Database);
+        control.Release.SetResult();
+        var (accepted, revised) = (await accepting, await revising);
+
+        Assert.True(accepted.Succeeded, accepted.Message);
+        Assert.Equal(QuotationErrorCodes.NotIssued, revised.ErrorCode);
+        var stored = await QuotationRowAsync(w);
+        Assert.Equal((QuotationStatuses.Accepted, true, (DateTimeOffset?)null, (string?)null), (stored.Status, stored.AcceptedAt is not null, stored.RevisionRequestedAt, stored.RevisionReason));
+        Assert.Equal([QuotationEventTypes.Accepted], await OutcomeEventsAsync(w));
+    }
+
+    [PostgresFact]
+    public async Task A_revision_request_first_then_acceptance_waits_on_the_quotation_lock_and_is_refused()
+    {
+        var w = await AcceptedAsync(accept: false);
+        await using var _ = w.Database;
+        await using var dbA = w.Database.NewContext();
+        await using var dbB = w.Database.NewContext();
+        var (held, control) = LockHoldProxy<IQuotationUnitOfWork>.Wrap(new QuotationUnitOfWork(dbA), nameof(IQuotationUnitOfWork.LockAsync));
+        var customer = w.Survey.Request.Customer.Id;
+
+        var revising = Quotations(w, dbA, held).RequestRevisionAsync(customer, w.QuotationId, "Please lower the price", None);
+        await control.Locked.Task.WaitAsync(TimeSpan.FromSeconds(30));   // the revision request holds the quotation row lock
+        var accepting = Quotations(w, dbB).AcceptAsync(customer, w.QuotationId, None);
+        await WaitUntilBlockedOnLockAsync(w.Database);
+        control.Release.SetResult();
+        var (revised, accepted) = (await revising, await accepting);
+
+        Assert.True(revised.Succeeded, revised.Message);
+        Assert.Equal(QuotationErrorCodes.NotIssued, accepted.ErrorCode);
+        var stored = await QuotationRowAsync(w);
+        Assert.Equal((QuotationStatuses.RevisionRequested, (DateTimeOffset?)null, "Please lower the price"), (stored.Status, stored.AcceptedAt, stored.RevisionReason));
+        Assert.Equal([QuotationEventTypes.RevisionRequested], await OutcomeEventsAsync(w));
+    }
+
+    private static async Task<Quotation> QuotationRowAsync(World w)
+    {
+        await using var db = w.Database.NewContext();
+        return await db.Quotations.AsNoTracking().SingleAsync(q => q.Id == w.QuotationId);
+    }
+
+    private static async Task<List<string>> OutcomeEventsAsync(World w)
+    {
+        await using var db = w.Database.NewContext();
+        return await db.QuotationEvents.AsNoTracking()
+            .Where(e => e.QuotationId == w.QuotationId && (e.EventType == QuotationEventTypes.Accepted || e.EventType == QuotationEventTypes.RevisionRequested))
+            .Select(e => e.EventType).ToListAsync();
     }
 
     [PostgresFact]

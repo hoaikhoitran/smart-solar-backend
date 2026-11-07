@@ -52,8 +52,11 @@ public sealed class InstallationWorkflowTestContext : IAsyncDisposable
     public SmartSolar.Modules.CustomerContracts.ContractHandlers Contracts(AppDbContext? db = null) => new(new ContractUnitOfWork(db ?? Db), Files(db), Clock);
     public FakePayOsServer PayOs { get; } = new();
     public SmartSolar.Modules.Payments.PaymentOptions PaymentOptions { get; } = new() { ReturnUrl = "https://app.test/payment/return", CancelUrl = "https://app.test/payment/cancel" };
+    /// <summary>Replaces the random order-code source of every PaymentService built here (forces collisions in tests).</summary>
+    public Func<DateTimeOffset, long>? OrderCodes { get; set; }
+
     public SmartSolar.Modules.Payments.PaymentService Payments(AppDbContext? db = null) => new(new PaymentUnitOfWork(db ?? Db), PayOs.Gateway(), PaymentOptions, Clock,
-        NullLogger<SmartSolar.Modules.Payments.PaymentService>.Instance);
+        NullLogger<SmartSolar.Modules.Payments.PaymentService>.Instance, orderCodes: OrderCodes);
 
     /// <summary>Bootstrap defaults of installation.* (shared with the scheduling context's settings provider).</summary>
     public SmartSolar.Modules.Installations.InstallationOptions InstallationOptions => Scheduling.InstallationOptions;
