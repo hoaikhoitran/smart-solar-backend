@@ -101,21 +101,27 @@ and stops ingestion at its deadline. Timeouts: chat 60 s, ingest 300 s (service 
 |---|---|---|
 | `RAG_VECTOR_STORE` | `memory` | `pgvector` |
 | `RAG_STORAGE` | `local` / `s3` | `s3` (read-only IAM on the knowledge prefix) |
-| `RAG_EMBEDDING_PROVIDER` | `hashing` (offline, deterministic, low quality; only with `RAG_ENV=development`/`test`) | `openai` |
-| `RAG_EMBEDDING_MODEL` / `_DIMENSION` | `hashing-dev` / 1536 (any size with the memory store) | **`text-embedding-3-small` / 1536** (the only accepted pair) |
-| `RAG_LLM_PROVIDER` | `extractive` (quotes the best source, offline) | `openai` (any OpenAI-compatible `/chat/completions`) |
+| `RAG_EMBEDDING_PROVIDER` | `hashing` (offline, deterministic, low quality; only with `RAG_ENV=development`/`test`) | `openai`, or `ollama` (local inference, no API key) |
+| `RAG_EMBEDDING_MODEL` / `_DIMENSION` | `hashing-dev` / 1536 (any size with the memory store) | **`text-embedding-3-small` / 1536** (openai), **`qwen3-embedding:0.6b` / 1024** (ollama) |
+| `RAG_LLM_PROVIDER` | `extractive` (quotes the best source, offline) | `openai` (any OpenAI-compatible `/chat/completions`), or `ollama` (native `/api/chat`, e.g. `qwen3:1.7b`) |
+
+Local inference (Ollama) is described in [rag-local-ollama.md](rag-local-ollama.md): configuration, the 1024-dimension chunk
+table, reindex, resource measurements and rollback.
 
 ### Embeddings
 
 * Model: OpenAI `text-embedding-3-small`, requested with `dimensions: 1536` and `encoding_format: float`;
   stored in `knowledge_chunk.embedding vector(1536)` with an HNSW `vector_cosine_ops` index; retrieval
   orders by cosine distance (`<=>`) and reports `1 − distance` as the score.
-* The service refuses to start with any other model, a dimension other than 1536, a pgvector store whose
-  dimension differs from the schema, or the offline provider outside development/test. An unset
+* The service refuses to start with another OpenAI model or dimension, a known Ollama model with another dimension
+  (`qwen3-embedding:0.6b` = 1024), a pgvector dimension without an approved schema script (1536: `knowledge_chunk.sql`,
+  1024: `knowledge_chunk_local_1024.sql`), or the offline provider outside development/test. An unset
   `RAG_EMBEDDING_PROVIDER` means `openai`: without an API key the service does not start (no silent fallback).
+  `ollama` needs `RAG_EMBEDDING_BASE_URL` (no key) and is accepted in production.
 * Every provider response is checked before storage: vector count, `model` field, exactly 1536 finite
   numbers. Wrong dimensions are also refused by the store (before SQL) and by the column itself.
-  `GET /health/ready` reports not ready if the `knowledge_chunk.embedding` column is not `vector(1536)`.
+  `GET /health/ready` reports not ready if the `knowledge_chunk.embedding` column is not `vector(RAG_EMBEDDING_DIMENSION)`.
+  Vectors are never truncated or padded to fit the column.
 * Timeouts (`RAG_PROVIDER_TIMEOUT_SECONDS`, 45 s), HTTP errors and contract violations fail the ingestion
   attempt (the API retries with backoff); the service never switches to another model or provider.
 * Documents and queries use the same embedder; chunks are tagged with `embedding_model` and retrieval only
@@ -156,5 +162,11 @@ max context tokens, max history messages, prompt version, notes, revision. No se
   with them, even after another activation. `reindex-stale` queues INGEST jobs (with the active snapshot) for READY_FOR_REVIEW /
   PUBLISHED versions of non-archived documents whose `indexed_chunk_*` differ (or were never echoed), skipping versions with an
   open job. Published versions stay live meanwhile.
-* **Not configurable** — the embedding model/dimension (environment, `text-embedding-3-small`/1536); retrieval keeps filtering
-  on `embedding_model`. HMAC signing, quotas, citation validation and grounding are unchanged.
+* **Not configurable** — the embedding model/dimension (environment; `text-embedding-3-small`/1536 or local
+  `qwen3-embedding:0.6b`/1024); retrieval keeps filtering on `embedding_model`. With `Rag__EmbeddingModel` set on the API,
+  `reindex-stale` also queues versions whose chunks were embedded with another model. HMAC signing, quotas, citation validation
+  and grounding are unchanged.
+* **Registry** — `Rag:GenerationModels` from configuration replaces the built-in list entirely (`appsettings.json` ships none,
+  so the built-in three cloud models apply when nothing is configured). An ACTIVE configuration whose model is no longer in the
+  registry is not sent to the RAG service: its generation model, temperature and token parameter are left to the service
+  defaults (`RAG_LLM_MODEL`), with a warning in the API log, until an Admin activates a configuration with a registered model.

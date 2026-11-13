@@ -15,7 +15,7 @@ from app.embeddings import HashingEmbedder, ProviderError
 from app.ingestion import FAILED, ingest
 from app.llm import ExtractiveChatModel, GenerationOptions, OpenAICompatibleChatModel
 from app.main import build_services, create_app
-from app.prompting import SYSTEM_PROMPT, UnknownPromptVersion, build_messages
+from app.prompting import SYSTEM_PROMPT, SYSTEM_PROMPT_V2, UnknownPromptVersion, build_messages
 from app.security import sign
 from app.storage import LocalStorage
 from app.vectorstore import InMemoryVectorStore, StoredChunk
@@ -179,7 +179,7 @@ def test_model_allowlist_from_the_environment(settings, world):
 
 def test_unknown_prompt_versions_are_rejected_everywhere():
     with pytest.raises(UnknownPromptVersion):
-        build_messages("Q", [], [], prompt_version="v2")
+        build_messages("Q", [], [], prompt_version="v3")
     assert build_messages("Q", [], [], prompt_version="v1")[0]["content"] == SYSTEM_PROMPT
     with pytest.raises(ValueError, match="RAG_PROMPT_VERSION"):
         Settings(shared_secret=SECRET, storage="local", prompt_version="v9").validate()
@@ -324,3 +324,18 @@ def test_a_failed_reindex_leaves_the_previous_chunks_in_place(settings, ids):
     assert ingest(settings, storage, embedder, store, reindex).status == "INTEGRITY_FAILED"
 
     assert [(c.chunk_id, c.content) for c in store._chunks[ids[0]]] == before
+
+
+def test_prompt_version_v2_is_selectable_per_request_and_as_the_environment_default(world, settings):
+    client, model, _, allowed = world
+    answer = ask(client, allowed, promptVersion="v2")
+    assert answer.status_code == 200, answer.text
+    assert model.system[-1] == SYSTEM_PROMPT_V2
+    body = answer.json()
+    assert (body["promptVersion"], body["grounded"]) == ("v2", True)
+    assert body["timings"] is None                  # the extractive model reports no provider breakdown
+    # RAG_PROMPT_VERSION=v2 is a valid service default (used when the API sends no promptVersion).
+    settings.prompt_version = "v2"
+    settings.validate()
+    assert ask(client, allowed).json()["promptVersion"] == "v2"
+    assert model.system[-1] == SYSTEM_PROMPT_V2

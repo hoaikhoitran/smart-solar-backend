@@ -236,3 +236,41 @@ withdrawal both orders, duplicates). The check was restored afterwards.
 
 **Mutation check:** treating DISCARDED as live again for closure fails the E2E discard → close test (restored afterwards).
 
+## 9. Flaky-test investigation (2026-10-31, latest; supersedes the "NOT VERIFIED" combined run in §8)
+
+Fresh disposable PostgreSQL 17.11 and Redis instances were used, again running only from the session scratchpad. Their data was
+deleted afterwards.
+
+| Run (Release, clean build) | Total | Passed | Failed | Skipped |
+|---|---|---|---|---|
+| PostgreSQL only | 1,546 | 1,544 | 0 | 2 (Redis tests) |
+| Redis only | 1,546 | 1,469 | 0 | 77 |
+| **PostgreSQL and Redis together** | **1,546** | **1,546** | **0** | **0** |
+| No infrastructure | 1,546 | 1,467 | 0 | 79 |
+
+**Findings** (full evidence in [flaky-test-root-cause-analysis.md](flaky-test-root-cause-analysis.md)):
+
+* **The combined-run failures of §8:**
+  * Every HTTP test host started the dispatch worker, which shares the host's single in-memory SQLite connection with the
+    test's requests.
+  * A logged `SQLite Error 5: 'unable to delete/modify user-function due to active statements'` and a deterministic
+    reproduction show this collision: the request answers 500 (`data: null`).
+  * **Fixed in the test harness:** `Dispatch:WorkerEnabled=false`, plus a regression test.
+  * The 401s themselves were not reproduced.
+* **The 35-minute durations:** environmental. Run 1 overlapped the M-7 race test that hung before its fix; during run 3 a Debug
+  build overwrote the assemblies of the running `--no-build` test run.
+* **`Acceptance_and_revision_request_race_to_exactly_one_outcome`: NOT_REPRODUCED** (60 repeated runs, 20 of them with 1 CPU).
+  * Both handlers lock the quotation row (`FOR UPDATE`) before reading, so the loser re-reads the winner's state.
+  * Two new deterministic tests cover accept-first and revision-first. They hold the first transaction on the lock until
+    PostgreSQL reports the second one waiting.
+  * Mutation-checked: without the under-lock re-check both tests fail and the race test captures the lost update.
+* **New: `PostgresPaymentIntegrityTests` intermittent failure: FIXED_AND_VERIFIED.**
+  * The PostgreSQL log showed `ux_payment_attempt_order_code` violated by `7924652005645`: the same second and the same 4 random
+    digits.
+  * `PaymentService` now draws a new code for that specific violation, at most 3 tries.
+  * A regression test replays the exact code.
+* **`Two_replicas_backed_by_real_redis_share_one_limit`: CONFIRMED_NOT_FIXED.**
+  * Failed 2 times under load, 4 OK instead of 3.
+  * Cause unproven: either a window boundary or the 250 ms Redis budget falling back to per-instance limits.
+  * The test now reports the counters and timings when it fails.
+

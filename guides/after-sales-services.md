@@ -138,7 +138,7 @@ PayOS transaction time and the refund date. `…/dashboard/export` returns the s
 
 | Area (roles) | Base path | Endpoints |
 |---|---|---|
-| Customer | `api/customers/me/after-sales` | `GET installations/{projectId}/warranty` · `POST fault-requests` · `POST one-time-maintenance` · `GET requests`, `GET requests/{id}` · `POST requests/{id}/cancel`, `/completion`, `/reconsideration`, `/confirm-appointment`, `/reschedule`, `/report-fault` · `POST quotations/{id}/accept`, `/reject`, `/checkout` · `GET payments/{attemptId}` · `GET packages` · `POST purchases` · `GET subscriptions` · `POST subscriptions/{id}/cancel` · `POST maintenance/{entitlementId}/book` · `GET notifications` |
+| Customer | `api/customers/me/after-sales` | `GET installations/{projectId}/warranty` · `POST fault-requests` · `POST one-time-maintenance` · `GET requests`, `GET requests/{id}` · `POST requests/{id}/cancel`, `/completion`, `/reconsideration`, `/confirm-appointment`, `/reschedule`, `/report-fault` · `POST quotations/{id}/accept`, `/reject`, `/checkout` · `GET payments/{attemptId}` · `GET packages` · `POST purchases` · `GET subscriptions` · `POST subscriptions/{id}/cancel` · `POST maintenance/{entitlementId}/book` · `GET notifications` · `POST notifications/{notificationId}/read` |
 | Technician | `api/technicians/me/after-sales/visits` | `GET` · `GET {visitId}` · `POST {visitId}/respond`, `/start`, `/evidence`, `/inspection` (`stayOnSite`), `/continue-repair`, `/finish`, `/supplementary-items`, `/work-report`, `/absence` |
 | Sales | `api/sales/after-sales` | `GET warranty-options` · `GET tasks/open`, `GET tasks/mine` · `POST tasks/{id}/claim`, `/start`, `/follow-up` · `GET requests/{id}` · `POST requests/{id}/quotations` |
 | Manager, Admin | `api/manager/after-sales` | `GET requests`, `GET requests/{id}` · `POST requests/{id}/visits`, `/coverage`, `/claim-decision`, `/duplicate`, `/dispute-review`, `/cancellation-decision`, `/stop`, `/not-fulfilled` · `PUT assets/{id}` · `POST subscriptions/{id}/cancellation-decision` · `GET tasks` · `POST tasks/{id}/assign` · `GET refunds` · `POST refunds/{id}/decision` |
@@ -184,6 +184,13 @@ Migration `20261021023128_AfterSalesServices` (**generated, not applied**; apply
 3. `POST /api/admin/after-sales/packages` for the maintenance and disaster-protection packages that are sold.
 
 ## Known limitations
-* Notifications are in-app records (`GET notifications`); no email or push.
+* Notifications are in-app records (`GET notifications`); no email or push. `POST notifications/{notificationId}/read` persists `readAt`
+  (idempotent; another user's notification is 404), so the unread count is derived from the stored state on every device. The same
+  list carries the customer's pre-installation events (survey appointment booked/confirmed/rescheduled/cancelled, installation
+  quotation issued, contract awaiting signature/signed/signature rejected, installation scheduled/started/acceptance
+  required/rework/cancelled, equipment substitution approval): types in `Modules/Common/Notifications/CustomerNotifications.cs`,
+  written in the transaction of the business change through `IInAppNotificationWriter`. These rows have no `requestId`/
+  `subscriptionId` (those columns reference after-sales entities); the message carries the human reference (quotation or contract
+  number, scheduled time).
 * Dashboard money sums are added up in the API over the already filtered amounts (SQLite, used by the tests, cannot `SUM` decimals).
 * Parts availability for a same-visit repair is the technician's confirmation; there is no stock module.

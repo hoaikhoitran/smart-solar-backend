@@ -748,6 +748,7 @@ public static class AfterSalesErrorCodes
     public const string RefundNotFound = "REFUND_NOT_FOUND";
     public const string AssetNotFound = "AFTER_SALES_ASSET_NOT_FOUND";
     public const string OptionNotFound = "WARRANTY_OPTION_NOT_FOUND";
+    public const string NotificationNotFound = "NOTIFICATION_NOT_FOUND";
 
     public const string ValidationFailed = "AFTER_SALES_VALIDATION_FAILED";
     public const string InvalidState = "AFTER_SALES_INVALID_STATE";

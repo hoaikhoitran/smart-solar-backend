@@ -35,6 +35,8 @@ class AnswerOutcome:
     model: Optional[str] = None
     retrieval_ms: int = 0
     generation_ms: int = 0
+    # The provider's own breakdown of generation_ms (see Completion.timings); None for providers that report none.
+    timings: Optional[Dict[str, int]] = None
 
 
 def answer_question(
@@ -102,4 +104,5 @@ def answer_question(
         model=completion.model,
         retrieval_ms=retrieval_ms,
         generation_ms=generation_ms,
+        timings=completion.timings,
     )

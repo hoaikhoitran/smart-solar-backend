@@ -2,6 +2,13 @@
 
 ## Authoritative current status (2026-10-31, final)
 
+**Flaky-test phase (2026-10-31, later):** no decision status changed.
+* **One production fix:** a payment order-code collision now draws a new code instead of refusing the checkout. Payment rules
+  and error codes are unchanged.
+* **Test suites:** the combined PostgreSQL + Redis suite now passes (1,546/1,546, 0 skipped). See
+  [flaky-test-root-cause-analysis.md](flaky-test-root-cause-analysis.md).
+* **Repository:** the branch is now `fix/business-logic-v2` at `deddde8`, committed outside this session.
+
 This table is the single current status of each decision. Sections §1 and §3 below record how the work progressed; where they
 differ from this table, this table applies. Evidence: [m1-m4-migration-implementation-report.md](m1-m4-migration-implementation-report.md),
 [final-postgresql-concurrency-verification.md](final-postgresql-concurrency-verification.md).

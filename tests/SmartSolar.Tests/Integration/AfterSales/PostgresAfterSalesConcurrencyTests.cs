@@ -126,4 +126,29 @@ public sealed class PostgresAfterSalesConcurrencyTests
         var error = await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
         Assert.Contains("ux_payment_attempt_item_settled_subscription", error.InnerException!.Message);
     }
+
+    [PostgresFact]
+    public async Task Racing_mark_as_read_calls_persist_one_read_time_and_another_customer_cannot_touch_it()
+    {
+        var (database, ctx) = await WorldAsync();
+        await using var _ = database;
+        await using var __ = ctx;
+        var customer = (await ctx.Installation.Scheduling.Inner.SeedUserAsync("Reader")).Id;
+        var other = (await ctx.Installation.Scheduling.Inner.SeedUserAsync("Other")).Id;
+        var now = ctx.Clock.GetUtcNow();
+        var notification = AfterSalesHistory.NewNotification(customer, "INSTALLATION_SCHEDULED", "Scheduled", now);
+        ctx.Db.AfterSalesNotifications.Add(notification);
+        await ctx.Db.SaveChangesAsync();
+
+        // Six devices of the owner and one stranger, each on its own context (as API replicas would be).
+        var results = await RaceAsync(database, 7, (db, i) => ctx.Customer(db).MarkNotificationReadAsync(i == 0 ? other : customer, notification.Id, None));
+
+        Assert.Equal(AfterSalesErrorCodes.NotificationNotFound, results[0].ErrorCode);
+        Assert.All(results.Skip(1), r => Assert.True(r.Succeeded, r.Message));
+        Assert.Single(results.Skip(1).Select(r => r.Value!.ReadAt).Distinct());
+        await using var check = database.NewContext();
+        var stored = await check.AfterSalesNotifications.AsNoTracking().SingleAsync(n => n.Id == notification.Id);
+        Assert.Equal((now, customer), (stored.ReadAt, stored.RecipientUserId));
+        Assert.Single(await check.AfterSalesNotifications.AsNoTracking().Where(n => n.RecipientUserId == customer).ToListAsync());
+    }
 }

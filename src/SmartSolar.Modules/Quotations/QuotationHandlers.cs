@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using SmartSolar.Modules.Common.Notifications;
 using SmartSolar.Modules.Common.Persistence;
 using SmartSolar.Modules.Common.Results;
 using SmartSolar.Modules.Files;
@@ -246,11 +247,16 @@ public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, F
             q.Status = QuotationStatuses.Issued;
             q.IssuedAt = now;
             q.CustomerSnapshot = snapshot;
+            unitOfWork.AddNotification(q.CustomerUserId, CustomerNotificationTypes.QuotationIssued, QuotationIssuedMessage(q), now);
             AddEvent(q.Id, QuotationEventTypes.Issued, salesUserId,
                 string.IsNullOrWhiteSpace(reviewNote) ? $"total={q.TotalAmount} {q.Currency}" : $"total={q.TotalAmount} {q.Currency}; review: {Trim(reviewNote, 500)}", now);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
     }
+
+    /// <summary>Customer notification of an issued quotation (manual or automatic issue): the customer accepts it or requests changes.</summary>
+    private static string QuotationIssuedMessage(Quotation q)
+        => $"Quotation {q.QuoteNumber} (version {q.Version}, {q.TotalAmount:N0} {q.Currency}) is ready for your review. Please accept it or request changes.";
 
     /// <summary>New DRAFT version copied from an ISSUED or REVISION_REQUESTED quotation (the original stays unchanged).</summary>
     public async Task<OperationResult<QuotationView>> CreateRevisionAsync(Guid salesUserId, Guid quotationId, CancellationToken cancellationToken)

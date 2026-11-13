@@ -38,6 +38,12 @@ public sealed class KnowledgeUnitOfWork(AppDbContext db) : TransactionalUnitOfWo
             .ExecuteUpdateAsync(s => s.SetProperty(j => j.Status, JobStatuses.Failed).SetProperty(j => j.LockedUntil, (DateTimeOffset?)null)
                 .SetProperty(j => j.LastError, "No attempts left (the last run did not finish).").SetProperty(j => j.UpdatedAt, now), cancellationToken) == 1;
 
+    // A no-op UPDATE rather than a SELECT: it takes the row lock, so a concurrent TryLeaseJobAsync waits for this transaction and then
+    // no longer finds the job due.
+    public async Task<bool> TryHoldLeaseAsync(Guid jobId, DateTimeOffset leaseUntil, CancellationToken cancellationToken)
+        => await Db.KnowledgeIngestionJobs.Where(j => j.Id == jobId && j.Status == JobStatuses.Running && j.LockedUntil == leaseUntil)
+            .ExecuteUpdateAsync(s => s.SetProperty(j => j.LockedUntil, j => j.LockedUntil), cancellationToken) == 1;
+
     public async Task<bool> TryReleaseLeaseAsync(Guid jobId, DateTimeOffset leaseUntil, DateTimeOffset now, CancellationToken cancellationToken)
         => await Db.KnowledgeIngestionJobs.Where(j => j.Id == jobId && j.Status == JobStatuses.Running && j.LockedUntil == leaseUntil)
             .ExecuteUpdateAsync(s => s.SetProperty(j => j.Status, JobStatuses.Pending).SetProperty(j => j.LockedUntil, (DateTimeOffset?)null)

@@ -1,3 +1,4 @@
+using SmartSolar.Modules.Common.Notifications;
 using SmartSolar.Modules.Identity.Constants;
 using SmartSolar.Modules.PreSurvey.Enums;
 using SmartSolar.Modules.Scheduling.Constants;
@@ -587,6 +588,8 @@ public sealed class DispatchService(
             reason: $"DISPATCH_REQUEST {request.Id}");
         AppointmentAssignmentService.RecordStaffAssignment(scheduling, appointment, AssignmentSources.ManagerDispatch, reason, assignedBy, technicianUserId,
             null, null, survey.AssignedSaleId, now);
+        AppointmentHistory.NotifyCustomer(scheduling, appointment, CustomerNotificationTypes.SurveyAppointmentConfirmed,
+            $"SmartSolar arranged your survey appointment for {AppointmentHistory.When(start, calendar.TimeZone)}; the technician is confirmed.", now);
         return ApplyResult.Applied(appointment.Id);
     }
 

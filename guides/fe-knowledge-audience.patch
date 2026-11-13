@@ -1,0 +1,331 @@
+diff --git a/src/features/knowledge/knowledgeRules.ts b/src/features/knowledge/knowledgeRules.ts
+index 93e323f..6ccdaec 100644
+--- a/src/features/knowledge/knowledgeRules.ts
++++ b/src/features/knowledge/knowledgeRules.ts
+@@ -73,3 +73,23 @@ export function needsPolling(d: KnowledgeDocumentView) {
+     d.status === 'PROCESSING'
+   )
+ }
++
++/** Đối tượng đọc (ai được chatbot truy hồi), theo KnowledgeAudiences của backend */
++export const KNOWLEDGE_AUDIENCES = {
++  INTERNAL: { label: 'Chỉ nhân viên', tone: 'neutral' },
++  CUSTOMER: { label: 'Khách hàng đọc được', tone: 'ok' },
++} as const
++export const AUDIENCE_REASON_MAX = 1000
++
++/** Thiếu trường (image API cũ) là INTERNAL, như mặc định của backend */
++export const audienceOf = (d: Pick<KnowledgeDocumentView, 'audience'>) => d.audience ?? 'INTERNAL'
++export const audienceMeta = (code: string) =>
++  KNOWLEDGE_AUDIENCES[code as keyof typeof KNOWLEDGE_AUDIENCES] ?? { label: code, tone: 'neutral' as const }
++export const canChangeAudience = (d: Pick<KnowledgeDocumentView, 'status'>) => !isArchived(d)
++
++export function audienceReasonError(reason: string) {
++  const text = reason.trim()
++  if (!text) return 'Nhập lý do đổi đối tượng đọc.'
++  if (text.length > AUDIENCE_REASON_MAX) return `Lý do tối đa ${AUDIENCE_REASON_MAX} ký tự.`
++  return undefined
++}
+diff --git a/src/hooks/useKnowledgeDocuments.ts b/src/hooks/useKnowledgeDocuments.ts
+index 7d849aa..0175a7a 100644
+--- a/src/hooks/useKnowledgeDocuments.ts
++++ b/src/hooks/useKnowledgeDocuments.ts
+@@ -99,3 +99,10 @@ export function useArchiveKnowledgeMutation() {
+     knowledgeService.archiveKnowledgeDocument(id, { revision }),
+   )
+ }
++
++export function useSetKnowledgeAudienceMutation() {
++  return useDocumentMutation(
++    ({ id, revision, audience, reason }: { id: string; revision: number; audience: string; reason: string }) =>
++      knowledgeService.setKnowledgeAudience(id, { revision, audience, reason }),
++  )
++}
+diff --git a/src/pages/admin/knowledge-document-page.tsx b/src/pages/admin/knowledge-document-page.tsx
+index f18865d..b249181 100644
+--- a/src/pages/admin/knowledge-document-page.tsx
++++ b/src/pages/admin/knowledge-document-page.tsx
+@@ -5,7 +5,7 @@ import { KNOWLEDGE_CATEGORIES } from '@/common/knowledge'
+ import { Badge } from '@/components/common/ui/badge'
+ import { Button } from '@/components/common/ui/button'
+ import { DialogFooter, DialogTitle, ModalDialog } from '@/components/common/ui/dialog'
+-import { Field, Input, Select } from '@/components/common/ui/field'
++import { Field, Input, Select, Textarea } from '@/components/common/ui/field'
+ import { Notice } from '@/components/common/ui/lists'
+ import { PageHeader } from '@/components/common/ui/page-header'
+ import { Panel, PanelHeader } from '@/components/common/ui/panel'
+@@ -23,7 +23,13 @@ import {
+   versionStatusMeta,
+ } from '@/features/knowledge/knowledgeDisplay'
+ import {
++  AUDIENCE_REASON_MAX,
++  KNOWLEDGE_AUDIENCES,
+   KNOWLEDGE_LIMITS,
++  audienceMeta,
++  audienceOf,
++  audienceReasonError,
++  canChangeAudience,
+   canPublishVersion,
+   canReindexVersion,
+   canRetryJob,
+@@ -41,6 +47,7 @@ import {
+   usePublishKnowledgeVersionMutation,
+   useReindexKnowledgeVersionMutation,
+   useRetryKnowledgeJobMutation,
++  useSetKnowledgeAudienceMutation,
+   useUnpublishKnowledgeMutation,
+   useUpdateKnowledgeMetadataMutation,
+ } from '@/hooks/useKnowledgeDocuments'
+@@ -153,6 +160,97 @@ function MetadataDialog({
+   )
+ }
+ 
++// Ai được chatbot truy hồi tài liệu. Backend mặc định INTERNAL khi đăng ký: khách hàng chỉ nhận câu trả lời từ tài liệu CUSTOMER
++function AudienceDialog({
++  document: d,
++  open,
++  onOpenChange,
++}: {
++  document: KnowledgeDocumentView
++  open: boolean
++  onOpenChange: (open: boolean) => void
++}) {
++  const change = useSetKnowledgeAudienceMutation()
++  const current = audienceOf(d)
++  const [audience, setAudience] = useState(current === 'CUSTOMER' ? 'INTERNAL' : 'CUSTOMER')
++  const [reason, setReason] = useState('')
++  const [revision] = useState(d.revision)
++  const [checked, setChecked] = useState(false)
++  const [error, setError] = useState<string | null>(null)
++  const reasonError = checked ? audienceReasonError(reason) : undefined
++
++  async function submit() {
++    if (change.isPending) return
++    setChecked(true)
++    setError(null)
++    if (audienceReasonError(reason)) return
++    try {
++      await change.mutateAsync({ id: d.documentId, revision, audience, reason: reason.trim() })
++      toast.success(`Đã đổi đối tượng đọc: ${audienceMeta(audience).label}. Chatbot áp dụng ngay.`)
++      onOpenChange(false)
++    } catch (e) {
++      if (isApiError(e) && (e.code === 'RAG_STALE_REVISION' || e.code === 'RAG_DOCUMENT_AUDIENCE_UNCHANGED')) {
++        toast.error(errorMessage(e))
++        onOpenChange(false)
++        return
++      }
++      setError(rateLimitedMessage(e))
++    }
++  }
++
++  return (
++    <ModalDialog open={open} onOpenChange={onOpenChange} dismissible={!change.isPending} aria-label="Đổi đối tượng đọc">
++      <form
++        noValidate
++        onSubmit={(e) => {
++          e.preventDefault()
++          void submit()
++        }}
++      >
++        <DialogTitle>Đổi đối tượng đọc</DialogTitle>
++        <div className="mt-4 space-y-4">
++          <Notice tone="info">
++            Hiện tại: {audienceMeta(current).label}. Chỉ tài liệu &quot;{KNOWLEDGE_AUDIENCES.CUSTOMER.label}&quot; được
++            dùng khi khách hàng hỏi chatbot; nhân viên đọc được mọi tài liệu đang công bố.
++          </Notice>
++          <Field label="Đối tượng đọc" required htmlFor="kb-audience">
++            <Select id="kb-audience" value={audience} onChange={(e) => setAudience(e.target.value)}>
++              {Object.entries(KNOWLEDGE_AUDIENCES).map(([value, meta]) => (
++                <option key={value} value={value}>
++                  {meta.label}
++                </option>
++              ))}
++            </Select>
++          </Field>
++          <Field label="Lý do" required htmlFor="kb-audience-reason" error={reasonError}>
++            <Textarea
++              id="kb-audience-reason"
++              value={reason}
++              maxLength={AUDIENCE_REASON_MAX}
++              aria-required
++              aria-invalid={reasonError ? true : undefined}
++              onChange={(e) => setReason(e.target.value)}
++            />
++          </Field>
++          {error && (
++            <div role="alert">
++              <Notice tone="danger">{error}</Notice>
++            </div>
++          )}
++        </div>
++        <DialogFooter>
++          <Button icon="close" variant="secondary" disabled={change.isPending} onClick={() => onOpenChange(false)}>
++            Huỷ
++          </Button>
++          <Button icon="save" type="submit" variant="primary" disabled={change.isPending}>
++            {change.isPending ? 'Đang lưu…' : 'Lưu'}
++          </Button>
++        </DialogFooter>
++      </form>
++    </ModalDialog>
++  )
++}
++
+ function DocumentView({ document: d }: { document: KnowledgeDocumentView }) {
+   const navigate = useNavigate()
+   const publish = usePublishKnowledgeVersionMutation()
+@@ -162,11 +260,13 @@ function DocumentView({ document: d }: { document: KnowledgeDocumentView }) {
+   const retry = useRetryKnowledgeJobMutation()
+   const [editing, setEditing] = useState(false)
+   const [adding, setAdding] = useState(false)
++  const [changingAudience, setChangingAudience] = useState(false)
+   const [confirm, setConfirm] = useState<Confirm | null>(null)
+   const [busyKey, setBusyKey] = useState<string | null>(null)
+   // Nạp lại và chạy lại chung giới hạn 3 lần / 10 phút: bị 429 thì khoá cả hai tới hết Retry-After
+   const cooldown = useRetryCountdown(() => {})
+   const status = documentStatusMeta(d.status)
++  const audience = audienceMeta(audienceOf(d))
+   const archived = isArchived(d)
+   const versions = [...(d.versions ?? [])].sort((a, b) => b.versionNumber - a.versionNumber)
+   const jobs = [...(d.jobs ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+@@ -223,6 +323,7 @@ function DocumentView({ document: d }: { document: KnowledgeDocumentView }) {
+         meta={
+           <>
+             <Badge tone={status.tone}>{status.label}</Badge>
++            <Badge tone={audience.tone}>{audience.label}</Badge>
+             <span>{categoryLabel(d.category)}</span>
+           </>
+         }
+@@ -234,6 +335,11 @@ function DocumentView({ document: d }: { document: KnowledgeDocumentView }) {
+               <Button variant="soft" icon="edit" onClick={() => setEditing(true)}>
+                 Sửa thông tin
+               </Button>
++              {canChangeAudience(d) && (
++                <Button variant="soft" icon="group" onClick={() => setChangingAudience(true)}>
++                  Đổi đối tượng đọc
++                </Button>
++              )}
+               <Button variant="soft" icon="upload_file" onClick={() => setAdding(true)}>
+                 Thêm phiên bản
+               </Button>
+@@ -255,6 +361,12 @@ function DocumentView({ document: d }: { document: KnowledgeDocumentView }) {
+           Đang có lượt nạp chạy nền. Trang tự cập nhật 15 giây một lần; phiên bản nạp xong mới công bố được.
+         </Notice>
+       )}
++      {d.legacyAudienceTag && (
++        <Notice tone="warn" className="mb-6">
++          Tài liệu còn thẻ cũ &quot;audience:customer&quot;. Thẻ này không còn cho khách hàng đọc: nếu khách hàng cần
++          đọc, đổi đối tượng đọc.
++        </Notice>
++      )}
+       {archived && (
+         <Notice tone="neutral" className="mb-6">
+           Tài liệu đã lưu trữ: chatbot không dùng, không sửa hay công bố được nữa.
+@@ -444,6 +556,12 @@ function DocumentView({ document: d }: { document: KnowledgeDocumentView }) {
+         open={editing}
+         onOpenChange={setEditing}
+       />
++      <AudienceDialog
++        key={changingAudience ? `audience-${d.revision}` : 'closed'}
++        document={d}
++        open={changingAudience}
++        onOpenChange={setChangingAudience}
++      />
+       <KnowledgeUploadDialog open={adding} document={d} onOpenChange={setAdding} />
+       <ModalDialog
+         open={confirm !== null}
+diff --git a/src/services/api/endpoints.ts b/src/services/api/endpoints.ts
+index 5510c9a..21428ae 100644
+--- a/src/services/api/endpoints.ts
++++ b/src/services/api/endpoints.ts
+@@ -370,6 +370,7 @@ export const ENDPOINTS = {
+     retryJob: (documentId: string, jobId: string) =>
+       `/admin/knowledge-documents/${encode(documentId)}/jobs/${encode(jobId)}/retry`,
+     archive: (documentId: string) => `/admin/knowledge-documents/${encode(documentId)}/archive`,
++    audience: (documentId: string) => `/admin/knowledge-documents/${encode(documentId)}/audience`,
+   },
+   adminSystemSettings: {
+     scheduling: '/admin/system-settings/scheduling',
+diff --git a/src/services/knowledgeDocumentService.ts b/src/services/knowledgeDocumentService.ts
+index 58982bc..458f31b 100644
+--- a/src/services/knowledgeDocumentService.ts
++++ b/src/services/knowledgeDocumentService.ts
+@@ -4,6 +4,7 @@ import type {
+   PublishKnowledgeVersionRequest,
+   RegisterKnowledgeDocumentRequest,
+   ReindexKnowledgeVersionRequest,
++  SetKnowledgeAudienceRequest,
+   UpdateKnowledgeMetadataRequest,
+ } from '@/types/req/adminKnowledgeDocumentsReq'
+ import type { KnowledgeDocumentView } from '@/types/res/knowledgeDocumentsRes'
+@@ -63,3 +64,8 @@ export function retryKnowledgeJob(documentId: string, jobId: string) {
+ export function archiveKnowledgeDocument(documentId: string, body: KnowledgeRevisionRequest) {
+   return post<KnowledgeDocumentView>(api.archive(documentId), body)
+ }
++
++/** Đổi ai được chatbot truy hồi tài liệu (INTERNAL | CUSTOMER), có lý do; có hiệu lực ngay. 409 RAG_DOCUMENT_AUDIENCE_UNCHANGED khi không đổi */
++export function setKnowledgeAudience(documentId: string, body: SetKnowledgeAudienceRequest) {
++  return put<KnowledgeDocumentView>(api.audience(documentId), body)
++}
+diff --git a/src/types/res/knowledgeDocumentsRes.ts b/src/types/res/knowledgeDocumentsRes.ts
+index 1a12cfc..752dd97 100644
+--- a/src/types/res/knowledgeDocumentsRes.ts
++++ b/src/types/res/knowledgeDocumentsRes.ts
+@@ -57,6 +57,13 @@ export type KnowledgeDocumentView = {
+   createdAt: string
+   updatedAt: string
+   revision: number
++  /**
++   * Ai được chatbot truy hồi tài liệu: INTERNAL (chỉ nhân viên, mặc định khi đăng ký) | CUSTOMER. Image API trước 31/10 không có
++   * trường này: coi như INTERNAL
++   */
++  audience?: string
++  /** Còn thẻ tạm `audience:customer` từ trước khi có trường audience: thẻ không cấp quyền gì, cần quản trị xem lại */
++  legacyAudienceTag?: boolean
+   versions: KnowledgeVersionView[] | null
+   jobs: IngestionJobView[] | null
+ }
+diff --git a/tests/admin-portal-rules.test.mjs b/tests/admin-portal-rules.test.mjs
+index 89f97ea..ac9e430 100644
+--- a/tests/admin-portal-rules.test.mjs
++++ b/tests/admin-portal-rules.test.mjs
+@@ -20,6 +20,10 @@ import {
+   canUnpublish,
+   needsPolling,
+   parseTags,
++  audienceMeta,
++  audienceOf,
++  audienceReasonError,
++  canChangeAudience,
+   tagsError,
+   titleError,
+   titleFromFileName,
+@@ -226,6 +230,28 @@ describe('kho tri thức', () => {
+   })
+ })
+ 
++describe('đối tượng đọc của tài liệu', () => {
++  test('thiếu trường (image API cũ) là INTERNAL như mặc định backend', () => {
++    assert.equal(audienceOf({}), 'INTERNAL')
++    assert.equal(audienceOf({ audience: 'CUSTOMER' }), 'CUSTOMER')
++  })
++  test('nhãn và mã lạ', () => {
++    assert.equal(audienceMeta('CUSTOMER').label, 'Khách hàng đọc được')
++    assert.equal(audienceMeta('INTERNAL').label, 'Chỉ nhân viên')
++    assert.deepEqual(audienceMeta('PARTNER'), { label: 'PARTNER', tone: 'neutral' })
++  })
++  test('lý do bắt buộc, tối đa 1000 ký tự', () => {
++    assert.ok(audienceReasonError('   '))
++    assert.ok(audienceReasonError('x'.repeat(1001)))
++    assert.equal(audienceReasonError('  Khách hàng cần đọc chính sách bảo hành  '), undefined)
++  })
++  test('tài liệu lưu trữ không đổi được', () => {
++    assert.equal(canChangeAudience({ status: 'ARCHIVED' }), false)
++    assert.equal(canChangeAudience({ status: 'REGISTERED' }), true)
++    assert.equal(canChangeAudience({ status: 'PUBLISHED' }), true)
++  })
++})
++
+ describe('ảnh sản phẩm', () => {
+   test('chỉ nhận link https tuyệt đối, không kèm tài khoản', () => {
+     assert.equal(imageUrlError('https://cdn.example.com/a.jpg'), undefined)

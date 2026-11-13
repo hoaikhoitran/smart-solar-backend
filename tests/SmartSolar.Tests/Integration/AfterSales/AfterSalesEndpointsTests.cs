@@ -55,4 +55,34 @@ public sealed class AfterSalesEndpointsTests
         await AssertFailureAsync(await CatalogEndpointsTests.ClientFor(factory, RoleCodes.Customer).GetAsync("/api/customers/me/after-sales/requests"),
             HttpStatusCode.ServiceUnavailable, "FEATURE_PENDING_MIGRATION");
     }
+
+    [Fact]
+    public async Task A_customer_marks_only_their_own_notifications_read_and_the_read_time_is_persisted()
+    {
+        using var factory = Enabled(new FakeStorageObjectVerifier(), new FakeRagServiceClient());
+        var customerId = Guid.NewGuid();
+        var customer = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Customer, customerId);
+        var stranger = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Customer);
+        Guid notificationId;
+        using (var db = factory.CreateDbContext())
+        {
+            var notification = AfterSalesHistory.NewNotification(customerId, "INSTALLATION_SCHEDULED", "Scheduled", DateTimeOffset.UtcNow);
+            db.AfterSalesNotifications.Add(notification);
+            await db.SaveChangesAsync();
+            notificationId = notification.Id;
+        }
+        var route = $"/api/customers/me/after-sales/notifications/{notificationId}/read";
+
+        Assert.Equal(HttpStatusCode.Unauthorized, (await factory.CreateClient().PostAsync(route, null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await CatalogEndpointsTests.ClientFor(factory, RoleCodes.Technician).PostAsync(route, null)).StatusCode);
+        await AssertFailureAsync(await stranger.PostAsync(route, null), HttpStatusCode.NotFound, AfterSalesErrorCodes.NotificationNotFound);
+
+        var read = await DataOf(await customer.PostAsync(route, null));
+        Assert.Equal(notificationId, read.GetProperty("notificationId").GetGuid());
+        var readAt = read.GetProperty("readAt").GetDateTimeOffset();
+        Assert.Equal(readAt, (await DataOf(await customer.PostAsync(route, null))).GetProperty("readAt").GetDateTimeOffset());     // idempotent
+        var listed = await DataOf(await customer.GetAsync("/api/customers/me/after-sales/notifications"));
+        Assert.Equal(readAt, listed.EnumerateArray().Single().GetProperty("readAt").GetDateTimeOffset());
+        Assert.Empty((await DataOf(await stranger.GetAsync("/api/customers/me/after-sales/notifications"))).EnumerateArray());
+    }
 }

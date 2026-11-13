@@ -628,6 +628,10 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
 
     public void AddNotification(SchedulingNotification notification) => _db.SchedulingNotifications.Add(notification);
 
+    /// <summary>Customer in-app notification (IInAppNotificationWriter), saved with the appointment change.</summary>
+    public void AddNotification(Guid recipientUserId, string type, string message, DateTimeOffset now)
+        => _db.AfterSalesNotifications.Add(Modules.AfterSales.AfterSalesHistory.NewNotification(recipientUserId, type, message, now));
+
     public async Task<IReadOnlyList<TechnicianAppointmentEvent>> ListAppointmentEventsAsync(Guid surveyRequestId, CancellationToken cancellationToken)
         => (await _db.TechnicianAppointmentEvents.AsNoTracking().Where(e => e.SurveyRequestId == surveyRequestId).ToListAsync(cancellationToken))
             .OrderBy(e => e.CreatedAt).ToList();

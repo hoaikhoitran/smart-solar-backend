@@ -1,3 +1,4 @@
+using SmartSolar.Modules.Common.Notifications;
 using SmartSolar.Modules.Common.Persistence;
 
 namespace SmartSolar.Modules.Installations;
@@ -15,7 +16,7 @@ public sealed record AssetCatalogProduct(Guid ProductId, string ProductType, int
 /// <summary>A SOLAR_PANEL or INVERTER product and its quantity in the contract's accepted quotation.</summary>
 public sealed record ContractedEquipment(Guid ProductId, string ProductType, string Name, decimal Quantity);
 
-public interface IInstallationUnitOfWork : ITransactionalUnitOfWork
+public interface IInstallationUnitOfWork : ITransactionalUnitOfWork, IInAppNotificationWriter
 {
     Task<PaidContractSource?> GetContractAsync(Guid contractId, CancellationToken cancellationToken);
 

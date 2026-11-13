@@ -129,8 +129,13 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
                 try
                 {
                     // Bootstrap (no ACTIVE admin configuration): model, temperature and token parameter are left to the RAG service's own
-                    // environment defaults (RAG_LLM_MODEL / RAG_LLM_TEMPERATURE); only an ACTIVE configuration overrides them.
-                    var bootstrap = config.Bootstrap;
+                    // environment defaults (RAG_LLM_MODEL / RAG_LLM_TEMPERATURE); only an ACTIVE configuration overrides them. An ACTIVE
+                    // model that is no longer in the registry is not sent either (the provider no longer serves it): the defaults apply
+                    // until an Admin activates a configuration with a registered model.
+                    var bootstrap = config.Bootstrap || !config.ModelRegistered;
+                    if (!config.Bootstrap && !config.ModelRegistered)
+                        logger.LogWarning("Active RAG configuration {Version} names generation model {Model}, which is not in Rag:GenerationModels; the RAG service default model is used.",
+                            config.Version, c.GenerationModel);
                     result = await rag.AnswerAsync(new RagAnswerRequest(question, history, allowed, Math.Clamp(c.TopK, 1, Math.Max(1, options.MaxTopK)),
                         c.MaxContextTokens, c.MaxOutputTokens, config.Version, bootstrap ? null : c.GenerationModel, bootstrap ? null : c.Temperature,
                         bootstrap ? null : config.TokenParameter, c.MinScore, c.PromptVersion),

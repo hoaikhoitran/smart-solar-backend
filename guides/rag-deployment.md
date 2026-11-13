@@ -35,11 +35,13 @@ RAG service:
 | `RAG_LLM_PROVIDER` / `_MODEL` / `_BASE_URL` / `_API_KEY` | `openai` / model / endpoint / key |
 | `RAG_WORKERS` | 2–4 (pgvector only) |
 | `RAG_LLM_ALLOWED_MODELS` | optional comma list; when set, a request naming another model is rejected (422). When set it **must contain every model id of `Rag:GenerationModels`** (and `RAG_LLM_MODEL`), otherwise an admin can activate a model the service refuses and every chat request fails |
-| `RAG_PROMPT_VERSION` | default prompt template when a request names none (`v1`) |
+| `RAG_PROMPT_VERSION` | default prompt template when a request names none (`v1`; `v2` = complete, natural answers, see `rag-local-ollama.md` §9). The API selects the version per request from its ACTIVE configuration (`Rag:PromptVersions` lists what an Admin may choose) |
 | Optional | `RAG_MAX_CONCURRENT_GENERATIONS`, `RAG_MAX_CONCURRENT_INGESTIONS`, `RAG_MIN_SCORE`, `RAG_CHUNK_CHARACTERS`, `RAG_CHUNK_OVERLAP`, `RAG_MAX_DOCUMENT_BYTES`, `RAG_PROVIDER_TIMEOUT_SECONDS`, ceilings `RAG_MAX_TOP_K` / `RAG_MAX_CONTEXT_TOKENS` / `RAG_MAX_OUTPUT_TOKENS` (clamp per-request values) |
 
 Per-request fields (`configVersion`, chunk settings, `generationModel`, `temperature`, `tokenParameter`, `minScore`,
-`promptVersion`) are optional: absent fields use these environment defaults, so an older API keeps working. Unknown fields
+`promptVersion`) are optional: absent fields use these environment defaults, so an older API keeps working. The answer response
+also carries `timings` (Ollama's own breakdown in ms: `loadMs`, `promptEvalMs`, `evalMs`, `totalMs`; `null` for other
+providers); the API ignores fields it does not read. Unknown fields
 are rejected (422). Deploy the RAG service **before** (or together with) an API that sends the new fields: a newer API
 against this service gets 422 for any field the service does not know yet. The reverse mix also runs but is misleading: a
 service from before the admin RAG configuration (plain pydantic models, unknown fields silently ignored) accepts the new
@@ -49,13 +51,21 @@ ACTIVE (bootstrap) the API omits `generationModel`, `temperature` and `tokenPara
 `RAG_LLM_TEMPERATURE` decide the generation; `Rag__GenerationModel`/`Rag__Temperature` only take effect once an admin activates
 a configuration (they seed the first draft).
 
+### Local inference (no OpenAI key)
+
+`RAG_EMBEDDING_PROVIDER=ollama` / `RAG_LLM_PROVIDER=ollama` with the `ollama` compose service: see
+[rag-local-ollama.md](rag-local-ollama.md). It needs the 1024-dimension chunk table and a reindex.
+
 ## 3. Network
 
 * Never publish port 8000 publicly. In compose it is `expose`d only; in other platforms keep it on a
   private network/security group reachable only from the API.
 * The service needs egress to S3, PostgreSQL and the LLM/embedding provider.
 * Health: `GET /health/live` (process), `GET /health/ready` (vector store reachable, `knowledge_chunk` exists and its
-  `embedding` column is `vector(1536)`).
+  `embedding` column is `vector(RAG_EMBEDDING_DIMENSION)`: 1536 for OpenAI, 1024 for local `qwen3-embedding:0.6b`).
+* The `ollama` service has no published port and is only on the `rag-llm` network with `rag-service`.
+* With Ollama providers `/health/ready` also requires both models to be pulled; the one-shot `ollama-models` service pulls them on
+  the first start, and `rag-service` (healthcheck: `/health/ready`) starts only after it exits 0.
 
 ## 4. Rollout
 

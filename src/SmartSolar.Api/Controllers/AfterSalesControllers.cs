@@ -171,6 +171,13 @@ public sealed class CustomerAfterSalesController(
     public async Task<IActionResult> Notifications(CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Ok(Contracts.ApiResponse<object>.Success(await requests.NotificationsAsync(user, cancellationToken), HttpContext.GetTraceId()))
             : UnauthorizedFailure();
+
+    /// <summary>Marks one of the caller's notifications as read (idempotent; <c>readAt</c> is persisted). Another user's notification is 404.</summary>
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.AfterSales.NotificationView>), StatusCodes.Status200OK)]
+    [HttpPost("notifications/{notificationId:guid}/read")]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
+    public async Task<IActionResult> MarkNotificationRead(Guid notificationId, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await requests.MarkNotificationReadAsync(user, notificationId, cancellationToken)) : UnauthorizedFailure();
 }
 
 /// <summary>Technician: assigned after-sales visits only.</summary>

@@ -1,3 +1,4 @@
+using SmartSolar.Modules.Common.Notifications;
 using SmartSolar.Modules.Common.Persistence;
 
 namespace SmartSolar.Modules.CustomerContracts;
@@ -7,7 +8,7 @@ public sealed record AcceptedQuotationSource(
     Guid? AssignedSaleId, string Currency, decimal TotalAmount, string PricingSnapshotJson, string? CustomerSnapshotJson, string? Terms,
     int QuotationSurveyVersion = 0, int CurrentSurveyVersion = 0);
 
-public interface IContractUnitOfWork : ITransactionalUnitOfWork
+public interface IContractUnitOfWork : ITransactionalUnitOfWork, IInAppNotificationWriter
 {
     Task<AcceptedQuotationSource?> GetQuotationAsync(Guid quotationId, CancellationToken cancellationToken);
     Task<Guid?> GetAssignedSaleAsync(Guid surveyRequestId, CancellationToken cancellationToken);

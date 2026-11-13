@@ -14,11 +14,16 @@ public static class AfterSalesHistory
 
     public static void Notify(IAfterSalesUnitOfWork data, Guid recipientUserId, string type, string message, DateTimeOffset now,
         Guid? requestId = null, Guid? subscriptionId = null)
-        => data.Add(new AfterSalesNotification
+        => data.Add(NewNotification(recipientUserId, type, message, now, requestId, subscriptionId));
+
+    /// <summary>The in-app notification row (also written by the pre-installation units of work through IInAppNotificationWriter).</summary>
+    public static AfterSalesNotification NewNotification(Guid recipientUserId, string type, string message, DateTimeOffset now,
+        Guid? requestId = null, Guid? subscriptionId = null)
+        => new()
         {
             Id = Guid.NewGuid(), RecipientUserId = recipientUserId, Type = type, Message = Text.Trim(message, 500)!, RequestId = requestId,
             SubscriptionId = subscriptionId, CreatedAt = now,
-        });
+        };
 
     public static void NotifyAll(IAfterSalesUnitOfWork data, IEnumerable<Guid> recipients, string type, string message, DateTimeOffset now,
         Guid? requestId = null, Guid? subscriptionId = null)

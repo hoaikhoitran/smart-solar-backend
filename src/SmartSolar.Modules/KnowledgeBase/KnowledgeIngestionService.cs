@@ -236,12 +236,17 @@ public sealed class KnowledgeIngestionService(IKnowledgeUnitOfWork unitOfWork, I
         CancellationToken cancellationToken)
         => await unitOfWork.ExecuteInTransactionAsync<bool>(async token =>
         {
-            var job = (await unitOfWork.FindJobAsync(jobId, true, token))!;
-            if (lease is { } ours && (job.Status != JobStatuses.Running || job.LockedUntil != ours))
+            // Fencing in the database, not on the loaded entity: timestamptz keeps whole microseconds while the lease has 100 ns ticks,
+            // so the reloaded LockedUntil almost never equalled our in-memory lease and every successful outcome was discarded. In SQL
+            // both sides are converted to timestamptz the same way (as TryReleaseLeaseAsync always did). The matched row stays locked
+            // until this transaction ends, so a worker taking over an expired lease cannot slip in between this check and the write.
+            if (lease is { } ours && !await unitOfWork.TryHoldLeaseAsync(jobId, ours, token))
             {
-                logger.LogWarning("Ignoring the outcome of knowledge ingestion job {JobId}: its lease expired and another worker took over.", jobId);
+                logger.LogWarning("Ignoring the outcome of knowledge ingestion job {JobId}: this worker no longer holds its lease "
+                                  + "(it expired and was taken over, or the job was already finished or released).", jobId);
                 return (false, false);
             }
+            var job = (await unitOfWork.FindJobAsync(jobId, true, token))!;
             var now = time.GetUtcNow();
             job.LockedUntil = null;
             job.UpdatedAt = now;
