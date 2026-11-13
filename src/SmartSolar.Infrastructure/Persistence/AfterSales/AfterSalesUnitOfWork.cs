@@ -186,6 +186,10 @@ public sealed class AfterSalesUnitOfWork(AppDbContext db) : TransactionalUnitOfW
         => (await Db.AfterSalesNotifications.AsNoTracking().Where(n => n.RecipientUserId == recipientUserId).ToListAsync(cancellationToken))
             .OrderByDescending(n => n.CreatedAt).Take(100).ToList();
 
+    public Task<AfterSalesNotification?> FindNotificationAsync(Guid notificationId, Guid recipientUserId, bool track, CancellationToken cancellationToken)
+        => (track ? Db.AfterSalesNotifications : Db.AfterSalesNotifications.AsNoTracking())
+            .FirstOrDefaultAsync(n => n.Id == notificationId && n.RecipientUserId == recipientUserId, cancellationToken);
+
     public Task<PaymentAttempt?> FindPaymentAttemptAsync(Guid attemptId, CancellationToken cancellationToken)
         => Db.PaymentAttempts.AsNoTracking().FirstOrDefaultAsync(a => a.Id == attemptId, cancellationToken);
 

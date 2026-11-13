@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using SmartSolar.Modules.Common.Notifications;
 using SmartSolar.Modules.Common.Results;
 
 namespace SmartSolar.Modules.Installations;
@@ -82,6 +83,8 @@ public sealed partial class InstallationHandlers
                     Name = Trim(d.Name, 255), ContractedQuantity = d.ContractedQuantity, InstalledQuantity = d.InstalledQuantity,
                 });
             Event(projectId, InstallationEventTypes.SubstitutionApproved, managerUserId, null, null, $"fp:{comparison.Fingerprint}; {why}", now);
+            unitOfWork.AddNotification(p.CustomerUserId, CustomerNotificationTypes.EquipmentSubstitutionApprovalRequired,
+                $"The installed equipment differs from your contract ({why}). Please review and approve the substitution before accepting the installation.", now);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
         return await ThenAsync(result, () => StaffViewAsync(projectId, cancellationToken));

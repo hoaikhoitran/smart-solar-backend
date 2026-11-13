@@ -1,3 +1,4 @@
+using SmartSolar.Modules.Common.Notifications;
 using SmartSolar.Modules.Common.Persistence;
 
 namespace SmartSolar.Modules.Quotations;
@@ -21,7 +22,7 @@ public sealed record RequestClosure(DateTimeOffset? ClosedAt, Guid? ClosedByUser
 public sealed record SalesRequestState(Guid SurveyRequestId, Guid CustomerUserId, Guid? AssignedSaleId, string Status, string? InstallationFeasibility,
     bool HasLiveContract, bool HasOpenAppointment, string? LiveContractStatus = null);
 
-public interface IQuotationUnitOfWork : ITransactionalUnitOfWork
+public interface IQuotationUnitOfWork : ITransactionalUnitOfWork, IInAppNotificationWriter
 {
     Task<SalesRequestState?> GetRequestStateAsync(Guid surveyRequestId, CancellationToken cancellationToken);
 

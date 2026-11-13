@@ -1,4 +1,5 @@
 using System.Text.Json;
+using SmartSolar.Modules.Common.Notifications;
 using SmartSolar.Modules.Catalog.Constants;
 using SmartSolar.Modules.Common.Persistence;
 using SmartSolar.Modules.Common.Results;
@@ -168,6 +169,7 @@ public sealed partial class QuotationHandlers
                 AddEvent(quotation.Id, QuotationEventTypes.AutomaticallyGenerated, actorUserId,
                     $"survey v{basis.Version}; {lines.Count} material line(s); {issues.Count} issue(s)", now);
                 if (issueNow) AddEvent(quotation.Id, QuotationEventTypes.Issued, actorUserId, $"automatic; total={quotation.TotalAmount} {quotation.Currency}", now);
+                if (issueNow) unitOfWork.AddNotification(quotation.CustomerUserId, CustomerNotificationTypes.QuotationIssued, QuotationIssuedMessage(quotation), now);
                 await unitOfWork.SaveChangesAsync(token);
                 return (true, true);
             }, cancellationToken);

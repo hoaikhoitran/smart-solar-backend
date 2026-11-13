@@ -1,15 +1,20 @@
 using Microsoft.EntityFrameworkCore;
+using SmartSolar.Modules.Common.Notifications;
 using SmartSolar.Modules.Common.Persistence;
 
 namespace SmartSolar.Infrastructure.Persistence;
 
 /// <summary>Transaction and conflict translation shared by the Installation Flow units of work.</summary>
-public abstract class TransactionalUnitOfWork(AppDbContext db) : ITransactionalUnitOfWork
+public abstract class TransactionalUnitOfWork(AppDbContext db) : ITransactionalUnitOfWork, IInAppNotificationWriter
 {
     private const string PostgresUnique = "23505";
     private const string PostgresExclusion = "23P01";
 
     protected AppDbContext Db { get; } = db;
+
+    /// <summary>In-app notification saved with the caller's changes (the row the customer notification endpoint lists).</summary>
+    public void AddNotification(Guid recipientUserId, string type, string message, DateTimeOffset now)
+        => Db.AfterSalesNotifications.Add(Modules.AfterSales.AfterSalesHistory.NewNotification(recipientUserId, type, message, now));
 
     public Task<T> ExecuteInTransactionAsync<T>(Func<CancellationToken, Task<(T Result, bool Commit)>> work, CancellationToken cancellationToken)
     {

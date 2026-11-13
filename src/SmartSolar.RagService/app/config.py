@@ -13,14 +13,23 @@ TEXT = "text/plain"
 MARKDOWN = "text/markdown"
 SUPPORTED_CONTENT_TYPES = (PDF, DOCX, TEXT, MARKDOWN)
 
-# knowledge_chunk.embedding is vector(1536) (sql/knowledge_chunk.sql). Changing it is a schema change
-# plus a full reindex; the service refuses any configuration that does not produce exactly this size.
+# Default size of knowledge_chunk.embedding (sql/knowledge_chunk.sql: vector(1536), for text-embedding-3-small). Another
+# dimension needs the matching schema (sql/knowledge_chunk_local_1024.sql) plus a full reindex; /health/ready reports
+# not ready while the column and RAG_EMBEDDING_DIMENSION differ, and vectors are never truncated or padded to fit.
 SCHEMA_EMBEDDING_DIMENSION = 1536
+# Every knowledge_chunk.embedding size that has an approved schema script: sql/knowledge_chunk.sql (1536) and
+# sql/knowledge_chunk_local_1024.sql (1024, local qwen3-embedding:0.6b).
+SCHEMA_EMBEDDING_DIMENSIONS = (SCHEMA_EMBEDDING_DIMENSION, 1024)
 
 # Production embedding models and the dimension each must return (requested explicitly via `dimensions`).
 PRODUCTION_EMBEDDING_MODELS = {"text-embedding-3-small": 1536}
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+
+# Local (Ollama) embedding models and their native dimension, measured against Ollama's /api/embed. Every response is
+# still checked against RAG_EMBEDDING_DIMENSION, so a model not listed here only needs the right dimension configured.
+OLLAMA_EMBEDDING_MODELS = {"qwen3-embedding:0.6b": 1024}
+LLM_PROVIDERS = ("openai", "ollama", "extractive")
 
 # Offline stand-in for development and tests only; its vectors are tagged with this model name, so they
 # can never be retrieved by (or mixed with) real embeddings.
@@ -69,14 +78,14 @@ class Settings:
     s3_allowed_buckets: List[str] = field(default_factory=list)
     local_storage_dir: str = "/data/objects"
 
-    embedding_provider: str = "hashing"  # openai | hashing
+    embedding_provider: str = "hashing"  # openai | ollama | hashing
     embedding_model: str = "hashing-dev"
     embedding_dimension: int = 1536
     embedding_base_url: Optional[str] = None
     embedding_api_key: Optional[str] = None
     embedding_batch_size: int = 64
 
-    llm_provider: str = "extractive"  # openai | extractive
+    llm_provider: str = "extractive"  # openai | ollama | extractive
     llm_model: str = "extractive-dev"
     llm_base_url: Optional[str] = None
     llm_api_key: Optional[str] = None
@@ -85,6 +94,13 @@ class Settings:
     llm_allowed_models: List[str] = field(default_factory=list)
     # Prompt template used when a request names none (see prompting.PROMPT_TEMPLATES).
     prompt_version: str = "v1"
+    # Ollama only: context window per request (prompt + answer; Ollama silently drops what does not fit, so it must cover
+    # RAG_MAX_CONTEXT_TOKENS + RAG_MAX_OUTPUT_TOKENS + the question and history) and how long a model stays loaded.
+    llm_context_tokens: int = 8192
+    ollama_keep_alive: str = "30m"
+    # Ollama only: CPU threads per request (None = Ollama's choice, all cores it sees). Set it to the container's CPU limit:
+    # more threads than the cgroup quota allows get throttled.
+    ollama_num_thread: Optional[int] = None
 
     provider_timeout_seconds: int = 45
     # Must stay below the API's Rag:IngestTimeoutSeconds (300): stop and report FAILED before the caller gives up.
@@ -134,6 +150,9 @@ class Settings:
             llm_temperature=_float("RAG_LLM_TEMPERATURE", 0.1),
             llm_allowed_models=_list("RAG_LLM_ALLOWED_MODELS"),
             prompt_version=_str("RAG_PROMPT_VERSION", "v1") or "v1",
+            llm_context_tokens=_int("RAG_LLM_CONTEXT_TOKENS", 8192),
+            ollama_keep_alive=_str("RAG_OLLAMA_KEEP_ALIVE", "30m") or "30m",
+            ollama_num_thread=_int("RAG_OLLAMA_NUM_THREAD", 0) or None,
             provider_timeout_seconds=_int("RAG_PROVIDER_TIMEOUT_SECONDS", 45),
             ingest_deadline_seconds=_int("RAG_INGEST_DEADLINE_SECONDS", 270),
             max_document_bytes=_int("RAG_MAX_DOCUMENT_BYTES", 50 * 1024 * 1024),
@@ -166,12 +185,22 @@ class Settings:
         if self.storage == "s3" and not self.s3_allowed_buckets:
             problems.append("RAG_S3_ALLOWED_BUCKETS is required for s3 storage")
         problems.extend(self._embedding_problems())
-        if self.llm_provider not in ("openai", "extractive"):
-            problems.append("RAG_LLM_PROVIDER must be openai or extractive")
+        if self.llm_provider not in LLM_PROVIDERS:
+            problems.append("RAG_LLM_PROVIDER must be openai, ollama or extractive")
         if self.llm_provider == "openai" and not (self.llm_base_url and self.llm_api_key):
             problems.append("RAG_LLM_BASE_URL and RAG_LLM_API_KEY are required for the openai LLM provider")
+        if self.llm_provider == "ollama":
+            # Local inference: an endpoint and a model, never an API key.
+            if not self.llm_base_url:
+                problems.append("RAG_LLM_BASE_URL is required for the ollama LLM provider")
+            if not MODEL_ID_PATTERN.match(self.llm_model) or self.llm_model == "extractive-dev":
+                problems.append("RAG_LLM_MODEL must name an Ollama model for the ollama LLM provider")
+            if self.llm_context_tokens < self.max_context_tokens + self.max_output_tokens:
+                problems.append("RAG_LLM_CONTEXT_TOKENS must be at least RAG_MAX_CONTEXT_TOKENS + RAG_MAX_OUTPUT_TOKENS")
         if not 10 <= self.ingest_deadline_seconds <= 1700:
             problems.append("RAG_INGEST_DEADLINE_SECONDS must be between 10 and 1700")
+        if self.ollama_num_thread is not None and not 1 <= self.ollama_num_thread <= 64:
+            problems.append("RAG_OLLAMA_NUM_THREAD must be between 1 and 64")
         if self.chunk_overlap >= self.chunk_characters:
             problems.append("RAG_CHUNK_OVERLAP must be smaller than RAG_CHUNK_CHARACTERS")
         if any(not MODEL_ID_PATTERN.match(m) for m in self.llm_allowed_models):
@@ -185,6 +214,7 @@ class Settings:
                 problems.append("production requires RAG_VECTOR_STORE=pgvector")
             if self.storage != "s3":
                 problems.append("production requires RAG_STORAGE=s3")
+            # Real providers (OpenAI or local Ollama models); the offline development stand-ins never run in production.
             if self.embedding_provider == "hashing" or self.llm_provider == "extractive":
                 problems.append("production requires real embedding and LLM providers")
         if problems:
@@ -201,6 +231,14 @@ class Settings:
                 problems.append(f"RAG_EMBEDDING_DIMENSION must be {expected} for RAG_EMBEDDING_MODEL={self.embedding_model}")
             if not self.embedding_base_url or not self.embedding_api_key:
                 problems.append("RAG_EMBEDDING_BASE_URL and RAG_EMBEDDING_API_KEY are required for openai embeddings")
+        elif self.embedding_provider == "ollama":
+            if not self.embedding_base_url:
+                problems.append("RAG_EMBEDDING_BASE_URL is required for ollama embeddings")
+            if not MODEL_ID_PATTERN.match(self.embedding_model) or self.embedding_model in (DEV_EMBEDDING_MODEL, DEFAULT_EMBEDDING_MODEL):
+                problems.append("RAG_EMBEDDING_MODEL must name an Ollama embedding model for the ollama provider")
+            expected = OLLAMA_EMBEDDING_MODELS.get(self.embedding_model)
+            if expected is not None and self.embedding_dimension != expected:
+                problems.append(f"RAG_EMBEDDING_DIMENSION must be {expected} for RAG_EMBEDDING_MODEL={self.embedding_model}")
         elif self.embedding_provider == "hashing":
             if self.environment not in NON_PRODUCTION_ENVIRONMENTS:
                 problems.append("RAG_EMBEDDING_PROVIDER=hashing is only allowed with RAG_ENV=development or test")
@@ -209,7 +247,9 @@ class Settings:
             if not 8 <= self.embedding_dimension <= 4096:
                 problems.append("RAG_EMBEDDING_DIMENSION must be between 8 and 4096")
         else:
-            problems.append("RAG_EMBEDDING_PROVIDER must be openai or hashing")
-        if self.vector_store == "pgvector" and self.embedding_dimension != SCHEMA_EMBEDDING_DIMENSION:
-            problems.append(f"RAG_EMBEDDING_DIMENSION must be {SCHEMA_EMBEDDING_DIMENSION} to match knowledge_chunk.embedding")
+            problems.append("RAG_EMBEDDING_PROVIDER must be openai, ollama or hashing")
+        # Which of these the live column has is checked by /health/ready (vectorstore.PgVectorStore.ready).
+        if self.vector_store == "pgvector" and self.embedding_dimension not in SCHEMA_EMBEDDING_DIMENSIONS:
+            sizes = " or ".join(str(d) for d in SCHEMA_EMBEDDING_DIMENSIONS)
+            problems.append(f"RAG_EMBEDDING_DIMENSION must be {sizes} to match knowledge_chunk.embedding")
         return problems

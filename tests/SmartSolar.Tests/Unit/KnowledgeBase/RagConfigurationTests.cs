@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using SmartSolar.Infrastructure.Persistence;
 using SmartSolar.Infrastructure.Persistence.KnowledgeBase;
@@ -19,10 +20,10 @@ public sealed class RagConfigurationTests
 
     private sealed class Rig
     {
-        public Rig(InstallationWorkflowTestContext ctx, TimeSpan? cacheTtl = null)
+        public Rig(InstallationWorkflowTestContext ctx, TimeSpan? cacheTtl = null, List<RagGenerationModelOptions>? models = null)
         {
             Ctx = ctx;
-            Options.GenerationModels =
+            Options.GenerationModels = models ??
             [
                 .. RagConfigurationRules.DefaultModels,
                 new RagGenerationModelOptions
@@ -632,5 +633,95 @@ public sealed class RagConfigurationTests
         Assert.Equal(1000, rules.Limits.ChunkCharactersMin);
         Assert.Equal(["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"], rules.Models.Select(m => m.Id));
         Assert.Equal(["v1"], rules.PromptVersions);
+    }
+
+    private static readonly List<RagGenerationModelOptions> LocalOnly =
+        [new() { Id = "qwen3:1.7b", DisplayName = "Qwen3 1.7B (local)", SupportsTemperature = true, TokenParameter = RagTokenParameters.MaxTokens, MaxOutputTokensLimit = 1000 }];
+
+    [Fact]
+    public async Task An_active_model_removed_from_the_registry_is_not_sent_and_a_registered_one_is()
+    {
+        // Activated while the cloud registry was deployed; then the deployment switched Rag:GenerationModels to local models only.
+        await using var ctx = InstallationWorkflowTestContext.Create();
+        var cloud = new Rig(ctx);
+        var admin = await cloud.AdminAsync();
+        await cloud.ActivateAsync(admin, Input(model: "gpt-4.1-mini", temperatureSpecified: true, temperature: 0.3m, topK: 4, maxOutput: 600));
+        await cloud.PublishedAsync(admin);
+
+        var local = new Rig(ctx, models: LocalOnly);
+        var effective = await local.Provider().GetAsync(None);
+        Assert.Equal((1, false, false), (effective.Version, effective.Bootstrap, effective.ModelRegistered));
+        var asked = await local.Chat().AskAsync(admin, null, "Bảo hành bao lâu?", null, None, KnowledgeAudience.Staff);
+        Assert.True(asked.Succeeded && asked.Value!.Grounded, asked.Message);
+        var sent = local.Rag.LastAnswerRequest!;
+        // The RAG service's own model (RAG_LLM_MODEL) answers; the rest of the ACTIVE configuration still applies.
+        Assert.Equal((null, null, null), (sent.GenerationModel, sent.Temperature, sent.TokenParameter));
+        Assert.Equal((1, 4, 600), (sent.ConfigVersion, sent.TopK, sent.MaxOutputTokens));
+        var wire = SmartSolar.Infrastructure.ExternalProviders.Rag.RagServiceClient.AnswerPayload(sent).ToJsonString();
+        Assert.DoesNotContain("gpt-4.1-mini", wire);
+
+        // The old model can no longer be chosen, and once an Admin activates a registered local model it is sent again.
+        var refused = await local.Config().SaveDraftAsync(admin, Input(model: "gpt-4.1-mini"), null, None);
+        Assert.Contains("generationModel", ((Dictionary<string, string[]>)refused.Details!).Keys);   // refused: nothing saved
+        await local.ActivateAsync(admin, Input(model: "qwen3:1.7b", temperatureSpecified: true, temperature: 0.1m));
+        await local.Chat().AskAsync(admin, null, "Bảo hành bao lâu?", null, None, KnowledgeAudience.Staff);
+        var registered = local.Rag.LastAnswerRequest!;
+        Assert.Equal(("qwen3:1.7b", 0.1m, RagTokenParameters.MaxTokens), (registered.GenerationModel!, registered.Temperature!.Value, registered.TokenParameter!));
+    }
+
+    [Fact]
+    public async Task Reindex_stale_also_queues_versions_embedded_with_another_model_when_the_embedding_model_is_configured()
+    {
+        await using var ctx = InstallationWorkflowTestContext.Create();
+        var rig = new Rig(ctx);
+        var admin = await rig.AdminAsync();
+        var published = await rig.PublishedAsync(admin, "Bảo hành");   // the fake service embeds with "hashing-dev"
+        var versionId = published.Versions![0].VersionId;
+
+        // Not configured: unchanged behaviour (only chunk settings decide).
+        Assert.Equal(new RagReindexStaleView(0, 0, 0, 0), (await rig.Config().ReindexStaleAsync(admin, None)).Value);
+
+        rig.Options.EmbeddingModel = "qwen3-embedding:0.6b";
+        Assert.Equal(new RagReindexStaleView(0, 1, 1, 0), (await rig.Config().ReindexStaleAsync(admin, None)).Value);
+        rig.Rag.Ingest = (r, _) => Task.FromResult(new RagIngestResult(true, "READY", 3, 12, 4000, "qwen3-embedding:0.6b", 1024, null,
+            r.ConfigVersion, r.ChunkCharacters, r.ChunkOverlap));
+        await rig.Ingestion().RunDueAsync(10, None);
+
+        var version = await ctx.Db.KnowledgeDocumentVersions.AsNoTracking().SingleAsync(v => v.Id == versionId);
+        Assert.Equal(("qwen3-embedding:0.6b", "PUBLISHED"), (version.EmbeddingModel, version.Status));
+        Assert.Equal(new RagReindexStaleView(0, 0, 0, 0), (await rig.Config().ReindexStaleAsync(admin, None)).Value);
+    }
+
+    [Fact]
+    public void A_registry_from_environment_variables_replaces_the_built_in_cloud_models()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "SmartSolar.sln"))) directory = directory.Parent;
+        Assert.NotNull(directory);
+        var appsettings = Path.Combine(directory!.FullName, "src", "SmartSolar.Api", "appsettings.json");
+
+        RagOptions Bind(Dictionary<string, string?> environment)
+        {
+            var options = new RagOptions();
+            new Microsoft.Extensions.Configuration.ConfigurationBuilder().AddJsonFile(appsettings).AddInMemoryCollection(environment).Build()
+                .GetSection(RagOptions.SectionName).Bind(options);
+            return options;
+        }
+
+        // appsettings.json alone: the built-in defaults (the same three cloud models as before).
+        Assert.Equal(["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"], new RagConfigurationRules(Bind([])).Models.Select(m => m.Id));
+
+        // Rag__GenerationModels__0__* in the environment: exactly that list, without cloud models left over at other indexes.
+        var local = Bind(new()
+        {
+            ["Rag:GenerationModels:0:Id"] = "qwen3:1.7b", ["Rag:GenerationModels:0:DisplayName"] = "Qwen3 1.7B (local)",
+            ["Rag:GenerationModels:0:SupportsTemperature"] = "true", ["Rag:GenerationModels:0:TokenParameter"] = "max_tokens",
+            ["Rag:GenerationModels:0:MaxOutputTokensLimit"] = "1000", ["Rag:GenerationModel"] = "qwen3:1.7b", ["Rag:EmbeddingModel"] = "qwen3-embedding:0.6b",
+        });
+        var rules = new RagConfigurationRules(local);
+        Assert.Equal(["qwen3:1.7b"], rules.Models.Select(m => m.Id));
+        Assert.Equal("qwen3-embedding:0.6b", local.EmbeddingModel);
+        Assert.Equal("qwen3:1.7b", rules.Bootstrap(local).Values.GenerationModel);
+        Assert.Empty(rules.Validate(rules.Bootstrap(local).Values));
     }
 }

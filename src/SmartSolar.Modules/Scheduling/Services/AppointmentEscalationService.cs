@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using SmartSolar.Modules.Common.Notifications;
 using SmartSolar.Modules.Scheduling.Constants;
 using SmartSolar.Modules.Scheduling.Contracts.Persistence;
 using SmartSolar.Modules.Scheduling.Entities;
@@ -128,6 +129,8 @@ public sealed class AppointmentEscalationService(ISchedulingUnitOfWork unitOfWor
             AppointmentHistory.Record(unitOfWork, appointment, AppointmentEventTypes.Cancelled, null, now,
                 previousTechnicianUserId: appointment.ReservedTechnicianUserId, previousStartsAt: appointment.StartsAt,
                 reason: CancellationReasons.NotAcceptedBeforeStart, notify: [owner]);
+            AppointmentHistory.NotifyCustomer(unitOfWork, appointment, CustomerNotificationTypes.SurveyAppointmentCancelled,
+                "Your survey appointment was cancelled because no technician could confirm it in time. Please book a new time.", now);
             await unitOfWork.SaveChangesAsync(token);
             return (true, true);
         }, cancellationToken);

@@ -1,3 +1,4 @@
+using SmartSolar.Modules.Common.Notifications;
 using SmartSolar.Modules.PreSurvey.Enums;
 using SmartSolar.Modules.Scheduling.Constants;
 using SmartSolar.Modules.Scheduling.Contracts.Persistence;
@@ -259,6 +260,9 @@ public sealed class BookSurveyAppointmentHandler(
                     unitOfWork.AddAppointment(appointment);
                     AppointmentHistory.Record(unitOfWork, appointment, AppointmentEventTypes.Booked, command.CustomerUserId, ctx.NowUtc,
                         newTechnicianUserId: appointment.ReservedTechnicianUserId, newStartsAt: appointment.StartsAt);
+                    AppointmentHistory.NotifyCustomer(unitOfWork, appointment, CustomerNotificationTypes.SurveyAppointmentBooked,
+                        $"Your survey appointment on {AppointmentHistory.When(appointment.StartsAt, calendar.TimeZone)} is booked and waiting for a technician to confirm.",
+                        ctx.NowUtc);
                     return ApplyResult.Applied(appointment.Id);
                 }, cancellationToken);
         }
@@ -480,6 +484,13 @@ public sealed class AppointmentMover(
             old.StartsAt, next.StartsAt, spec.EventReason,
             notify: [previousTechnician, next.AssignedTechnicianUserId, spec.Context.AssignedSaleId == spec.ActorUserId ? null : spec.Context.AssignedSaleId,
                 old.BookedByUserId == spec.ActorUserId ? null : old.BookedByUserId]);
+        if (old.BookedByUserId != spec.ActorUserId)
+        {
+            var zone = TimeZoneInfo.FindSystemTimeZoneById(options.TimeZoneId);
+            AppointmentHistory.NotifyCustomer(unitOfWork, next, CustomerNotificationTypes.SurveyAppointmentRescheduled,
+                $"Your survey appointment was moved from {AppointmentHistory.When(old.StartsAt, zone)} to {AppointmentHistory.When(next.StartsAt, zone)}"
+                + (next.AssignedTechnicianUserId is null ? " and is waiting for a technician to confirm." : "; the technician is confirmed."), ctx.NowUtc);
+        }
         // Sales naming a technician is a staff assignment like assign-technician: ASSIGNED, or REASSIGNED when it replaces another confirmed technician.
         if (technician is { } named && spec.AssignTechnicianUserId is not null)
             AppointmentAssignmentService.RecordStaffAssignment(unitOfWork, next, AssignmentSources.SalesAssigned, spec.AssignmentReason, spec.ActorUserId, named,

@@ -1,3 +1,5 @@
+using SmartSolar.Modules.Common.Time;
+using SmartSolar.Modules.Common.Notifications;
 using SmartSolar.Modules.Common.Persistence;
 using SmartSolar.Modules.Common.Results;
 using SmartSolar.Modules.Files;
@@ -334,6 +336,7 @@ public sealed partial class InstallationHandlers(
             p.Status = InstallationStatuses.Cancelled;
             p.CancelledAt = now;
             p.CancellationReason = why;
+            unitOfWork.AddNotification(p.CustomerUserId, CustomerNotificationTypes.InstallationCancelled, $"Your installation project was cancelled: {why}", now);
             p.ResponsibleTechnicianUserId = null;
             p.TechnicianAcceptedAt = null;
             Event(projectId, InstallationEventTypes.ProjectCancelled, managerUserId, from, p.Status, why, now);
@@ -366,6 +369,8 @@ public sealed partial class InstallationHandlers(
             var from = p.Status;
             p.Status = InstallationStatuses.ReworkRequired;
             Event(projectId, InstallationEventTypes.ReturnedToRework, managerUserId, from, p.Status, $"round {pending.Round}: {why}", now);
+            unitOfWork.AddNotification(p.CustomerUserId, CustomerNotificationTypes.InstallationReworkRequired,
+                $"SmartSolar returned the completion report of your installation for rework: {why} A new completion report will follow.", now);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
         return await ThenAsync(result, () => StaffViewAsync(projectId, cancellationToken));
@@ -454,6 +459,9 @@ public sealed partial class InstallationHandlers(
             p.TechnicianAcceptedAt = now;
             if (p.Status == InstallationStatuses.PendingTechnicianAcceptance) p.Status = InstallationStatuses.Scheduled;
             Event(projectId, InstallationEventTypes.AssignmentAccepted, technicianUserId, from, p.Status, null, now);
+            if (from == InstallationStatuses.PendingTechnicianAcceptance)
+                unitOfWork.AddNotification(p.CustomerUserId, CustomerNotificationTypes.InstallationScheduled,
+                    $"Your installation is scheduled for {When(p.ScheduledStartsAt, now)}; the technician has confirmed.", now);
             return await Task.FromResult(OperationResult<bool>.Ok(true));
         }, cancellationToken);
 
@@ -506,6 +514,7 @@ public sealed partial class InstallationHandlers(
             p.Status = InstallationStatuses.InProgress;
             p.StartedAt = now;
             Event(projectId, InstallationEventTypes.ProjectStarted, technicianUserId, InstallationStatuses.Scheduled, p.Status, null, now);
+            unitOfWork.AddNotification(p.CustomerUserId, CustomerNotificationTypes.InstallationStarted, "The installation work at your site has started.", now);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
 
@@ -642,6 +651,8 @@ public sealed partial class InstallationHandlers(
             p.Status = InstallationStatuses.PendingCustomerAcceptance;
             p.AcceptanceRequestedAt = now;
             Event(projectId, InstallationEventTypes.CompletionReported, technicianUserId, from, p.Status, $"round {round}", now);
+            unitOfWork.AddNotification(p.CustomerUserId, CustomerNotificationTypes.InstallationAcceptanceRequired,
+                $"The installation team reported completion (round {round}). Please review the result and accept it or request rework.", now);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
     }
@@ -940,6 +951,9 @@ public sealed partial class InstallationHandlers(
             await EvidenceAsync(projectId, cancellationToken), await AssetsAsync(projectId, cancellationToken), await AcceptancesAsync(projectId, cancellationToken),
             LocalSteps(await EquipmentComparisonAsync(p, cancellationToken), forCustomer: true));
     }
+
+    /// <summary>Scheduled start in the business time zone for customer messages (the fallback never happens for an assigned project).</summary>
+    private string When(DateTimeOffset? scheduledStartsAt, DateTimeOffset now) => DisplayTime.Format(scheduledStartsAt ?? now, calendar.TimeZone);
 
     private void Event(Guid projectId, string type, Guid actor, string? from, string? to, string? detail, DateTimeOffset now)
         => unitOfWork.Add(new InstallationEvent

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using SmartSolar.Modules.Common.Notifications;
 using SmartSolar.Modules.Identity.Constants;
 using SmartSolar.Modules.PreSurvey.Enums;
 using SmartSolar.Modules.Scheduling.Constants;
@@ -249,9 +250,22 @@ public sealed class DispatchTests
         Assert.Contains(DispatchEventTypes.Assigned, events);
         Assert.Contains(await ctx.Db.SchedulingNotifications.ToListAsync(), n => n.RecipientUserId == tech && n.AppointmentId == appointment.Id);
 
+        // The customer (who did not act) is told that a technician is confirmed, in the customer bell.
+        var customerBell = await ctx.Db.AfterSalesNotifications.AsNoTracking().Where(n => n.RecipientUserId == w.Request.Customer.Id).ToListAsync();
+        var confirmed = Assert.Single(customerBell, n => n.Type == CustomerNotificationTypes.SurveyAppointmentConfirmed);
+        Assert.Contains("09:00", confirmed.Message);
+        Assert.DoesNotContain(await ctx.Db.AfterSalesNotifications.AsNoTracking().ToListAsync(), n => n.RecipientUserId == tech);
+
         // Terminal: no further assignment, proposal or close.
         Assert.Equal(DispatchErrorCodes.InvalidState, (await service.AssignAsync(Command(w, dispatch.DispatchRequestId, tech, At(13), assigned.Value.Request.Revision), None)).ErrorCode);
         Assert.Equal(DispatchErrorCodes.InvalidState, (await service.CloseAsync(new ResolveDispatchCommand(w.Manager, dispatch.DispatchRequestId, "x", null), None)).ErrorCode);
+
+        // A dispatch-assigned technician who releases sends the request back to dispatch: the appointment is cancelled and the customer is told.
+        var released = await ctx.Jobs().ReleaseAsync(new ReleaseAppointmentCommand(tech, appointment.Id, "Sick"), None);
+        Assert.True(released.Succeeded, released.Message);
+        var cancelled = Assert.Single(await ctx.Db.AfterSalesNotifications.AsNoTracking()
+            .Where(n => n.RecipientUserId == w.Request.Customer.Id && n.Type == CustomerNotificationTypes.SurveyAppointmentCancelled).ToListAsync());
+        Assert.Contains("arranging another technician", cancelled.Message);
     }
 
     [Fact]

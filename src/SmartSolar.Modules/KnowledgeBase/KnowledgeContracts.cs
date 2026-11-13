@@ -12,6 +12,11 @@ public sealed class RagOptions
     public string? ServiceSharedSecret { get; set; }
     public int RequestTimeoutSeconds { get; set; } = 60;
     public int IngestTimeoutSeconds { get; set; } = 300;
+    /// <summary>
+    /// The RAG service's embedding model (its RAG_EMBEDDING_MODEL), optional. When set, reindex-stale also queues every indexed version
+    /// whose chunks were embedded with another model (retrieval only reads chunks of the configured model, so those are invisible).
+    /// </summary>
+    public string? EmbeddingModel { get; set; }
     public int MaxQuestionCharacters { get; set; } = 8000;
     public int MaxHistoryMessages { get; set; } = 6;
     public int TopK { get; set; } = 6;
@@ -104,6 +109,12 @@ public interface IKnowledgeUnitOfWork : ITransactionalUnitOfWork
 
     /// <summary>Marks a due job whose attempts are used up (for example after repeated crashes) as FAILED.</summary>
     Task<bool> TryFailExhaustedJobAsync(Guid jobId, DateTimeOffset now, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Inside an open transaction: true when the job is still RUNNING under exactly <paramref name="leaseUntil"/>; the row then stays
+    /// locked until the transaction ends (outcome recording is fenced by this).
+    /// </summary>
+    Task<bool> TryHoldLeaseAsync(Guid jobId, DateTimeOffset leaseUntil, CancellationToken cancellationToken);
 
     /// <summary>Gives a lease back without using the attempt (service shutdown). No-op if the lease is no longer ours.</summary>
     Task<bool> TryReleaseLeaseAsync(Guid jobId, DateTimeOffset leaseUntil, DateTimeOffset now, CancellationToken cancellationToken);

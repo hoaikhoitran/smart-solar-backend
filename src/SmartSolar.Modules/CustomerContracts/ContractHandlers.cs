@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using SmartSolar.Modules.Common.Notifications;
 using SmartSolar.Modules.Common.Persistence;
 using SmartSolar.Modules.Common.Results;
 using SmartSolar.Modules.Files;
@@ -219,6 +220,8 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
             if (c.OfficialDocumentFileId is null) return Task.FromResult(Fail(ContractErrorCodes.DocumentMissing, "Attach and confirm the official PDF first."));
             c.PublishedAt = now;
             Move(c, ContractStatuses.AwaitingSignature, salesUserId, now, null);
+            unitOfWork.AddNotification(c.CustomerUserId, CustomerNotificationTypes.ContractAwaitingSignature,
+                $"Contract {c.ContractNumber} is ready for your signature: download the official document, sign it and submit the signed copy.", now);
             return Task.FromResult(OperationResult<bool>.Ok(true));
         }, cancellationToken);
 
@@ -256,6 +259,8 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
                 c.SignedAt = now;
                 c.RejectionReason = null;
                 Move(c, ContractStatuses.Signed, reviewerUserId, now, "signed scan approved after internal review");
+                unitOfWork.AddNotification(c.CustomerUserId, CustomerNotificationTypes.ContractSigned,
+                    $"Your signed copy of contract {c.ContractNumber} was accepted after review; the contract is now signed.", now);
             }
             else
             {
@@ -263,6 +268,8 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
                 submission.RejectionReason = reason!.Trim();
                 c.RejectionReason = reason.Trim();
                 Move(c, ContractStatuses.SignatureRejected, reviewerUserId, now, Trim(reason, 500));
+                unitOfWork.AddNotification(c.CustomerUserId, CustomerNotificationTypes.ContractSignatureRejected,
+                    $"The signed copy of contract {c.ContractNumber} was not accepted: {reason.Trim()} Please submit a new signed copy.", now);
             }
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);

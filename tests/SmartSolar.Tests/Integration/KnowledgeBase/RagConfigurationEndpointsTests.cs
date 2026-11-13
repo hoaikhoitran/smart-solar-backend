@@ -17,19 +17,31 @@ public sealed class RagConfigurationEndpointsTests
     private const string Secret = "do-not-leak-this-shared-secret-0123456789";
     private const string ServiceUrl = "http://rag-internal.example:8123";
 
-    private static AuthApiFactory Factory(FakeRagServiceClient rag, FakeStorageObjectVerifier? storage = null) => Enabled(storage ?? new FakeStorageObjectVerifier(), rag,
-        new Dictionary<string, string?>
+    private static AuthApiFactory Factory(FakeRagServiceClient rag, FakeStorageObjectVerifier? storage = null)
+    {
+        // A configured registry replaces the built-in one entirely (appsettings.json ships none), so the shipped three are listed
+        // explicitly, followed by a reasoning-style model.
+        var settings = new Dictionary<string, string?>
         {
             ["Rag:ServiceSharedSecret"] = Secret,
             ["Rag:ServiceBaseUrl"] = ServiceUrl,
-            // A reasoning-style model added to the shipped three.
             ["Rag:GenerationModels:3:Id"] = "o4-mini",
             ["Rag:GenerationModels:3:DisplayName"] = "o4 mini",
             ["Rag:GenerationModels:3:SupportsTemperature"] = "false",
             ["Rag:GenerationModels:3:TokenParameter"] = "max_completion_tokens",
             ["Rag:GenerationModels:3:MaxOutputTokensLimit"] = "1000",
             ["Rag:ConfigurationCacheSeconds"] = "15",
-        });
+        };
+        foreach (var (model, index) in RagConfigurationRules.DefaultModels.Select((m, i) => (m, i)))
+        {
+            settings[$"Rag:GenerationModels:{index}:Id"] = model.Id;
+            settings[$"Rag:GenerationModels:{index}:DisplayName"] = model.DisplayName;
+            settings[$"Rag:GenerationModels:{index}:SupportsTemperature"] = model.SupportsTemperature ? "true" : "false";
+            settings[$"Rag:GenerationModels:{index}:TokenParameter"] = model.TokenParameter;
+            settings[$"Rag:GenerationModels:{index}:MaxOutputTokensLimit"] = model.MaxOutputTokensLimit.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        return Enabled(storage ?? new FakeStorageObjectVerifier(), rag, settings);
+    }
 
     private static async Task<JsonElement> ErrorDetails(HttpResponseMessage r, HttpStatusCode status, string code)
     {
@@ -77,7 +89,7 @@ public sealed class RagConfigurationEndpointsTests
         Assert.Equal(["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "o4-mini"], catalog.GetProperty("models").EnumerateArray().Select(m => m.GetProperty("id").GetString()));
         Assert.Equal("max_completion_tokens", catalog.GetProperty("models")[3].GetProperty("tokenParameter").GetString());
         Assert.Equal(8000, catalog.GetProperty("limits").GetProperty("chunkCharactersMax").GetInt32());
-        Assert.Equal("v1", catalog.GetProperty("promptVersions")[0].GetString());
+        Assert.Equal(["v1", "v2"], catalog.GetProperty("promptVersions").EnumerateArray().Select(v => v.GetString()));
 
         // Validation: unknown model, out-of-range chunk, overlap not below chunk, temperature for a model without it.
         Assert.True((await ErrorDetails(await admin.PutAsJsonAsync($"{Route}/draft", new { generationModel = "gpt-9" }), HttpStatusCode.BadRequest,
@@ -93,7 +105,7 @@ public sealed class RagConfigurationEndpointsTests
         var draft = await DataOf(await admin.PutAsJsonAsync($"{Route}/draft", new
         {
             generationModel = "o4-mini", temperature = (decimal?)null, maxOutputTokens = 800, chunkCharacters = 1200, chunkOverlap = 150, topK = 4, minScore = 0.35,
-            maxContextTokens = 2500, maxHistoryMessages = 2, promptVersion = "v1", notes = "Reasoning model trial",
+            maxContextTokens = 2500, maxHistoryMessages = 2, promptVersion = "v2", notes = "Reasoning model trial",
         }));
         Assert.Equal("DRAFT", draft.GetProperty("status").GetString());
         Assert.Equal(JsonValueKind.Null, draft.GetProperty("temperature").ValueKind);
@@ -112,6 +124,7 @@ public sealed class RagConfigurationEndpointsTests
 
         var activated = await DataOf(await admin.PostAsJsonAsync($"{Route}/draft/activate", new { expectedRevision = revision }));
         Assert.Equal("ACTIVE", activated.GetProperty("active").GetProperty("status").GetString());
+        Assert.Equal("v2", activated.GetProperty("active").GetProperty("promptVersion").GetString());
         Assert.Equal(0, activated.GetProperty("versionsNeedingReindex").GetInt32());
         await AssertFailureAsync(await admin.PostAsJsonAsync($"{Route}/draft/activate", new { expectedRevision = revision }), HttpStatusCode.NotFound,
             RagConfigurationErrorCodes.DraftNotFound);

@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from .answering import answer_question
+from .answering import AnswerOutcome, answer_question
 from .config import MAX_CHUNK_CHARACTERS, MIN_CHUNK_CHARACTERS, Settings
 from .embeddings import Embedder, ProviderError, create_embedder
 from .ingestion import ingest
@@ -156,9 +156,15 @@ def create_app(services: Optional[Services] = None) -> FastAPI:
     async def live() -> dict:
         return {"status": "ok"}
 
+    def all_ready() -> bool:
+        # The vector table has the configured dimension, and every local (Ollama) model is pulled: before that the service
+        # would accept requests it can only answer with 503.
+        s = svc()
+        return s.store.ready() and all(getattr(part, "available", lambda: True)() for part in (s.embedder, s.model))
+
     @app.get("/health/ready")
     async def ready() -> JSONResponse:
-        ok = await anyio.to_thread.run_sync(svc().store.ready)
+        ok = await anyio.to_thread.run_sync(all_ready)
         return JSONResponse({"status": "ready" if ok else "not_ready"}, status_code=200 if ok else 503)
 
     def reject(reason: str) -> None:
@@ -229,13 +235,15 @@ def create_app(services: Optional[Services] = None) -> FastAPI:
                 raise HTTPException(status_code=503, detail="embedding configuration mismatch") from exc
             finally:
                 s.generations.release()
-            # Question text is not logged (it may contain personal data).
-            logger.info("Answered (grounded=%s, citations=%d, retrieval=%dms, generation=%dms).",
-                        outcome.grounded, len(outcome.citations), outcome.retrieval_ms, outcome.generation_ms)
+            # Question text is not logged (it may contain personal data). Token counts and the provider's own breakdown (Ollama:
+            # model load, prompt evaluation, generation) show where a slow answer spent its time.
+            logger.info("Answered (grounded=%s, citations=%d, retrieval=%dms, generation=%dms, promptTokens=%d, completionTokens=%d%s).",
+                        outcome.grounded, len(outcome.citations), outcome.retrieval_ms, outcome.generation_ms, outcome.prompt_tokens,
+                        outcome.completion_tokens, timing_detail(outcome))
             return {
                 "answer": outcome.answer, "grounded": outcome.grounded, "citations": outcome.citations,
                 "usage": {"promptTokens": outcome.prompt_tokens, "completionTokens": outcome.completion_tokens},
-                "model": outcome.model, "retrievalMs": outcome.retrieval_ms, "generationMs": outcome.generation_ms,
+                "model": outcome.model, "retrievalMs": outcome.retrieval_ms, "generationMs": outcome.generation_ms, "timings": outcome.timings,
                 # What this answer was produced with (after the environment ceilings).
                 "configVersion": body.configVersion, "promptVersion": prompt_version,
                 "parameters": {
@@ -249,6 +257,16 @@ def create_app(services: Optional[Services] = None) -> FastAPI:
         return await anyio.to_thread.run_sync(run)
 
     return app
+
+
+def timing_detail(outcome: AnswerOutcome) -> str:
+    """Log suffix with the provider's breakdown and the generation rate; empty for providers that report none."""
+    timings = outcome.timings
+    if not timings:
+        return ""
+    eval_ms = timings.get("evalMs") or 0
+    rate = f", {outcome.completion_tokens * 1000 / eval_ms:.1f} tok/s" if eval_ms > 0 else ""
+    return f", load={timings.get('loadMs', 0)}ms, promptEval={timings.get('promptEvalMs', 0)}ms, eval={eval_ms}ms{rate}"
 
 
 def app_factory() -> FastAPI:

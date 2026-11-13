@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import pytest
 
 from app.embeddings import HashingEmbedder
-from app.vectorstore import PgVectorStore, StoredChunk
+from app.vectorstore import EmbeddingDimensionError, PgVectorStore, StoredChunk
 
 URL = os.environ.get("RAG_TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not URL, reason="Set RAG_TEST_DATABASE_URL to a disposable local PostgreSQL with pgvector")
@@ -165,3 +165,43 @@ def test_the_schema_has_one_cosine_hnsw_index_and_no_duplicate_indexes(database)
     assert "USING hnsw (embedding vector_cosine_ops)" in indexes["ix_knowledge_chunk_embedding_hnsw"]
     major, minor = (int(x) for x in extension.split(".")[:2])
     assert (major, minor) >= (0, 5), f"pgvector {extension} has no HNSW"
+
+
+def _sql(name):
+    with open(os.path.join(os.path.dirname(__file__), "..", "sql", name), encoding="utf-8") as handle:
+        return handle.read()
+
+
+def test_local_1024_migration_keeps_the_openai_chunks_and_the_rollback_restores_them(database):
+    import psycopg
+
+    openai, local = HashingEmbedder(1536, "text-embedding-3-small"), HashingEmbedder(1024, "qwen3-embedding:0.6b")
+    v1, v2, d1 = (str(uuid.uuid4()) for _ in range(3))
+    with psycopg.connect(database, autocommit=True) as conn:
+        conn.execute("INSERT INTO knowledge_document (id) VALUES (%s)", (d1,))
+        for v in (v1, v2):
+            conn.execute("INSERT INTO knowledge_document_version (id) VALUES (%s)", (v,))
+    PgVectorStore(database, 1536).replace_version(v1, chunks(openai, v1, d1, ["bảo hành tấm pin 12 năm", "inverter bảo hành 5 năm"]))
+
+    with psycopg.connect(database, autocommit=True) as conn:
+        conn.execute(_sql("knowledge_chunk_local_1024.sql"))
+        kept = conn.execute("SELECT count(*) FROM knowledge_chunk_openai_1536").fetchone()[0]
+    assert kept == 2
+    assert not PgVectorStore(database, 1536).ready()     # the service still configured for 1536 reports not ready
+    store = PgVectorStore(database, 1024)
+    assert store.ready() and store.schema_dimension() == 1024
+    with pytest.raises(EmbeddingDimensionError):           # never truncated or padded to fit
+        store.replace_version(v2, chunks(openai, v2, d1, ["giá hệ 5 kWp"]))
+    store.replace_version(v2, chunks(local, v2, d1, ["tấm pin được bảo hành sản phẩm 12 năm"]))
+    hits = store.search(local.embed(["tấm pin bảo hành bao lâu"])[0], [v1, v2], 5, local.model)
+    assert [h.version_id for h in hits] == [v2]           # v1 has no local chunks yet: reindex needed
+
+    with psycopg.connect(database, autocommit=True) as conn:
+        conn.execute(_sql("knowledge_chunk_local_1024_rollback.sql"))
+        local_kept = conn.execute("SELECT count(*) FROM knowledge_chunk_local_1024").fetchone()[0]
+        indexes = sorted(r[0] for r in conn.execute("SELECT indexname FROM pg_indexes WHERE tablename = 'knowledge_chunk'"))
+    assert local_kept == 1
+    assert indexes == ["ix_knowledge_chunk_embedding_hnsw", "knowledge_chunk_pkey", "ux_knowledge_chunk_version_index"]
+    restored = PgVectorStore(database, 1536)
+    assert restored.ready()
+    assert [h.version_id for h in restored.search(openai.embed(["tấm pin bảo hành"])[0], [v1, v2], 5, openai.model)] == [v1, v1]

@@ -6,9 +6,11 @@ services:
       RABBITMQ_DEFAULT_USER: ${RabbitMq__Username}
       RABBITMQ_DEFAULT_PASS: ${RabbitMq__Password}
 
+    # Loopback only: the API reaches RabbitMQ on the compose network. Docker-published ports bypass UFW, so "5672:5672" would be
+    # open to the internet. Management UI: ssh -L 15672:127.0.0.1:15672 <vps>, then http://localhost:15672.
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
 
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
@@ -22,8 +24,9 @@ services:
   redis:
     image: redis:7-alpine
 
+    # Loopback only (no password is configured): the API uses redis:6379 on the compose network.
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
 
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -32,7 +35,8 @@ services:
       retries: 5
 
   api:
-    image: hoaikhoitran/smartsolar-api:latest
+    # Pin a pushed tag in .env (API_IMAGE_TAG) for a deploy; rollback = the previous tag.
+    image: ${API_IMAGE:-hoaikhoitran/smartsolar-api}:${API_IMAGE_TAG:-latest}
 
     env_file:
       - .env
@@ -91,9 +95,31 @@ services:
       RAG_LLM_API_KEY: ${RAG_LLM_API_KEY:-}
       RAG_WORKERS: ${RAG_WORKERS:-1}
       RAG_INGEST_DEADLINE_SECONDS: ${RAG_INGEST_DEADLINE_SECONDS:-270}
+      # Local inference (RAG_*_PROVIDER=ollama, RAG_*_BASE_URL=http://ollama:11434); see guides/rag-local-ollama.md.
+      RAG_LLM_CONTEXT_TOKENS: ${RAG_LLM_CONTEXT_TOKENS:-}
+      RAG_OLLAMA_KEEP_ALIVE: ${RAG_OLLAMA_KEEP_ALIVE:-}
+      RAG_PROVIDER_TIMEOUT_SECONDS: ${RAG_PROVIDER_TIMEOUT_SECONDS:-}
+      RAG_EMBEDDING_BATCH_SIZE: ${RAG_EMBEDDING_BATCH_SIZE:-}
+      RAG_MAX_CONTEXT_TOKENS: ${RAG_MAX_CONTEXT_TOKENS:-}
+      RAG_MAX_OUTPUT_TOKENS: ${RAG_MAX_OUTPUT_TOKENS:-}
+      RAG_MAX_CONCURRENT_GENERATIONS: ${RAG_MAX_CONCURRENT_GENERATIONS:-}
+      RAG_MAX_CONCURRENT_INGESTIONS: ${RAG_MAX_CONCURRENT_INGESTIONS:-}
+      RAG_QUEUE_WAIT_SECONDS: ${RAG_QUEUE_WAIT_SECONDS:-}
+      # Ollama CPU threads per request; keep it equal to OLLAMA_CPUS (more threads than the CPU quota get throttled).
+      RAG_OLLAMA_NUM_THREAD: ${RAG_OLLAMA_NUM_THREAD:-2}
 
     expose:
       - "8000"
+
+    # Starts only after the local models are pulled (ollama-models exits 0; with cloud providers it pulls nothing).
+    depends_on:
+      ollama-models:
+        condition: service_completed_successfully
+
+    # default: reached by the API; rag-llm: the only network the local model server is on.
+    networks:
+      - default
+      - rag-llm
 
     read_only: true
     tmpfs:
@@ -106,12 +132,86 @@ services:
           cpus: "1.0"
           memory: 1g
 
+    # Ready = vector table has the configured dimension and every local model is pulled (/health/ready answers 503 otherwise).
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3).status == 200 else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5).status == 200 else 1)"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 20s
 
+  # Local model server for the RAG service (optional: only with RAG_*_PROVIDER=ollama). No published port: it is on the
+  # rag-llm network only, which only rag-service joins (the API and the other services cannot reach it). Models are pulled
+  # once into the ollama_models volume:  docker compose --profile rag exec ollama ollama pull qwen3-embedding:0.6b
+  ollama:
+    image: ${OLLAMA_IMAGE:-ollama/ollama}:${OLLAMA_IMAGE_TAG:-latest}
+    profiles: ["rag"]
+    environment:
+      # One generation at a time on a small CPU-only VPS; the RAG service queues the rest (RAG_MAX_CONCURRENT_GENERATIONS).
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
+      # The embedding and the generation model stay loaded together.
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-2}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      # The model runner (llama-server) otherwise keeps up to 8 GiB of earlier prompts in RAM; measured growth past 5 GB without
+      # this cap (guides/rag-local-ollama.md §6). Verify on the VPS that the runner honours it (docker stats).
+      LLAMA_ARG_CACHE_RAM: ${LLAMA_ARG_CACHE_RAM:-256}
+    expose:
+      - "11434"
+    networks:
+      - rag-llm
+    volumes:
+      - ollama_models:/root/.ollama
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "${OLLAMA_CPUS:-2.0}"
+          # Measured peak of both models loaded (qwen3:1.7b with num_ctx 8192 + qwen3-embedding:0.6b): about 2.9–3.5 GB.
+          memory: ${OLLAMA_MEMORY_LIMIT:-4096m}
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 20s
+
+  # One-shot: pulls the local models into the ollama_models volume the first time, and only checks them afterwards (no download
+  # on restart: `ollama show` finds them in the volume). Only providers set to ollama are pulled; a failed pull exits non-zero and
+  # rag-service does not start. Logs: docker compose -f docker-compose.pull.yml --profile rag logs ollama-models
+  ollama-models:
+    image: ${OLLAMA_IMAGE:-ollama/ollama}:${OLLAMA_IMAGE_TAG:-latest}
+    profiles: ["rag"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      PULL_EMBEDDING: "${RAG_EMBEDDING_PROVIDER:-hashing}=${RAG_EMBEDDING_MODEL:-}"
+      PULL_LLM: "${RAG_LLM_PROVIDER:-extractive}=${RAG_LLM_MODEL:-}"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        for pair in "$$PULL_EMBEDDING" "$$PULL_LLM"; do
+          provider="$${pair%%=*}"
+          model="$${pair#*=}"
+          [ "$$provider" = "ollama" ] || continue
+          if ollama show "$$model" > /dev/null 2>&1; then
+            echo "model present: $$model"
+          else
+            echo "pulling model: $$model"
+            ollama pull "$$model"
+          fi
+        done
+        echo "local models ready"
+    networks:
+      - rag-llm
+    restart: "no"
+
+networks:
+  rag-llm: {}
+
 volumes:
   rabbitmq_data:
+  ollama_models:

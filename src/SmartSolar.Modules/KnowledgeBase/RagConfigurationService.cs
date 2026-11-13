@@ -224,8 +224,10 @@ public sealed class RagConfigurationService(IKnowledgeUnitOfWork unitOfWork, Rag
             {
                 var active = await unitOfWork.FindConfigurationAsync(RagConfigurationStatuses.Active, false, token);
                 var config = active is null ? rules.Bootstrap(options) : rules.Effective(active);
+                var embeddingModel = string.IsNullOrWhiteSpace(options.EmbeddingModel) ? null : options.EmbeddingModel.Trim();
                 var stale = (await unitOfWork.GetIndexedVersionsAsync(false, token))
-                    .Where(v => !config.Values.SameChunking(v.IndexedChunkCharacters, v.IndexedChunkOverlap)).ToList();
+                    .Where(v => !config.Values.SameChunking(v.IndexedChunkCharacters, v.IndexedChunkOverlap)
+                        || (embeddingModel is not null && !string.Equals(v.EmbeddingModel, embeddingModel, StringComparison.Ordinal))).ToList();
                 var open = (await unitOfWork.GetVersionsWithOpenJobsAsync(token)).ToHashSet();
                 var now = time.GetUtcNow();
                 var queued = 0;

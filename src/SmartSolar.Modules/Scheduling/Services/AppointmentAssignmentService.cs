@@ -1,3 +1,4 @@
+using SmartSolar.Modules.Common.Notifications;
 using SmartSolar.Modules.Scheduling.Constants;
 using SmartSolar.Modules.Scheduling.Dispatch;
 using SmartSolar.Modules.Scheduling.Contracts.Persistence;
@@ -99,6 +100,8 @@ public sealed class AppointmentAssignmentService(
     private enum Step { Done, Retry }
 
     public TechnicianEligibility Eligibility => eligibility;
+
+    private TimeZoneInfo Zone => TimeZoneInfo.FindSystemTimeZoneById(options.TimeZoneId);
 
     public async Task<SchedulingResult<AssignmentResult>> AssignAsync(AssignmentSpec spec, CancellationToken cancellationToken)
     {
@@ -389,6 +392,9 @@ public sealed class AppointmentAssignmentService(
                     var owner = appointment.SurveyRequestId is { } rid ? (await unitOfWork.GetSurveyRequestContextAsync(rid, token))?.AssignedSaleId : null;
                     AppointmentHistory.Record(unitOfWork, appointment, AppointmentEventTypes.Released, technicianUserId, now,
                         previousTechnicianUserId: technicianUserId, newTechnicianUserId: target, reason: reason, notify: [owner, appointment.BookedByUserId]);
+                    AppointmentHistory.NotifyCustomer(unitOfWork, appointment, CustomerNotificationTypes.SurveyTechnicianReleased,
+                        $"The confirmed technician can no longer attend your survey appointment on {AppointmentHistory.When(appointment.StartsAt, Zone)}; "
+                        + "SmartSolar is looking for another technician to confirm it.", now);
                     if (escalate)
                         AppointmentHistory.Record(unitOfWork, appointment, AppointmentEventTypes.Escalated, null, now,
                             newTechnicianUserId: target, reason: target is null ? "NO_HOLDER_AVAILABLE" : "DEADLINE_PASSED", notify: [owner]);
@@ -445,6 +451,9 @@ public sealed class AppointmentAssignmentService(
             previousTechnicianUserId: technicianUserId, reason: reason, notify: [survey.AssignedSaleId]);
         AppointmentHistory.Record(unitOfWork, appointment, AppointmentEventTypes.Cancelled, technicianUserId, now,
             reason: $"{CancellationReasons.ReleasedToDispatch}: dispatch request {request.Id}");
+        AppointmentHistory.NotifyCustomer(unitOfWork, appointment, CustomerNotificationTypes.SurveyAppointmentCancelled,
+            $"The technician can no longer attend your survey appointment on {AppointmentHistory.When(appointment.StartsAt, Zone)}. "
+            + "SmartSolar is arranging another technician and will confirm a new time.", now);
         var detail = $"appointment {appointment.Id} ({appointment.StartsAt:O}) released by technician {technicianUserId}: {reason}";
         var staff = await DispatchHistory.StaffRecipientsAsync(dispatch, request, token);
         DispatchHistory.Record(dispatch, request.Id, DispatchEventTypes.AssignmentReleased, technicianUserId, now,
@@ -745,9 +754,13 @@ public sealed class AppointmentAssignmentService(
         {
             AppointmentHistory.Record(unitOfWork, appointment, AppointmentEventTypes.Accepted, spec.TechnicianUserId, now,
                 previousHolder, spec.TechnicianUserId, notify: [owner, appointment.BookedByUserId]);
+            AppointmentHistory.NotifyCustomer(unitOfWork, appointment, CustomerNotificationTypes.SurveyAppointmentConfirmed,
+                $"A technician confirmed your survey appointment on {AppointmentHistory.When(appointment.StartsAt, Zone)}.", now);
             return;
         }
         RecordStaffAssignment(unitOfWork, appointment, spec.Source, spec.Reason, spec.ActorUserId, spec.TechnicianUserId, previousAssignee, previousHolder, owner, now);
+        AppointmentHistory.NotifyCustomer(unitOfWork, appointment, CustomerNotificationTypes.SurveyAppointmentConfirmed,
+            $"SmartSolar confirmed a technician for your survey appointment on {AppointmentHistory.When(appointment.StartsAt, Zone)}.", now);
     }
 
     /// <summary>

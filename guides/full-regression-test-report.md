@@ -1,12 +1,39 @@
-# SmartSolar — full regression test report (authoritative, 2026-10-31, after M-7)
+# SmartSolar — full regression test report (authoritative, 2026-10-31, after the flaky-test investigation)
 
 Audience: QA lead and the release owner.
 
-Every number below comes from commands executed on 2026-10-31 on the local working tree (branch `feat/fe-backend-gap-fixes`, HEAD
-`2810286` plus uncommitted changes). Skipped tests are never counted as passed. This report replaces all earlier versions; the
-history of each phase is summarised in §5.
+Every number below comes from commands executed on 2026-10-31 on the local working tree: branch `fix/business-logic-v2`, HEAD
+`deddde8` (committed outside this session) plus the uncommitted changes of the flaky-test phase. Skipped tests are never counted
+as passed. This report replaces all earlier versions; the history of each phase is summarised in §5.
 
-## 0. Current state after M-7 (authoritative)
+## 00. Current state after the flaky-test investigation (authoritative)
+
+| Run (Release, clean build: 0 warnings, 0 errors) | Total | Passed | Failed | Skipped |
+|---|---|---|---|---|
+| A: no infrastructure | 1,546 | 1,467 | 0 | 79 |
+| B: disposable PostgreSQL 17 | 1,546 | 1,544 | 0 | 2 (the `[RedisFact]` tests) |
+| C: disposable Redis | 1,546 | 1,469 | 0 | 77 (the `[PostgresFact]` tests) |
+| **D: PostgreSQL and Redis together** | **1,546** | **1,546** | **0** | **0** |
+
+* **D is now verified:** the combined run completed with 0 failures and 0 skips in 2.5 minutes.
+* **Before the fixes:** 4 more combined runs were also green — Release, Debug, and two suites run at once.
+* **New in this phase:** +7 cases (1,539 → 1,546).
+  * `TestHostIsolationTests` 2;
+  * `PaymentTests` 2;
+  * `PostgresPaymentIntegrityTests` 1;
+  * deterministic acceptance/revision orderings on PostgreSQL 2.
+* **Fixed:**
+  * HTTP test hosts no longer run the dispatch worker on the shared SQLite connection (test harness);
+  * a payment order-code collision no longer fails a checkout (production).
+* **Still open:**
+  * the original 401s: NOT_REPRODUCED;
+  * the acceptance race: NOT_REPRODUCED in 60 runs;
+  * the real-Redis two-replica test: CONFIRMED_NOT_FIXED, intermittent under CPU starvation.
+* Details: [flaky-test-root-cause-analysis.md](flaky-test-root-cause-analysis.md).
+
+The sections below record earlier phases.
+
+## 0. State after M-7 (history)
 
 | Run (Release, clean build: 0 warnings, 0 errors) | Total | Passed | Failed | Skipped |
 |---|---|---|---|---|

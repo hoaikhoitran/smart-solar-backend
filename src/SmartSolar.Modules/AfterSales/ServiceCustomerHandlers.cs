@@ -512,6 +512,24 @@ public sealed class ServiceCustomerHandlers(
     public async Task<IReadOnlyList<NotificationView>> NotificationsAsync(Guid userId, CancellationToken cancellationToken)
         => (await data.ListNotificationsAsync(userId, cancellationToken)).Select(views.Notification).ToList();
 
+    /// <summary>
+    /// Marks an owned notification as read: read_at is persisted, so every device derives the same unread state. Idempotent (a second
+    /// call keeps the first read time). Another user's notification is "not found", never "forbidden" (no existence leak).
+    /// </summary>
+    public async Task<OperationResult<NotificationView>> MarkNotificationReadAsync(Guid userId, Guid notificationId, CancellationToken cancellationToken)
+        => await data.ExecuteInTransactionAsync<OperationResult<NotificationView>>(async token =>
+        {
+            var notification = await data.FindNotificationAsync(notificationId, userId, true, token);
+            if (notification is null)
+                return (OperationResult<NotificationView>.Fail(AfterSalesErrorCodes.NotificationNotFound, "The notification was not found."), false);
+            if (notification.ReadAt is null)
+            {
+                notification.ReadAt = time.GetUtcNow();
+                await data.SaveChangesAsync(token);
+            }
+            return (OperationResult<NotificationView>.Ok(views.Notification(notification)), true);
+        }, cancellationToken);
+
     // ================================================================== helpers
 
     private async Task<ServiceRequest?> OwnedAsync(Guid customerUserId, Guid requestId, CancellationToken token)

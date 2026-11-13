@@ -100,10 +100,21 @@ No known P0/P1 defect remains. The closure-vs-contract race is fixed and verifie
   two runs.
 * Redis suite alone: 9/9.
 * Without infrastructure: 1,539 / 1,463 / 0 / 76 skipped.
-* **The combined PostgreSQL + Redis run is NOT VERIFIED here.** In this native (Homebrew) setup, 11–13 unrelated HTTP tests fail
-  in the combined run only. The previous phase's Docker run of the same combination was fully green.
-* **Open:** one intermittent, not-reproduced failure of a pre-existing quotation race test.
-* Details: [final-postgresql-concurrency-verification.md](final-postgresql-concurrency-verification.md) §8.
+* **Update after the flaky-test investigation** (1,546 tests):
+  * **PostgreSQL + Redis combined:** 1,546 / 1,546 / 0 failed / 0 skipped (Release, clean build).
+  * **PostgreSQL only:** 1,544 / 0 failed / 2 skipped.
+  * **Redis only:** 1,469 / 0 failed / 77 skipped.
+  * **No infrastructure:** 1,467 / 0 failed / 79 skipped.
+* **Root causes fixed:**
+  * HTTP test hosts ran the dispatch worker on their shared SQLite connection (test harness);
+  * a 1-in-10,000 payment order-code collision made a checkout answer `PAYMENT_CHECKOUT_IN_PROGRESS` (production
+    `PaymentService` fix).
+* **Still open:**
+  * the original 401s and the acceptance race: NOT_REPRODUCED;
+  * the real-Redis two-replica test: CONFIRMED_NOT_FIXED, intermittent under CPU starvation.
+* Details: [flaky-test-root-cause-analysis.md](flaky-test-root-cause-analysis.md).
+* *Superseded:* the combined run was previously NOT VERIFIED (11–13 HTTP failures in this native setup). See
+  [final-postgresql-concurrency-verification.md](final-postgresql-concurrency-verification.md) §8–§9.
 
 ## 8. Release blockers
 
@@ -111,7 +122,9 @@ No known P0/P1 defect remains. The closure-vs-contract race is fixed and verifie
    the readiness and smoke checks there.
 2. **Providers:** real PayOS, S3, PVGIS/NASA, SMTP and RAG are not verified.
 3. **NFRs not measured:** load p95, simulation p95, PayOS ≤ 2 min, signed-URL expiry, RAG accuracy.
-4. **Combined suite:** repeat the PostgreSQL + Redis run in a container environment; investigate the intermittent acceptance-race failure.
+4. **Test stability:** the combined suite now passes locally; it should be repeated in CI.
+   * Also open: the unexplained earlier 401s (NOT_REPRODUCED) and the intermittent real-Redis two-replica test
+     (CONFIRMED_NOT_FIXED).
 5. **Policy:** manufacturer-claim handling and payer (D-06/B-04).
 6. **FE adoption:** [frontend-api-change-handoff.md](frontend-api-change-handoff.md) §0, §7, §8 and §9.
 7. **New decisions (not blockers):** re-contracting after a discard; discarding amendment drafts.

@@ -1,3 +1,4 @@
+using SmartSolar.Modules.Common.Time;
 using SmartSolar.Modules.Scheduling.Contracts.Persistence;
 using SmartSolar.Modules.Scheduling.Entities;
 
@@ -54,4 +55,13 @@ public static class AppointmentHistory
 
         return entry;
     }
+
+    /// <summary>
+    /// In-app notification to the customer who booked the appointment (what the customer notification endpoint lists). Staff keep their
+    /// <see cref="SchedulingNotification"/> rows. Callers skip it when the customer is the actor of the change.
+    /// </summary>
+    public static void NotifyCustomer(ISchedulingUnitOfWork unitOfWork, TechnicianAppointment appointment, string type, string message, DateTimeOffset nowUtc)
+        => unitOfWork.AddNotification(appointment.BookedByUserId, type, message, nowUtc);
+
+    public static string When(DateTimeOffset startsAt, TimeZoneInfo zone) => DisplayTime.Format(startsAt, zone);
 }

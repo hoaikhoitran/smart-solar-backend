@@ -385,7 +385,13 @@ Quotations and contracts keep requiring the owner.
 ### History and notifications
 
 Events (`technician_appointment_event`): `BOOKED`, `ACCEPTED`, `ASSIGNED`, `REASSIGNED`, `HOLD_MOVED`, `RELEASED`,
-`ESCALATED`, `RESCHEDULED`, `CANCELLED`. Notifications are recorded as `NOT_DELIVERED` (no delivery channel yet).
+`ESCALATED`, `RESCHEDULED`, `CANCELLED`. Staff notifications are recorded as `NOT_DELIVERED` (no delivery channel yet).
+
+The customer who booked gets an in-app notification (`GET /api/customers/me/after-sales/notifications`, read state via
+`POST .../notifications/{id}/read`) for: the booking (`SURVEY_APPOINTMENT_BOOKED`), a confirmed technician
+(`SURVEY_APPOINTMENT_CONFIRMED`: self-acceptance, staff assignment, dispatch booking), a staff reschedule
+(`SURVEY_APPOINTMENT_RESCHEDULED`), a technician release that keeps the time (`SURVEY_TECHNICIAN_RELEASED`) and a cancellation
+by the escalation sweep or by a technician release that goes to dispatch (`SURVEY_APPOINTMENT_CANCELLED`). The customer's own reschedule or cancellation is not echoed back to them.
 
 ---
 

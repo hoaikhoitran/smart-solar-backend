@@ -72,6 +72,8 @@ public interface IAfterSalesUnitOfWork : ITransactionalUnitOfWork
     Task<RefundRecord?> FindRefundAsync(Guid refundId, bool track, CancellationToken cancellationToken);
     Task<IReadOnlyList<AfterSalesEvent>> ListEventsAsync(string subjectType, Guid subjectId, CancellationToken cancellationToken);
     Task<IReadOnlyList<AfterSalesNotification>> ListNotificationsAsync(Guid recipientUserId, CancellationToken cancellationToken);
+    /// <summary>One notification of <paramref name="recipientUserId"/>; null when it does not exist or belongs to someone else.</summary>
+    Task<AfterSalesNotification?> FindNotificationAsync(Guid notificationId, Guid recipientUserId, bool track, CancellationToken cancellationToken);
 
     // ---- payments seen from after-sales
     Task<PaymentAttempt?> FindPaymentAttemptAsync(Guid attemptId, CancellationToken cancellationToken);

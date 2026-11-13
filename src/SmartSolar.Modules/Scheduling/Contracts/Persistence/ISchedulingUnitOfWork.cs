@@ -1,3 +1,4 @@
+using SmartSolar.Modules.Common.Notifications;
 using SmartSolar.Modules.PreSurvey.Entities;
 using SmartSolar.Modules.PreSurvey.Enums;
 using SmartSolar.Modules.PreSurvey.GetSurveyRequestDetail;
@@ -195,7 +196,7 @@ public sealed record CommuneMappingRow(string CommuneCode, Guid ZoneId, string Z
 /// <summary>An active zone membership with the technician's state.</summary>
 public sealed record ZoneMemberRow(Guid TechnicianUserId, string FullName, bool IsActiveUser, bool HasTechnicianRole, bool IsSchedulingActive, DateTimeOffset AssignedAt);
 
-public interface ISchedulingUnitOfWork
+public interface ISchedulingUnitOfWork : IInAppNotificationWriter
 {
     // ---- Reads ----
     Task<PropertySiteInfo?> GetPropertySiteAsync(Guid propertySiteId, CancellationToken cancellationToken);

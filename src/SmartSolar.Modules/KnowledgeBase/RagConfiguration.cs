@@ -124,7 +124,11 @@ public sealed record RagConfigurationValues(string GenerationModel, decimal? Tem
 }
 
 /// <summary>What the chatbot and ingestion use right now: the ACTIVE row, or the bootstrap values (version 0) from RagOptions.</summary>
-public sealed record EffectiveRagConfiguration(int Version, bool Bootstrap, RagConfigurationValues Values, string TokenParameter);
+/// <param name="ModelRegistered">
+/// False when the ACTIVE row names a generation model that is no longer in <c>Rag:GenerationModels</c> (for example a cloud model after
+/// the deployment switched to local inference): that model must not be requested any more.
+/// </param>
+public sealed record EffectiveRagConfiguration(int Version, bool Bootstrap, RagConfigurationValues Values, string TokenParameter, bool ModelRegistered = true);
 
 /// <summary>Model registry, prompt-version allowlist and bounds; validates admin values server-side.</summary>
 public sealed partial class RagConfigurationRules
@@ -213,7 +217,8 @@ public sealed partial class RagConfigurationRules
         return new EffectiveRagConfiguration(0, true, values, TokenParameterFor(options.GenerationModel));
     }
 
-    public EffectiveRagConfiguration Effective(RagConfiguration active) => new(active.Version, false, active.Values(), TokenParameterFor(active.GenerationModel));
+    public EffectiveRagConfiguration Effective(RagConfiguration active)
+        => new(active.Version, false, active.Values(), TokenParameterFor(active.GenerationModel), FindModel(active.GenerationModel) is not null);
 }
 
 /// <summary>Reads the effective configuration (per request, cached briefly).</summary>
