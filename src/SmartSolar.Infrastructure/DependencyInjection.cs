@@ -45,6 +45,7 @@ public static class DependencyInjection
         AddCaching(services, configuration);
 
         services.AddScoped<IIdentityUnitOfWork, IdentityUnitOfWork>();
+        services.AddScoped<SmartSolar.Modules.Identity.PasswordRecovery.IPasswordResetDispatchStore, PasswordResetDispatchStore>();
         services.AddScoped<ICatalogUnitOfWork, CatalogUnitOfWork>();
         services.AddScoped<IProductImageUnitOfWork, ProductImageUnitOfWork>();
         services.AddScoped<SystemRoleSeeder>();

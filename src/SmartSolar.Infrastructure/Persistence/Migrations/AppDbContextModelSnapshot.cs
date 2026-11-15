@@ -2738,6 +2738,95 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.ToTable("user_role", (string)null);
                 });
 
+            modelBuilder.Entity("SmartSolar.Modules.Identity.PasswordRecovery.PasswordResetDispatch", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ActionTokenId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("action_token_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)")
+                        .HasColumnName("email");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("FullName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("full_name");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("last_error");
+
+                    b.Property<DateTimeOffset>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("next_attempt_at");
+
+                    b.Property<int>("PublishAttempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("publish_attempts");
+
+                    b.Property<DateTimeOffset?>("PublishedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("published_at");
+
+                    b.Property<string>("ResetUrl")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)")
+                        .HasColumnName("reset_url");
+
+                    b.Property<DateTimeOffset?>("SentAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("sent_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ActionTokenId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_password_reset_dispatch_action_token");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_password_reset_dispatch_user");
+
+                    b.HasIndex("Status", "NextAttemptAt")
+                        .HasDatabaseName("ix_password_reset_dispatch_status_next_attempt");
+
+                    b.ToTable("password_reset_dispatch", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_password_reset_dispatch_attempts", "publish_attempts >= 0");
+
+                            t.HasCheckConstraint("ck_password_reset_dispatch_status", "status IN ('PENDING', 'PUBLISHED', 'SENT', 'EXPIRED')");
+
+                            t.HasCheckConstraint("ck_password_reset_dispatch_url", "(status = 'PENDING') = (reset_url IS NOT NULL)");
+                        });
+                });
+
             modelBuilder.Entity("SmartSolar.Modules.Installations.EquipmentSubstitution", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3502,6 +3591,234 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                             t.HasCheckConstraint("ck_installed_asset_warranty_period", "warranty_ends_at IS NULL OR (warranty_starts_at IS NOT NULL AND warranty_months IS NOT NULL AND warranty_ends_at > warranty_starts_at)");
 
                             t.HasCheckConstraint("ck_installed_asset_warranty_source", "(warranty_months IS NULL) = (warranty_source IS NULL) AND (warranty_source IS NULL OR warranty_source IN ('CATALOG_PRODUCT', 'LEGACY_UNVERIFIED'))");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.IotMonitoring.IotDevice", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<string>("DeviceId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("device_id");
+
+                    b.Property<DateTimeOffset?>("DisabledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("disabled_at");
+
+                    b.Property<Guid?>("DisabledByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("disabled_by_user_id");
+
+                    b.Property<string>("DisabledReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("disabled_reason");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)")
+                        .HasColumnName("display_name");
+
+                    b.Property<DateTimeOffset?>("LastSeenAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_seen_at");
+
+                    b.Property<decimal>("MaxCurrentAmps")
+                        .HasPrecision(9, 3)
+                        .HasColumnType("numeric(9,3)")
+                        .HasColumnName("max_current_amps");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<string>("SecretHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("secret_hash");
+
+                    b.Property<DateTimeOffset>("SecretRotatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("secret_rotated_at");
+
+                    b.Property<int>("SecretVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("secret_version");
+
+                    b.Property<string>("SensorModel")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("sensor_model");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("DeviceId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_iot_device_device_id");
+
+                    b.HasIndex("DisabledByUserId");
+
+                    b.HasIndex("Status")
+                        .HasDatabaseName("ix_iot_device_status");
+
+                    b.ToTable("iot_device", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_iot_device_disabled", "(status = 'DISABLED') = (disabled_at IS NOT NULL) AND (status <> 'DISABLED' OR (disabled_by_user_id IS NOT NULL AND disabled_reason IS NOT NULL))");
+
+                            t.HasCheckConstraint("ck_iot_device_max_current", "max_current_amps > 0 AND max_current_amps <= 1000");
+
+                            t.HasCheckConstraint("ck_iot_device_secret_version", "secret_version >= 1");
+
+                            t.HasCheckConstraint("ck_iot_device_status", "status IN ('ACTIVE', 'DISABLED')");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.IotMonitoring.IotDeviceBinding", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("BoundAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("bound_at");
+
+                    b.Property<Guid>("BoundByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("bound_by_user_id");
+
+                    b.Property<Guid>("CustomerUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("customer_user_id");
+
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("device_id");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("note");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("project_id");
+
+                    b.Property<string>("ReleaseReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("release_reason");
+
+                    b.Property<DateTimeOffset?>("ReleasedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("released_at");
+
+                    b.Property<Guid?>("ReleasedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("released_by_user_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BoundByUserId");
+
+                    b.HasIndex("CustomerUserId")
+                        .HasDatabaseName("ix_iot_device_binding_customer");
+
+                    b.HasIndex("DeviceId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_iot_device_binding_active_device")
+                        .HasFilter("status = 'ACTIVE'");
+
+                    b.HasIndex("ProjectId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_iot_device_binding_active_project")
+                        .HasFilter("status = 'ACTIVE'");
+
+                    b.HasIndex("ReleasedByUserId");
+
+                    b.HasIndex("ProjectId", "BoundAt")
+                        .HasDatabaseName("ix_iot_device_binding_project_bound_at");
+
+                    b.ToTable("iot_device_binding", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_iot_device_binding_released", "(status = 'ACTIVE') = (released_at IS NULL) AND (status <> 'RELEASED' OR (released_by_user_id IS NOT NULL AND release_reason IS NOT NULL))");
+
+                            t.HasCheckConstraint("ck_iot_device_binding_status", "status IN ('ACTIVE', 'RELEASED')");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.IotMonitoring.IotTelemetryReading", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BindingId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("binding_id");
+
+                    b.Property<double>("CurrentAmps")
+                        .HasColumnType("double precision")
+                        .HasColumnName("current_amps");
+
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("device_id");
+
+                    b.Property<DateTimeOffset>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("received_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BindingId", "ReceivedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_iot_telemetry_reading_binding_received_at");
+
+                    b.HasIndex("DeviceId", "ReceivedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_iot_telemetry_reading_device_received_at");
+
+                    b.ToTable("iot_telemetry_reading", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_iot_telemetry_reading_current", "current_amps BETWEEN -10000 AND 10000");
                         });
                 });
 
@@ -7558,6 +7875,23 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("SmartSolar.Modules.Identity.PasswordRecovery.PasswordResetDispatch", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.AuthActionToken", null)
+                        .WithMany()
+                        .HasForeignKey("ActionTokenId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_password_reset_dispatch_action_token");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_password_reset_dispatch_user");
+                });
+
             modelBuilder.Entity("SmartSolar.Modules.Installations.EquipmentSubstitution", b =>
                 {
                     b.HasOne("SmartSolar.Modules.CustomerContracts.CustomerContract", null)
@@ -7793,6 +8127,76 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasForeignKey("ServiceRequestId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .HasConstraintName("fk_installed_asset_service_request");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.IotMonitoring.IotDevice", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_iot_device_created_by");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("DisabledByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_iot_device_disabled_by");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.IotMonitoring.IotDeviceBinding", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("BoundByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_iot_device_binding_bound_by");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CustomerUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_iot_device_binding_customer");
+
+                    b.HasOne("SmartSolar.Modules.IotMonitoring.IotDevice", null)
+                        .WithMany()
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_iot_device_binding_device");
+
+                    b.HasOne("SmartSolar.Modules.Installations.InstallationProject", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_iot_device_binding_project");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("ReleasedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_iot_device_binding_released_by");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.IotMonitoring.IotTelemetryReading", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.IotMonitoring.IotDeviceBinding", null)
+                        .WithMany()
+                        .HasForeignKey("BindingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_iot_telemetry_reading_binding");
+
+                    b.HasOne("SmartSolar.Modules.IotMonitoring.IotDevice", null)
+                        .WithMany()
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_iot_telemetry_reading_device");
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.KnowledgeBase.ChatCitation", b =>

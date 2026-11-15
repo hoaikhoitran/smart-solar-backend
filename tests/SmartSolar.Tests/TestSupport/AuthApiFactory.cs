@@ -82,7 +82,8 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("RateLimiting:AdminUsersRecovery:PermitLimit", "1000");
         foreach (var policy in SmartSolar.Api.Extensions.RateLimitingExtensions.InstallationWorkflowPolicies
                      .Concat(SmartSolar.Api.Extensions.RateLimitingExtensions.KnowledgeBasePolicies)
-                     .Concat(SmartSolar.Api.Extensions.RateLimitingExtensions.SystemSettingsPolicies))
+                     .Concat(SmartSolar.Api.Extensions.RateLimitingExtensions.SystemSettingsPolicies)
+                     .Concat(SmartSolar.Api.Extensions.RateLimitingExtensions.IotMonitoringPolicies))
         {
             builder.UseSetting($"{policy.Section}:PermitLimit", "1000");
         }
@@ -96,6 +97,8 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
         // with the test's requests; a concurrent DbContext then fails (SQLite Error 5) and surfaces as a
         // spurious 401 or 500. Dispatch tests drive DispatchSweepService explicitly.
         builder.UseSetting("Dispatch:WorkerEnabled", "false");
+        // The password-reset outbox worker is driven explicitly by tests (PasswordResetDispatcher.SweepAsync).
+        builder.UseSetting("Auth:PasswordReset:DispatchWorkerEnabled", "false");
 
         foreach (var (key, value) in _settings)
         {

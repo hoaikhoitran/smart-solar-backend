@@ -26,6 +26,8 @@ public sealed class AppDbContext : DbContext
 
     public DbSet<AuthActionToken> AuthActionTokens => Set<AuthActionToken>();
 
+    public DbSet<SmartSolar.Modules.Identity.PasswordRecovery.PasswordResetDispatch> PasswordResetDispatches => Set<SmartSolar.Modules.Identity.PasswordRecovery.PasswordResetDispatch>();
+
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
 
     public DbSet<Customer> Customers => Set<Customer>();
@@ -168,6 +170,13 @@ public sealed class AppDbContext : DbContext
     public DbSet<SmartSolar.Modules.AfterSales.AfterSalesEvent> AfterSalesEvents => Set<SmartSolar.Modules.AfterSales.AfterSalesEvent>();
 
     public DbSet<SmartSolar.Modules.AfterSales.AfterSalesNotification> AfterSalesNotifications => Set<SmartSolar.Modules.AfterSales.AfterSalesNotification>();
+
+    // IoT energy monitoring (device registry, bindings to installation projects, telemetry)
+    public DbSet<SmartSolar.Modules.IotMonitoring.IotDevice> IotDevices => Set<SmartSolar.Modules.IotMonitoring.IotDevice>();
+
+    public DbSet<SmartSolar.Modules.IotMonitoring.IotDeviceBinding> IotDeviceBindings => Set<SmartSolar.Modules.IotMonitoring.IotDeviceBinding>();
+
+    public DbSet<SmartSolar.Modules.IotMonitoring.IotTelemetryReading> IotTelemetryReadings => Set<SmartSolar.Modules.IotMonitoring.IotTelemetryReading>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

@@ -26,6 +26,8 @@ to N × the limit), which is acceptable for cheap reads and writes.
 | `installation-scheduling` (confirm schedule, leader, milestones) | 10 / min | user | **cluster-wide** |
 | `payment-create` | 5 / 10 min | user + contract | **cluster-wide** |
 | `payos-webhook` | 600 / min | source IP | per instance (abuse guard only) |
+| `iot-telemetry-ingest` (ESP32 readings, no user JWT) | 12 / min | device id + source IP | per instance (6 readings/min at the agreed 10 s cycle; the rest is margin) |
+| `iot-read` / `iot-write` (device registry, bindings, measured reads) | 60 / min, 20 / min | user | per instance |
 | all other Installation Flow, file-read, chat-history and admin-read policies | see `appsettings.json` | user | per instance |
 | `system-settings-read` (scheduling settings + history, Admin/Manager) | 60 / min | user | per instance |
 | `system-settings-write` (Admin settings update) | 10 / min | user | per instance |

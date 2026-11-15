@@ -267,7 +267,8 @@ public class AuthSessionEndpointsTests
     [Fact]
     public async Task Reset_password_completes_the_flow_from_the_emailed_link()
     {
-        using var factory = new AuthApiFactory();
+        // Broker + SMTP configured: the reset email is published (otherwise it waits in the outbox until it expires).
+        using var factory = new AuthApiFactory { EmailCanDeliver = true };
         var client = await RegisteredAndActive(factory);
         var (_, refreshToken) = await SignIn(client);
         await client.PostAsJsonAsync("/api/auth/forgot-password", new { email = "person@example.com" });
@@ -404,7 +405,7 @@ public class AuthSessionEndpointsTests
     [Fact]
     public async Task Forgot_password_never_returns_the_raw_reset_token()
     {
-        using var factory = new AuthApiFactory();
+        using var factory = new AuthApiFactory { EmailCanDeliver = true };
         var client = await RegisteredAndActive(factory);
 
         var response = await client.PostAsJsonAsync(

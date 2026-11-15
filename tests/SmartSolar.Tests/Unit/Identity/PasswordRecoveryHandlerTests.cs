@@ -95,7 +95,7 @@ public class ForgotPasswordHandlerTests
     }
 
     [Fact]
-    public async Task Keeps_the_token_when_publishing_fails()
+    public async Task Keeps_the_token_and_a_pending_outbox_row_when_publishing_fails()
     {
         await using var ctx = new IdentityTestContext();
         await ctx.SeedActiveUserAsync("person@example.com", Password);
@@ -106,6 +106,9 @@ public class ForgotPasswordHandlerTests
 
         Assert.True(result.Accepted);
         Assert.Equal(1, await ctx.Db.AuthActionTokens.CountAsync());
+        var row = await ctx.Db.PasswordResetDispatches.AsNoTracking().SingleAsync();
+        Assert.Equal((PasswordResetDispatchStatuses.Pending, 1, nameof(InvalidOperationException)), (row.Status, row.PublishAttempts, row.LastError));
+        Assert.NotNull(row.ResetUrl);
     }
 }
 

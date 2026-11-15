@@ -49,6 +49,8 @@ public sealed class ChangePasswordHandler
         var now = DateTimeOffset.UtcNow;
         user.PasswordHash = _passwordHasher.HashPassword(user, command.NewPassword);
         user.UpdatedAt = now;
+        // Every access token issued before the change (including the caller's) stops working; the client signs in with the new password.
+        user.AuthVersion++;
 
         // Other sessions must not survive a password change.
         await _unitOfWork.RevokeActiveRefreshTokensAsync(user.Id, now, cancellationToken);

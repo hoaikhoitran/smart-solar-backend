@@ -93,7 +93,11 @@ public static class IdentityModuleExtensions
         services.AddScoped<LoginHandler>();
         services.AddScoped<RefreshTokenHandler>();
         services.AddScoped<LogoutHandler>();
+        services.AddScoped<PasswordResetDispatcher>();
         services.AddScoped<ForgotPasswordHandler>();
+        // Retries reset emails whose publish failed (broker down) until their token expires; tests drive it explicitly.
+        if (configuration.GetValue($"{PasswordResetOptions.SectionName}:DispatchWorkerEnabled", true))
+            services.AddHostedService<Background.PasswordResetDispatchWorker>();
         services.AddScoped<ResetPasswordHandler>();
         services.AddScoped<ChangePasswordHandler>();
 

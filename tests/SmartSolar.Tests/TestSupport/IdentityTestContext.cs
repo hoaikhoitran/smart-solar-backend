@@ -31,6 +31,8 @@ public sealed class IdentityTestContext : IAsyncDisposable
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseSqlite(_connection, sqlite => sqlite
                 .ExecutionStrategy(dependencies => new TestRetryingExecutionStrategy(dependencies, retryOnce)))
+            // Range comparisons on timestamps (the password-reset outbox) need the same SQLite mapping as the API tests.
+            .ReplaceService<Microsoft.EntityFrameworkCore.Infrastructure.IModelCustomizer, SqliteCatalogModelCustomizer>()
             .Options;
 
         Db = new AppDbContext(options);
@@ -96,14 +98,25 @@ public sealed class IdentityTestContext : IAsyncDisposable
 
     public LogoutHandler CreateLogoutHandler() => new(UnitOfWork);
 
+    /// <summary>Controls the email delivery readiness the reset dispatcher sees (true: broker + SMTP configured).</summary>
+    public bool EmailCanDeliver { get; set; } = true;
+
+    public FixedTimeProvider Clock { get; } = new(DateTimeOffset.UtcNow);
+
+    public PasswordResetDispatchStore DispatchStore => new(Db);
+
+    public PasswordResetDispatcher CreatePasswordResetDispatcher()
+        => new(DispatchStore, Publisher, new SmartSolar.Infrastructure.Email.ConfiguredEmailDeliveryStatus(EmailCanDeliver), Clock,
+            NullLogger<PasswordResetDispatcher>.Instance);
+
     public ForgotPasswordHandler CreateForgotPasswordHandler()
         => new(
             UnitOfWork,
             SecureTokens,
-            Publisher,
+            CreatePasswordResetDispatcher(),
             PasswordResetOptions,
             FrontendOptions,
-            NullLogger<ForgotPasswordHandler>.Instance);
+            Clock);
 
     public ResetPasswordHandler CreateResetPasswordHandler()
         => new(UnitOfWork, PasswordHasher, NullLogger<ResetPasswordHandler>.Instance);

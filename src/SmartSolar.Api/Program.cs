@@ -44,6 +44,8 @@ builder.Services.AddAdminUsersRateLimiting(builder.Configuration);
 builder.Services.AddFeatureFlagsAndFileStorage(builder.Configuration);
 builder.Services.AddInstallationWorkflow(builder.Configuration);
 builder.Services.AddInstallationWorkflowRateLimiting(builder.Configuration);
+builder.Services.AddIotMonitoring(builder.Configuration);
+builder.Services.AddIotMonitoringRateLimiting(builder.Configuration);
 builder.Services.AddAfterSales(builder.Configuration);
 builder.Services.AddKnowledgeBase(builder.Configuration);
 builder.Services.AddKnowledgeBaseRateLimiting(builder.Configuration);

@@ -25,7 +25,22 @@ public class EmailConsumerTests
     {
         var sender = new FakeEmailSender();
         var service = new PasswordResetEmailService(sender, new PasswordResetOptions { LifetimeMinutes = 60 }, NullLogger<PasswordResetEmailService>.Instance);
-        return (new PasswordResetRequestedConsumer(service), sender);
+        return (new PasswordResetRequestedConsumer(service, new UnusedDispatchStore(), TimeProvider.System,
+            NullLogger<PasswordResetRequestedConsumer>.Instance), sender);
+    }
+
+    /// <summary>Messages without an outbox id (published before the outbox existed) never touch the store.</summary>
+    private sealed class UnusedDispatchStore : SmartSolar.Modules.Identity.PasswordRecovery.IPasswordResetDispatchStore
+    {
+        private static T Fail<T>() => throw new InvalidOperationException("The outbox must not be used for a message without a dispatch id.");
+        public Task<SmartSolar.Modules.Identity.PasswordRecovery.PasswordResetDispatch?> TryClaimAsync(Guid id, DateTimeOffset now, TimeSpan lease, CancellationToken cancellationToken) => Fail<Task<SmartSolar.Modules.Identity.PasswordRecovery.PasswordResetDispatch?>>();
+        public Task<IReadOnlyList<Guid>> ListDueAsync(DateTimeOffset now, int limit, CancellationToken cancellationToken) => Fail<Task<IReadOnlyList<Guid>>>();
+        public Task MarkPublishedAsync(Guid id, DateTimeOffset now, CancellationToken cancellationToken) => Fail<Task>();
+        public Task RecordPublishFailureAsync(Guid id, DateTimeOffset nextAttemptAt, string error, CancellationToken cancellationToken) => Fail<Task>();
+        public Task<int> ExpireAsync(DateTimeOffset now, CancellationToken cancellationToken) => Fail<Task<int>>();
+        public Task<string?> GetStatusAsync(Guid id, CancellationToken cancellationToken) => Fail<Task<string?>>();
+        public Task MarkSentAsync(Guid id, DateTimeOffset now, CancellationToken cancellationToken) => Fail<Task>();
+        public Task RecordSendFailureAsync(Guid id, string error, CancellationToken cancellationToken) => Fail<Task>();
     }
 
     private static EmailVerificationRequestedEvent VerificationEvent() => new(Guid.NewGuid(), "person@example.com", "Test Person", "https://app.test/verify-email?token=RAW");
