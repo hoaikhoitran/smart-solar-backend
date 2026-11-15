@@ -69,6 +69,9 @@ public interface IIdentityUnitOfWork
 
     void AddAuthActionToken(AuthActionToken token);
 
+    /// <summary>Outbox row of a password-reset email, saved with the same transaction as its token.</summary>
+    void AddPasswordResetDispatch(PasswordRecovery.PasswordResetDispatch dispatch);
+
     /// <summary>
     /// Runs <paramref name="work"/> inside one transaction and commits it, using the
     /// provider's execution strategy so it stays retriable. The whole unit may run

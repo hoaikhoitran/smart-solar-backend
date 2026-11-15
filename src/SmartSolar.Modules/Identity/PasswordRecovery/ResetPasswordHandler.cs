@@ -76,6 +76,9 @@ public sealed class ResetPasswordHandler
 
         user.PasswordHash = _passwordHasher.HashPassword(user, newPassword);
         user.UpdatedAt = now;
+        // Access tokens issued before the reset stop working on their next request (AccessTokenRevocationCheck compares the version);
+        // sessions created after this commit carry the new version.
+        user.AuthVersion++;
         resetToken.UsedAt = now;
 
         // A refresh token stolen before the reset must not keep minting access tokens.
@@ -115,6 +118,7 @@ public sealed class ResetPasswordHandler
         user.EmailVerifiedAt ??= now;
         user.Status = UserStatus.Active;
         user.UpdatedAt = now;
+        user.AuthVersion++;
         setupToken.UsedAt = now;
 
         await _unitOfWork.RevokeActiveRefreshTokensAsync(user.Id, now, cancellationToken);

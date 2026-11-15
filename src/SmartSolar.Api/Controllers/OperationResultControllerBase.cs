@@ -65,13 +65,15 @@ public abstract class OperationResultControllerBase : ControllerBase
                 or "INSTALLATION_EXEMPTION_EVIDENCE_REQUIRED" or "CONTRACT_DISCARD_REASON_REQUIRED"
             || code.StartsWith("SYSTEM_SETTING_", StringComparison.Ordinal))
             return StatusCodes.Status400BadRequest;
-        if (code is CommonErrorCodes.Forbidden or "FILE_NOT_OWNED" or "FILE_UPLOAD_NOT_ALLOWED") return StatusCodes.Status403Forbidden;
+        if (code is CommonErrorCodes.Forbidden or "FILE_NOT_OWNED" or "FILE_UPLOAD_NOT_ALLOWED" or "IOT_DEVICE_DISABLED") return StatusCodes.Status403Forbidden;
+        // A device presenting no, an unknown or a wrong credential (device endpoints carry no user JWT).
+        if (code is "IOT_DEVICE_UNAUTHORIZED") return StatusCodes.Status401Unauthorized;
         // Same codes and status as survey booking: the site cannot be served until its location / zone data is fixed.
         if (code is "SITE_LOCATION_REQUIRED" or "NO_ZONE_COVERAGE" or "ZONE_NOT_SERVICEABLE"
             or "ADMINISTRATIVE_LOCATION_UNKNOWN" or "ADMINISTRATIVE_LOCATION_SUPERSEDED" or "ADMINISTRATIVE_LOCATION_OUT_OF_SERVICE_AREA")
             return StatusCodes.Status422UnprocessableEntity;
         if (code is CommonErrorCodes.FeaturePendingMigration or "PAYMENT_PROVIDER_NOT_CONFIGURED" or "RAG_SERVICE_UNAVAILABLE" or "FILE_STORAGE_UNAVAILABLE"
-            or "STORAGE_NOT_CONFIGURED" or "STORAGE_UNAVAILABLE" or "STORAGE_PUBLIC_URL_NOT_CONFIGURED")
+            or "STORAGE_NOT_CONFIGURED" or "STORAGE_UNAVAILABLE" or "STORAGE_PUBLIC_URL_NOT_CONFIGURED" or "IOT_STORAGE_UNAVAILABLE")
             return StatusCodes.Status503ServiceUnavailable;
         // The stored object of a verified file was deleted from storage: gone for good.
         if (code is "FILE_OBJECT_MISSING" or "INSTALLATION_EVIDENCE_OBJECT_MISSING") return StatusCodes.Status410Gone;

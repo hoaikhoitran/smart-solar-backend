@@ -44,6 +44,8 @@ public sealed class SqliteCatalogModelCustomizer : ModelCustomizer
         ConvertSortableColumns(modelBuilder.Entity<SchedulingNotification>());
         ConvertSortableColumns(modelBuilder.Entity<SmartSolar.Modules.Identity.Entities.UserAccountAuditEntry>());
         ConvertSortableColumns(modelBuilder.Entity<SmartSolar.Modules.Identity.Entities.UserAccount>());
+        // The password-reset outbox claims and expires rows by comparing timestamps.
+        ConvertSortableColumns(modelBuilder.Entity<SmartSolar.Modules.Identity.PasswordRecovery.PasswordResetDispatch>());
         // Customer pre-survey lists sort by CreatedAt / UpdatedAt.
         ConvertSortableColumns(modelBuilder.Entity<SmartSolar.Modules.PreSurvey.Entities.PreSurvey>());
 
@@ -60,7 +62,7 @@ public sealed class SqliteCatalogModelCustomizer : ModelCustomizer
     [
         "SmartSolar.Modules.Files", "SmartSolar.Modules.OnSiteSurveys", "SmartSolar.Modules.Quotations", "SmartSolar.Modules.CustomerContracts",
         "SmartSolar.Modules.Payments", "SmartSolar.Modules.Installations", "SmartSolar.Modules.KnowledgeBase", "SmartSolar.Modules.Scheduling.Dispatch",
-        "SmartSolar.Modules.AfterSales",
+        "SmartSolar.Modules.AfterSales", "SmartSolar.Modules.IotMonitoring",
     ];
 
     private static void ConvertSortableColumns(EntityTypeBuilder entity)

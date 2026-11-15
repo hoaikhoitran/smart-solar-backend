@@ -118,6 +118,8 @@ public sealed class IdentityUnitOfWork : IIdentityUnitOfWork
         _db.AuthActionTokens.RemoveRange(stale);
     }
 
+    public void AddPasswordResetDispatch(SmartSolar.Modules.Identity.PasswordRecovery.PasswordResetDispatch dispatch) => _db.PasswordResetDispatches.Add(dispatch);
+
     public void AddUserAccount(UserAccount userAccount) => _db.UserAccounts.Add(userAccount);
 
     public void AddUserRole(UserRole userRole) => _db.UserRoles.Add(userRole);

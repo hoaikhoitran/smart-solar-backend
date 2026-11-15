@@ -272,3 +272,19 @@ These are two explicit steps. Closing never discards anything by itself.
 | `CONTRACT_DRAFT_DISCARDED` | 409 |
 | `CONTRACT_DISCARD_REASON_REQUIRED` | 400 |
 
+
+
+## Authentication: password reset / change (15/11/2026)
+
+No request or response shape changed. Behaviour changes the FE must handle:
+
+* **After `POST /api/auth/change-password` (200) every access token of the account is rejected at once**, including the caller's
+  (the account's `AuthVersion` is incremented; previously the old JWT stayed valid until it expired). Refresh tokens were already
+  revoked. The FE must clear its tokens and sign in again with the new password (or call `/api/auth/login` right after the change).
+* **After `POST /api/auth/reset-password` (200)** the same applies to every session opened before the reset; logging in with the new
+  password works, the old password answers 401 `AUTH_INVALID_CREDENTIALS`, the link is single-use (400
+  `AUTH_PASSWORD_RESET_TOKEN_INVALID_OR_EXPIRED` the second time).
+* **`POST /api/auth/forgot-password`** still answers 200 `{ "accepted": true }` for every address (no account enumeration). "Accepted"
+  means the request is stored, not that the email was sent: the email goes through a transactional outbox (`password_reset_dispatch`)
+  and is retried while RabbitMQ is unavailable, until the link expires (`Auth:PasswordReset:LifetimeMinutes`, default 60). The FE text
+  should say "if an account exists, an email is on its way" and offer a resend after a minute.
