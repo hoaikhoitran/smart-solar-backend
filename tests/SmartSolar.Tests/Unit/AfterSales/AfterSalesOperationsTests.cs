@@ -68,7 +68,7 @@ public sealed class AfterSalesOperationsTests
         await ctx.PayAsync(late.Checkout, ctx.Clock.GetUtcNow().AddMinutes(31));
         Assert.Equal(SubscriptionStatuses.AwaitingPayment, (await ctx.Db.ServiceSubscriptions.AsNoTracking().SingleAsync(s => s.Id == late.SubscriptionIds[0])).Status);
         Assert.Equal(PaymentItemStatuses.ReviewRequired, (await ctx.Db.PaymentAttemptItems.AsNoTracking().SingleAsync(i => i.PaymentAttemptId == late.Checkout.PaymentAttemptId)).Status);
-        var refund = Assert.Single(await ctx.Refunds().ListAsync(RefundStatuses.PendingApproval, None));
+        var refund = Assert.Single(await ctx.Db.RefundRecords.AsNoTracking().Where(r => r.Status == RefundStatuses.PendingApproval).ToListAsync());
         Assert.Equal(late.Checkout.Amount, refund.OriginalAmount);
     }
 
@@ -101,11 +101,7 @@ public sealed class AfterSalesOperationsTests
         var h = await ctx.HandedOverAsync();
         var care = await ctx.PackageAsync(h.AdminId, ServicePackageKinds.Maintenance, price: 2_000_000m);
         await ctx.ActiveTermAsync(h, care);
-        var renewal = await ctx.ActiveTermAsync(h, care);
-        Assert.True((await ctx.Packages().RequestCancellationAsync(h.CustomerId, renewal.Id, "Bought twice", None)).Succeeded);
-        Assert.True((await ctx.Packages().DecideCancellationAsync(h.ManagerId, renewal.Id, true, null, null, None)).Succeeded);
-        var refund = Assert.Single(await ctx.Refunds().ListAsync(RefundStatuses.Approved, None));
-        Assert.True((await ctx.Refunds().RecordAsync(h.AdminId, refund.RefundId, ctx.Clock.GetUtcNow(), "TX-9", None)).Succeeded);
+        await ctx.ActiveTermAsync(h, care);   // a second, paid term (starts later)
         var contractTotal = (await ctx.Db.CustomerContracts.AsNoTracking().SingleAsync(c => c.Id == h.ContractId)).TotalAmount;
 
         var dashboard = ctx.Dashboard();
@@ -115,8 +111,9 @@ public sealed class AfterSalesOperationsTests
         decimal Current(string key) => view.Metrics.Single(m => m.Key == key).Current;
         Assert.Equal(contractTotal, Current("collected_contracts"));
         Assert.Equal(4_000_000m, Current("collected_packages"));
-        Assert.Equal(2_000_000m, Current("refunded"));
-        Assert.Equal(contractTotal + 2_000_000m, Current("net_collected"));
+        // Refunds are not handled in this system: the historical "refunded" metric stays 0 and net equals gross.
+        Assert.Equal(0m, Current("refunded"));
+        Assert.Equal(contractTotal + 4_000_000m, Current("net_collected"));
         Assert.Equal(1m, Current("completed_installations"));
         Assert.Equal(1m, Current("active_maintenance_subscriptions"));
         Assert.Null(view.Metrics.Single(m => m.Key == "collected_packages").ChangePercent);   // nothing in September
@@ -126,7 +123,7 @@ public sealed class AfterSalesOperationsTests
         var csv = (await dashboard.ExportCsvAsync(new DashboardQuery(null, null, null, null, null, null, null), None)).Value!.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         Assert.StartsWith("metric,description,current (2026-10-01..2026-10-31)", csv[0]);
         Assert.Equal(view.Metrics.Count + 1, csv.Length);
-        Assert.Contains(csv, l => l.StartsWith("refunded,") && l.Contains(",2000000,0,"));
+        Assert.Contains(csv, l => l.StartsWith("refunded,") && l.Contains(",0,0,"));
     }
 
     [Fact]

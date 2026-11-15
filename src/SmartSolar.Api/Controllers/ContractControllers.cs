@@ -15,7 +15,7 @@ namespace SmartSolar.Api.Controllers;
 [Route("api")]
 [Authorize(Roles = $"{RoleCodes.Sales},{RoleCodes.Manager},{RoleCodes.Admin}")]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
-public sealed class SalesContractsController(ContractHandlers handlers) : OperationResultControllerBase
+public sealed class SalesContractsController(ContractHandlers handlers, ContractDocumentHandlers documents) : OperationResultControllerBase
 {
     [HttpPost("quotations/{quotationId:guid}/contracts")]
     [Authorize(Roles = RoleCodes.Sales)]
@@ -72,6 +72,33 @@ public sealed class SalesContractsController(ContractHandlers handlers) : Operat
             ? Respond(await handlers.AttachOfficialDocumentAsync(user, contractId, request.Revision, request.FileId, request.CanonicalHash ?? "", cancellationToken))
             : UnauthorizedFailure();
 
+    /// <summary>
+    /// A presigned GET URL (valid for <c>Storage:S3:PresignedUrlTtlSeconds</c>) for the official PDF of this contract version (any version the
+    /// caller may read, superseded ones included); <c>disposition</c> is <c>inline</c> (default) or <c>attachment</c>. Sent with <c>Cache-Control: no-store</c>.
+    /// </summary>
+    [ProducesResponseType(typeof(ApiResponse<SmartSolar.Modules.Files.AttachedFileUrlView>), StatusCodes.Status200OK)]
+    [HttpGet("contracts/{contractId:guid}/official-document/url")]
+    [EnableRateLimiting(RateLimitingExtensions.ContractReadPolicy)]
+    public async Task<IActionResult> OfficialDocumentUrl(Guid contractId, [FromQuery] string? disposition, CancellationToken cancellationToken)
+    {
+        NoStore();
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (ParseDisposition(disposition) is not { } parsed) return Invalid("disposition", "'disposition' must be inline or attachment.");
+        return Respond(await documents.OfficialDocumentUrlAsync(ContractViewer.Staff, user, IsManager(), contractId, parsed, cancellationToken));
+    }
+
+    /// <summary>A presigned GET URL for one signed scan the customer submitted (see <c>submissions</c> of the contract). Sent with <c>Cache-Control: no-store</c>.</summary>
+    [ProducesResponseType(typeof(ApiResponse<SmartSolar.Modules.Files.AttachedFileUrlView>), StatusCodes.Status200OK)]
+    [HttpGet("contracts/{contractId:guid}/submissions/{submissionId:guid}/url")]
+    [EnableRateLimiting(RateLimitingExtensions.ContractReadPolicy)]
+    public async Task<IActionResult> SubmissionUrl(Guid contractId, Guid submissionId, [FromQuery] string? disposition, CancellationToken cancellationToken)
+    {
+        NoStore();
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (ParseDisposition(disposition) is not { } parsed) return Invalid("disposition", "'disposition' must be inline or attachment.");
+        return Respond(await documents.SubmissionUrlAsync(ContractViewer.Staff, user, IsManager(), contractId, submissionId, parsed, cancellationToken));
+    }
+
     [HttpPost("contracts/{contractId:guid}/publish")]
     [Authorize(Roles = RoleCodes.Sales)]
     [EnableRateLimiting(RateLimitingExtensions.ContractWritePolicy)]
@@ -104,7 +131,7 @@ public sealed class SalesContractsController(ContractHandlers handlers) : Operat
 [Route("api/customers/me/contracts")]
 [Authorize(Roles = RoleCodes.Customer)]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
-public sealed class CustomerContractsController(ContractHandlers handlers) : OperationResultControllerBase
+public sealed class CustomerContractsController(ContractHandlers handlers, ContractDocumentHandlers documents) : OperationResultControllerBase
 {
     [HttpGet]
     [EnableRateLimiting(RateLimitingExtensions.ContractReadPolicy)]
@@ -122,4 +149,31 @@ public sealed class CustomerContractsController(ContractHandlers handlers) : Ope
         => CurrentUserId() is { } user
             ? Respond(await handlers.SubmitSignedDocumentAsync(user, contractId, request.FileId, request.OfficialDocumentSha256 ?? "", cancellationToken))
             : UnauthorizedFailure();
+
+    /// <summary>
+    /// A presigned GET URL for the official PDF of one of the customer's own contract versions (from AWAITING_SIGNATURE on, superseded versions
+    /// included as history). Downloading never changes the contract: paying still needs the SIGNED status through the payment endpoints.
+    /// </summary>
+    [ProducesResponseType(typeof(ApiResponse<SmartSolar.Modules.Files.AttachedFileUrlView>), StatusCodes.Status200OK)]
+    [HttpGet("{contractId:guid}/official-document/url")]
+    [EnableRateLimiting(RateLimitingExtensions.ContractReadPolicy)]
+    public async Task<IActionResult> OfficialDocumentUrl(Guid contractId, [FromQuery] string? disposition, CancellationToken cancellationToken)
+    {
+        NoStore();
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (ParseDisposition(disposition) is not { } parsed) return Invalid("disposition", "'disposition' must be inline or attachment.");
+        return Respond(await documents.OfficialDocumentUrlAsync(ContractViewer.Customer, user, false, contractId, parsed, cancellationToken));
+    }
+
+    /// <summary>A presigned GET URL for one signed scan the customer submitted for this version.</summary>
+    [ProducesResponseType(typeof(ApiResponse<SmartSolar.Modules.Files.AttachedFileUrlView>), StatusCodes.Status200OK)]
+    [HttpGet("{contractId:guid}/submissions/{submissionId:guid}/url")]
+    [EnableRateLimiting(RateLimitingExtensions.ContractReadPolicy)]
+    public async Task<IActionResult> SubmissionUrl(Guid contractId, Guid submissionId, [FromQuery] string? disposition, CancellationToken cancellationToken)
+    {
+        NoStore();
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (ParseDisposition(disposition) is not { } parsed) return Invalid("disposition", "'disposition' must be inline or attachment.");
+        return Respond(await documents.SubmissionUrlAsync(ContractViewer.Customer, user, false, contractId, submissionId, parsed, cancellationToken));
+    }
 }

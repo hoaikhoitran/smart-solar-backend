@@ -6,6 +6,7 @@ using SmartSolar.Api.Contracts.AfterSales;
 using SmartSolar.Api.Extensions;
 using SmartSolar.Modules.AfterSales;
 using SmartSolar.Modules.Common.Features;
+using SmartSolar.Modules.Common.Results;
 using SmartSolar.Modules.Identity.Constants;
 using SmartSolar.Modules.Payments;
 
@@ -327,12 +328,12 @@ public sealed class SalesAfterSalesController(SalesTaskHandlers tasks, ServiceQu
             : UnauthorizedFailure();
 }
 
-/// <summary>Manager (and Admin): decisions, scheduling, reassignment, cancellations, refund approvals, equipment corrections.</summary>
+/// <summary>Manager (and Admin): decisions, scheduling, reassignment, cancellations of unpaid work, equipment corrections. Refunds are not handled in this system.</summary>
 [ApiController]
 [Route("api/manager/after-sales")]
 [Authorize(Roles = $"{RoleCodes.Manager},{RoleCodes.Admin}")]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
-public sealed class ManagerAfterSalesController(ServiceManagerHandlers requests, ServicePackageHandlers packages, SalesTaskHandlers tasks, RefundHandlers refunds,
+public sealed class ManagerAfterSalesController(ServiceManagerHandlers requests, ServicePackageHandlers packages, SalesTaskHandlers tasks,
     AfterSalesEvidenceUrlHandlers evidenceUrls) : OperationResultControllerBase
 {
     [HttpGet("requests")]
@@ -387,17 +388,18 @@ public sealed class ManagerAfterSalesController(ServiceManagerHandlers requests,
     public async Task<IActionResult> DisputeReview(Guid requestId, [FromBody] DisputeReviewRequest body, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await requests.ReviewDisputeAsync(user, requestId, body.RequireRework, body.Note, cancellationToken)) : UnauthorizedFailure();
 
+    /// <summary>Approval cancels unpaid work; paid work answers 409 AFTER_SALES_PAID_CANCELLATION_UNSUPPORTED (no refund workflow in this system).</summary>
     [HttpPost("requests/{requestId:guid}/cancellation-decision")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
     public async Task<IActionResult> CancellationDecision(Guid requestId, [FromBody] CancellationDecisionRequest body, CancellationToken cancellationToken)
         => CurrentUserId() is { } user
-            ? Respond(await requests.DecideCancellationAsync(user, requestId, body.Approve, body.NonRecoverableAmount, body.Note, cancellationToken))
+            ? Respond(await requests.DecideCancellationAsync(user, requestId, body.Approve, body.Note, cancellationToken))
             : UnauthorizedFailure();
 
     [HttpPost("requests/{requestId:guid}/stop")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
     public async Task<IActionResult> Stop(Guid requestId, [FromBody] StopWorkRequest body, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await requests.StopWorkAsync(user, requestId, body.Reason, body.RefundAmount, cancellationToken)) : UnauthorizedFailure();
+        => CurrentUserId() is { } user ? Respond(await requests.StopWorkAsync(user, requestId, body.Reason, cancellationToken)) : UnauthorizedFailure();
 
     [HttpPost("requests/{requestId:guid}/not-fulfilled")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
@@ -428,10 +430,11 @@ public sealed class ManagerAfterSalesController(ServiceManagerHandlers requests,
                 body.Reason ?? ""), cancellationToken))
             : UnauthorizedFailure();
 
+    /// <summary>Decides a pre-existing cancellation request of a paid package: rejection only (approval is 409 AFTER_SALES_PAID_CANCELLATION_UNSUPPORTED).</summary>
     [HttpPost("subscriptions/{subscriptionId:guid}/cancellation-decision")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
     public async Task<IActionResult> PackageCancellation(Guid subscriptionId, [FromBody] PackageCancellationDecisionRequest body, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await packages.DecideCancellationAsync(user, subscriptionId, body.Approve, body.RefundAmount, body.Note, cancellationToken))
+        => CurrentUserId() is { } user ? Respond(await packages.DecideCancellationAsync(user, subscriptionId, body.Approve, body.Note, cancellationToken))
             : UnauthorizedFailure();
 
     [HttpGet("tasks")]
@@ -443,24 +446,15 @@ public sealed class ManagerAfterSalesController(ServiceManagerHandlers requests,
     [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
     public async Task<IActionResult> AssignTask(Guid taskId, [FromBody] AssignTaskRequest body, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await tasks.AssignAsync(user, taskId, body.SalesUserId, body.Reason, cancellationToken)) : UnauthorizedFailure();
-
-    [HttpGet("refunds")]
-    [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
-    public async Task<IActionResult> Refunds([FromQuery] string? status, CancellationToken cancellationToken)
-        => Ok(Contracts.ApiResponse<object>.Success(await refunds.ListAsync(status, cancellationToken), HttpContext.GetTraceId()));
-
-    [HttpPost("refunds/{refundId:guid}/decision")]
-    [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
-    public async Task<IActionResult> RefundDecision(Guid refundId, [FromBody] RefundDecisionRequest body, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await refunds.DecideAsync(user, refundId, body.Approve, body.ApprovedAmount, body.Note, cancellationToken)) : UnauthorizedFailure();
 }
 
-/// <summary>Admin only: catalog, warranty durations, manual refund recording and the dashboard (timings: the system-settings API).</summary>
+/// <summary>Admin only: catalog, warranty durations and the dashboard (timings: the system-settings API).</summary>
 [ApiController]
 [Route("api/admin/after-sales")]
 [Authorize(Roles = RoleCodes.Admin)]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
-public sealed class AdminAfterSalesController(ServicePackageHandlers packages, RefundHandlers refunds, AfterSalesDashboard dashboard) : OperationResultControllerBase
+public sealed class AdminAfterSalesController(ServicePackageHandlers packages, AfterSalesDashboard dashboard, SmartSolar.Modules.Files.FileService files,
+    SmartSolar.Modules.Files.PublicFileService publicFiles) : OperationResultControllerBase
 {
     [HttpGet("packages")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
@@ -470,12 +464,20 @@ public sealed class AdminAfterSalesController(ServicePackageHandlers packages, R
     [HttpPost("packages")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
     public async Task<IActionResult> CreatePackage([FromBody] PackageRequest body, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await packages.CreatePackageAsync(user, ToInput(body), cancellationToken), StatusCodes.Status201Created) : UnauthorizedFailure();
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        var input = await ToInputAsync(body, cancellationToken);
+        return input.Succeeded ? Respond(await packages.CreatePackageAsync(user, input.Value!, cancellationToken), StatusCodes.Status201Created) : Respond(input);
+    }
 
     [HttpPut("packages/{packageId:guid}")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
     public async Task<IActionResult> UpdatePackage(Guid packageId, [FromBody] PackageRequest body, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await packages.UpdatePackageAsync(user, packageId, ToInput(body), body.Revision, cancellationToken)) : UnauthorizedFailure();
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        var input = await ToInputAsync(body, cancellationToken);
+        return input.Succeeded ? Respond(await packages.UpdatePackageAsync(user, packageId, input.Value!, body.Revision, cancellationToken)) : Respond(input);
+    }
 
     [HttpGet("warranty-options")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
@@ -487,12 +489,6 @@ public sealed class AdminAfterSalesController(ServicePackageHandlers packages, R
     public async Task<IActionResult> SaveWarrantyOption([FromBody] WarrantyOptionRequest body, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await packages.SaveWarrantyOptionAsync(user, body.Kind, body.Months, body.IsActive, body.IsDefault, cancellationToken))
             : UnauthorizedFailure();
-
-    /// <summary>Records that an approved refund was actually returned (executed outside the system; PayOS refunds are never called).</summary>
-    [HttpPost("refunds/{refundId:guid}/record")]
-    [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
-    public async Task<IActionResult> RecordRefund(Guid refundId, [FromBody] RecordRefundRequest body, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await refunds.RecordAsync(user, refundId, body.RefundedAt, body.Reference, cancellationToken)) : UnauthorizedFailure();
 
     [HttpGet("dashboard")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
@@ -508,8 +504,23 @@ public sealed class AdminAfterSalesController(ServicePackageHandlers packages, R
         return csv.Succeeded ? File(Encoding.UTF8.GetBytes(csv.Value!), "text/csv", "after-sales-dashboard.csv") : Respond(csv);
     }
 
-    private static PackageInput ToInput(PackageRequest b)
-        => new(b.Kind, b.Name, b.Description, b.Price, b.DurationMonths, b.VisitMonths, b.CoveredDisasterTypes, b.CoveragePercent, b.PerIncidentLimit, b.TermLimit, b.IsActive);
+    /// <summary>An uploaded PACKAGE_IMAGE file (VERIFIED) becomes its stable public address; otherwise the given https link (or none) is kept.</summary>
+    private async Task<OperationResult<PackageInput>> ToInputAsync(PackageRequest b, CancellationToken cancellationToken)
+    {
+        var imageUrl = string.IsNullOrWhiteSpace(b.ImageUrl) ? null : b.ImageUrl.Trim();
+        if (b.ImageFileId is { } fileId)
+        {
+            if (imageUrl is not null)
+                return OperationResult<PackageInput>.Fail(AfterSalesErrorCodes.ValidationFailed, "Give either imageUrl or imageFileId, not both.");
+            var verified = await files.RequireVerifiedAsync([fileId], SmartSolar.Modules.Files.FilePurposes.PackageImage, null, cancellationToken);
+            if (!verified.Succeeded) return verified.As<PackageInput>();
+            var publicUrl = publicFiles.PublicUrlFor(verified.Value![0]);
+            if (!publicUrl.Succeeded) return publicUrl.As<PackageInput>();
+            imageUrl = publicUrl.Value;
+        }
+        return OperationResult<PackageInput>.Ok(new PackageInput(b.Kind, b.Name, b.Description, b.Price, b.DurationMonths, b.VisitMonths, b.CoveredDisasterTypes,
+            b.CoveragePercent, b.PerIncidentLimit, b.TermLimit, b.IsActive, imageUrl));
+    }
 }
 
 public sealed class DashboardQueryRequest

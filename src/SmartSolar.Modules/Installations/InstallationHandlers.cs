@@ -10,7 +10,19 @@ using SmartSolar.Modules.Scheduling.Zones;
 
 namespace SmartSolar.Modules.Installations;
 
-public sealed record AssetInput(string AssetType, Guid? ProductId, string Manufacturer, string Model, string SerialNumber, string? PositionCode, int? WarrantyMonths);
+/// <summary>
+/// One registration entry: a serialised device (<paramref name="SerialNumber"/> set, <paramref name="Quantity"/> null or 1) or a lot of
+/// <paramref name="Quantity"/> identical units of catalog product <paramref name="ProductId"/> confirmed by count (no serial number).
+/// </summary>
+public sealed record AssetInput(string AssetType, Guid? ProductId, string Manufacturer, string Model, string? SerialNumber, string? PositionCode, int? WarrantyMonths,
+    int? Quantity = null)
+{
+    /// <summary>True when the entry confirms a count instead of naming a serial number.</summary>
+    public bool IsLot => string.IsNullOrWhiteSpace(SerialNumber);
+
+    /// <summary>Units the entry stands for (a serialised device is one unit).</summary>
+    public int Units => Quantity ?? 1;
+}
 public sealed record ChecklistUpdate(bool IsRequired, string Status, Guid? EvidenceFileId, string? Note);
 
 /// <summary>
@@ -539,19 +551,41 @@ public sealed partial class InstallationHandlers(
         }, cancellationToken);
     }
 
+    /// <summary>
+    /// Registers what was installed: serialised devices (one row each, serial unique per manufacturer) and lots confirmed by count (one row per
+    /// catalog product and quantity, no serial number is invented), in one transaction. Every entry is checked against the catalog; the installed
+    /// counts are compared with the contract by <see cref="EquipmentComparisonAsync"/>, so a 100-panel contract is confirmed with a single
+    /// "PANEL × 100" lot and any difference still needs the Manager's and the customer's approval. Audited as ASSETS_REGISTERED with the counts.
+    /// </summary>
     public async Task<OperationResult<InstallationTechnicianView>> RegisterAssetsAsync(Guid technicianUserId, Guid projectId, IReadOnlyList<AssetInput> assets, CancellationToken cancellationToken)
     {
-        if (assets.Count is < 1 or > 500)
-            return OperationResult<InstallationTechnicianView>.Fail(CommonErrorCodes.ValidationFailed, "Register between 1 and 500 assets at a time.");
+        if (assets.Count is < 1 or > InstallationLimits.MaxAssetsPerRequest)
+            return OperationResult<InstallationTechnicianView>.Fail(CommonErrorCodes.ValidationFailed, $"Register between 1 and {InstallationLimits.MaxAssetsPerRequest} entries at a time.");
         foreach (var a in assets)
         {
             if (!AssetTypes.All.Contains(a.AssetType?.Trim().ToUpperInvariant() ?? "") || string.IsNullOrWhiteSpace(a.Manufacturer) || a.Manufacturer.Trim().Length > 100
                 || string.IsNullOrWhiteSpace(a.Model) || a.Model.Trim().Length > 100
-                || string.IsNullOrWhiteSpace(a.SerialNumber) || a.SerialNumber.Trim().Length > 100 || a.WarrantyMonths is < 0 or > 600)
+                || a.SerialNumber is { } serial && serial.Trim().Length > 100 || a.WarrantyMonths is < 0 or > 600)
                 return OperationResult<InstallationTechnicianView>.Fail(CommonErrorCodes.ValidationFailed,
-                    $"Each asset needs a type ({string.Join(", ", AssetTypes.All)}), manufacturer and model (≤100), serial number (≤100) and a warranty of 0–600 months.");
+                    $"Each entry needs a type ({string.Join(", ", AssetTypes.All)}), manufacturer and model (≤100), a serial number (≤100) or a quantity, and a warranty of 0–600 months.");
         }
-        var keys = assets.Select(a => (a.Manufacturer.Trim().ToUpperInvariant(), a.SerialNumber.Trim().ToUpperInvariant())).ToList();
+        var quantityErrors = new Dictionary<string, string[]>();
+        for (var i = 0; i < assets.Count; i++)
+        {
+            var a = assets[i];
+            if (a.IsLot)
+            {
+                if (a.Quantity is not (>= 1 and <= InstallationLimits.MaxLotQuantity))
+                    quantityErrors[$"assets[{i}].quantity"] = [$"Without a serial number give the installed quantity (1–{InstallationLimits.MaxLotQuantity})."];
+                if (a.ProductId is null)
+                    quantityErrors[$"assets[{i}].productId"] = ["A quantity confirmation names its catalog product; a device without a catalog product is registered with its serial number."];
+            }
+            else if (a.Quantity is { } quantity && quantity != 1)
+                quantityErrors[$"assets[{i}].quantity"] = ["A serialised device is one unit: leave quantity empty, or register a lot without serial numbers."];
+        }
+        if (quantityErrors.Count > 0)
+            return OperationResult<InstallationTechnicianView>.Fail(InstallationErrorCodes.AssetQuantityInvalid, "One or more entries mix serial numbers and quantities incorrectly.", quantityErrors);
+        var keys = assets.Where(a => !a.IsLot).Select(a => (a.Manufacturer.Trim().ToUpperInvariant(), a.SerialNumber!.Trim().ToUpperInvariant())).ToList();
         if (keys.Distinct().Count() != keys.Count)
             return OperationResult<InstallationTechnicianView>.Fail(InstallationErrorCodes.DuplicateSerial, "The same serial number appears twice in the request.");
 
@@ -590,8 +624,8 @@ public sealed partial class InstallationHandlers(
                 unitOfWork.Add(new InstalledAsset
                 {
                     Id = Guid.NewGuid(), ProjectId = projectId, AssetType = a.AssetType.Trim().ToUpperInvariant(), ProductId = a.ProductId,
-                    Manufacturer = a.Manufacturer.Trim().ToUpperInvariant(), Model = a.Model.Trim(), SerialNumber = a.SerialNumber.Trim().ToUpperInvariant(),
-                    PositionCode = Trim(a.PositionCode, 50), RegisteredByUserId = technicianUserId, RegisteredAt = now,
+                    Manufacturer = a.Manufacturer.Trim().ToUpperInvariant(), Model = a.Model.Trim(), SerialNumber = a.IsLot ? null : a.SerialNumber!.Trim().ToUpperInvariant(),
+                    Quantity = a.Units, PositionCode = Trim(a.PositionCode, 50), RegisteredByUserId = technicianUserId, RegisteredAt = now,
                     WarrantyMonths = a.ProductId is { } id && products.TryGetValue(id, out var catalog) ? catalog.WarrantyMonths : null,
                     // The source of the duration; its start (and so its end) stays unset until the start rule is decided.
                     WarrantySource = a.ProductId is { } pid && products.TryGetValue(pid, out var source) && source.WarrantyMonths is not null
@@ -599,9 +633,24 @@ public sealed partial class InstallationHandlers(
                 });
             if (assets.Any(a => a.AssetType.Trim().ToUpperInvariant() is AssetTypes.Panel or AssetTypes.Inverter))
                 await SupersedeActiveSubstitutionAsync(projectId, now, token);
-            Event(projectId, InstallationEventTypes.AssetsRegistered, technicianUserId, null, null, $"{assets.Count} assets", now);
+            Event(projectId, InstallationEventTypes.AssetsRegistered, technicianUserId, null, null, RegistrationSummary(assets), now);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
+    }
+
+    /// <summary>Audit detail of a registration: units per type, telling serialised devices from lots, e.g. "101 units in 2 entries: PANEL ×100 (100 by count), INVERTER ×1 (1 serial)".</summary>
+    internal static string RegistrationSummary(IReadOnlyList<AssetInput> assets)
+    {
+        var groups = assets.GroupBy(a => a.AssetType.Trim().ToUpperInvariant()).Select(g =>
+        {
+            var serials = g.Count(a => !a.IsLot);
+            var byCount = g.Where(a => a.IsLot).Sum(a => a.Units);
+            var parts = new List<string>();
+            if (serials > 0) parts.Add($"{serials} serial{(serials == 1 ? "" : "s")}");
+            if (byCount > 0) parts.Add($"{byCount} by count");
+            return $"{g.Key} ×{g.Sum(a => a.Units)} ({string.Join(", ", parts)})";
+        });
+        return $"{assets.Sum(a => a.Units)} units in {assets.Count} entr{(assets.Count == 1 ? "y" : "ies")}: {string.Join(", ", groups)}";
     }
 
     /// <summary>PANEL / INVERTER assets must reference a product of that catalog type; other assets must not reference a priced service.</summary>
@@ -633,8 +682,9 @@ public sealed partial class InstallationHandlers(
             if (!(await unitOfWork.GetEvidenceAsync(projectId, token)).Any(e => e.Round == round))
                 return Fail(InstallationErrorCodes.EvidenceRequired, $"Add at least one verified photo for round {round} before reporting completion.");
             var assets = await unitOfWork.GetAssetsAsync(projectId, token);
-            if (options.RequirePanelAndInverterAssets && (!assets.Any(a => a.AssetType == AssetTypes.Panel) || !assets.Any(a => a.AssetType == AssetTypes.Inverter)))
-                return Fail(InstallationErrorCodes.AssetsRequired, "Register the installed panels and inverter before reporting completion.");
+            var missing = new[] { AssetTypes.Panel, AssetTypes.Inverter }.Where(type => !assets.Any(a => a.AssetType == type)).ToList();
+            if (options.RequirePanelAndInverterAssets && missing.Count > 0)
+                return OperationResult<bool>.Fail(InstallationErrorCodes.AssetsRequired, "Register the installed panels and inverter before reporting completion.", new { missing });
             if ((await unitOfWork.GetAcceptancesAsync(projectId, false, token)).Any(a => a.Decision == AcceptanceDecisions.Pending))
                 return Fail(InstallationErrorCodes.InvalidState, "A completion report is already waiting for the customer.");
             if (await EquipmentComparisonAsync(p, token) is { Status: EquipmentComparisonStatuses.ApprovalRequired } comparison)
@@ -734,7 +784,7 @@ public sealed partial class InstallationHandlers(
         var start = calendar.LocalDateOf(handover);
         var assets = (await unitOfWork.GetAssetsAsync(projectId, cancellationToken))
             .Select(a => new HandoverAssetView(a.AssetType, a.ProductId, a.Manufacturer, a.Model, a.SerialNumber, a.PositionCode, a.WarrantyMonths,
-                a.WarrantyMonths is { } months ? start.AddMonths(months) : null)).ToList();
+                a.WarrantyMonths is { } months ? start.AddMonths(months) : null, a.Quantity)).ToList();
         var technician = (await unitOfWork.GetAssignmentsAsync(projectId, false, cancellationToken)).Where(a => a.Status == AssignmentStatuses.Completed)
             .Select(a => (Guid?)a.TechnicianUserId).FirstOrDefault();
         var names = technician is { } t ? await unitOfWork.GetUserNamesAsync([t], cancellationToken) : new Dictionary<Guid, string>();
@@ -895,7 +945,7 @@ public sealed partial class InstallationHandlers(
 
     private async Task<IReadOnlyList<AssetView>> AssetsAsync(Guid projectId, CancellationToken cancellationToken)
         => (await unitOfWork.GetAssetsAsync(projectId, cancellationToken))
-            .Select(a => new AssetView(a.Id, a.AssetType, a.ProductId, a.Manufacturer, a.Model, a.SerialNumber, a.PositionCode, a.WarrantyMonths)).ToList();
+            .Select(a => new AssetView(a.Id, a.AssetType, a.ProductId, a.Manufacturer, a.Model, a.SerialNumber, a.PositionCode, a.WarrantyMonths, a.Quantity, Local(a.RegisteredAt))).ToList();
 
     private async Task<InstallationStaffView> StaffViewAsync(Guid projectId, CancellationToken cancellationToken)
     {
@@ -936,7 +986,7 @@ public sealed partial class InstallationHandlers(
             involved ? await EvidenceAsync(projectId, cancellationToken) : [],
             involved ? await AssetsAsync(projectId, cancellationToken) : [],
             involved ? await AcceptancesAsync(projectId, cancellationToken) : [],
-            involved ? LocalSteps(await EquipmentComparisonAsync(p, cancellationToken)) : null);
+            involved ? LocalSteps(await EquipmentComparisonAsync(p, cancellationToken)) : null, options.RequirePanelAndInverterAssets);
     }
 
     private async Task<InstallationCustomerView> CustomerViewAsync(Guid projectId, CancellationToken cancellationToken)

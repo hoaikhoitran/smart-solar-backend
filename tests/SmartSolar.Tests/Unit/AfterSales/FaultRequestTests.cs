@@ -242,7 +242,7 @@ public sealed class FaultRequestTests
     }
 
     [Fact]
-    public async Task Free_work_is_cancelled_at_once_but_paid_work_needs_a_manager_and_a_manual_refund()
+    public async Task Free_work_is_cancelled_at_once_and_paid_work_cannot_be_cancelled_because_refunds_are_not_handled()
     {
         await using var ctx = Create();
         var h = await ctx.HandedOverAsync();
@@ -261,14 +261,44 @@ public sealed class FaultRequestTests
         var requested = (await ctx.Customer().CancelAsync(h.CustomerId, paid.RequestId, "Changed my mind", None)).Value!;
         Assert.Equal(ServiceRequestStatuses.ReadyForWork, requested.Status);
         Assert.NotNull(requested.CancellationRequestedAt);
-        var cancelled = (await ctx.Manager().DecideCancellationAsync(h.ManagerId, paid.RequestId, true, 100_000, "Part ordered", None)).Value!;
-        Assert.Equal(ServiceRequestStatuses.Cancelled, cancelled.Status);
-        var refund = Assert.Single(await ctx.Refunds().ListAsync(null, None));
-        Assert.Equal((RefundStatuses.Approved, 400_000m), (refund.Status, refund.ApprovedAmount));
 
-        // Admin records the money that was returned outside the system (never a PayOS call).
-        Assert.Equal(AfterSalesErrorCodes.ValidationFailed, (await ctx.Refunds().RecordAsync(h.AdminId, refund.RefundId, ctx.Clock.GetUtcNow().AddDays(1), "TX", None)).ErrorCode);
-        Assert.Equal(RefundStatuses.Refunded, (await ctx.Refunds().RecordAsync(h.AdminId, refund.RefundId, ctx.Clock.GetUtcNow(), "TX-1", None)).Value!.Status);
+        // Approving would cancel paid work and owe 500,000 VND: refused (refunds are not handled in this system), nothing changes.
+        var refused = await ctx.Manager().DecideCancellationAsync(h.ManagerId, paid.RequestId, true, "Part ordered", None);
+        Assert.Equal(AfterSalesErrorCodes.PaidCancellationUnsupported, refused.ErrorCode);
+        Assert.Equal(409, SmartSolar.Api.Controllers.OperationResultControllerBase.StatusFor(refused.ErrorCode!));
+        Assert.Contains("500000", refused.Message);
+        var untouched = await ctx.Db.ServiceRequests.AsNoTracking().SingleAsync(r => r.Id == paid.RequestId);
+        Assert.Equal((ServiceRequestStatuses.ReadyForWork, true), (untouched.Status, untouched.CancellationRequestedAt is not null));
+        Assert.Empty(await ctx.Db.RefundRecords.AsNoTracking().ToListAsync());
+
+        // Rejecting the request keeps the paid work going; the exceptional stop still closes it without any refund bookkeeping.
+        var kept = (await ctx.Manager().DecideCancellationAsync(h.ManagerId, paid.RequestId, false, "Part already ordered", None)).Value!;
+        Assert.Null(kept.CancellationRequestedAt);
+        var stopped = (await ctx.Manager().StopWorkAsync(h.ManagerId, paid.RequestId, "Customer unreachable for three weeks", None)).Value!;
+        Assert.Equal(ServiceRequestStatuses.Cancelled, stopped.Status);
+        Assert.Empty(await ctx.Db.RefundRecords.AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
+    public async Task One_time_maintenance_that_cannot_be_provided_is_cancelled_only_while_unpaid()
+    {
+        await using var ctx = Create();
+        var h = await ctx.HandedOverAsync();
+        var unpaid = (await ctx.Customer().RequestOneTimeMaintenanceAsync(h.CustomerId, h.ProjectId, Later(10), "Yearly clean", None)).Value!;
+        Assert.Equal(ServiceRequestStatuses.Cancelled, (await ctx.Manager().ConfirmCannotFulfillAsync(h.ManagerId, unpaid.RequestId, "No technician in the area", None)).Value!.Status);
+
+        var request = (await ctx.Customer().RequestOneTimeMaintenanceAsync(h.CustomerId, h.ProjectId, Later(12), "Yearly clean", None)).Value!;
+        await ctx.ClaimQuotationTaskAsync(h, request.RequestId);
+        // A one-time maintenance has no diagnosed items: its quotation lines are free-text.
+        var quotation = await ctx.IssueAsync(h, request.RequestId, new QuotationLineInput(null, "Yearly clean of 12 panels", 300_000, 0));
+        Assert.True((await ctx.Quotations().AcceptAsync(h.CustomerId, quotation.QuotationId, None)).Succeeded);
+        await ctx.PayAsync((await ctx.Quotations().CheckoutAsync(h.CustomerId, quotation.QuotationId, None)).Value!);
+
+        // Paid: closing it would owe the customer money, which this system does not handle. The request stays open for a business decision.
+        var refused = await ctx.Manager().ConfirmCannotFulfillAsync(h.ManagerId, request.RequestId, "No technician in the area", None);
+        Assert.Equal(AfterSalesErrorCodes.PaidCancellationUnsupported, refused.ErrorCode);
+        Assert.NotEqual(ServiceRequestStatuses.Cancelled, (await ctx.Db.ServiceRequests.AsNoTracking().SingleAsync(r => r.Id == request.RequestId)).Status);
+        Assert.Empty(await ctx.Db.RefundRecords.AsNoTracking().ToListAsync());
     }
 
     [Fact]

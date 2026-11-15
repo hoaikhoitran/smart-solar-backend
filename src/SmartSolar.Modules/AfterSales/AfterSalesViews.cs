@@ -37,9 +37,10 @@ public sealed record ServiceRequestView(
 public sealed record ServiceRequestSummary(Guid RequestId, string RequestNumber, string Kind, string Status, Guid ProjectId, string Description,
     DateTimeOffset? PreferredStartsAt, DateTimeOffset CreatedAt);
 
-public sealed record AssetView(Guid AssetId, string AssetType, string Manufacturer, string Model, string SerialNumber, string? PositionCode, string Status,
+/// <summary>An installed row: a serialised device (<see cref="SerialNumber"/> set, <see cref="Quantity"/> 1) or a lot confirmed by count (<see cref="SerialNumber"/> null).</summary>
+public sealed record AssetView(Guid AssetId, string AssetType, string Manufacturer, string Model, string? SerialNumber, string? PositionCode, string Status,
     Guid? ReplacesAssetId, Guid? ServiceRequestId, string? Specifications, int? WarrantyMonths = null, string? WarrantySource = null,
-    DateTimeOffset? WarrantyStartsAt = null, DateTimeOffset? WarrantyEndsAt = null);
+    DateTimeOffset? WarrantyStartsAt = null, DateTimeOffset? WarrantyEndsAt = null, int Quantity = 1);
 
 /// <summary>Customer view of one installation's after-sales coverage. <see cref="WarrantyStatus"/> is one of <see cref="InstallationWarrantyStatuses"/>.</summary>
 public sealed record WarrantyView(Guid ProjectId, DateTimeOffset? HandoverAt, int? WarrantyMonths, DateTimeOffset? WarrantyEndsAt, bool UnderWarranty,
@@ -66,17 +67,15 @@ public sealed record SubscriptionView(Guid SubscriptionId, Guid ContractId, Guid
     decimal? SupportAvailable, int? RemainingVisits, DateTimeOffset? CheckoutExpiresAt, Guid? CurrentPaymentAttemptId, DateTimeOffset? PaidAt,
     DateTimeOffset? CancellationRequestedAt, IReadOnlyList<EntitlementView> Entitlements);
 
+/// <param name="ImageUrl">Cover picture (absolute https URL), or null when the package has none.</param>
 public sealed record PackageView(Guid PackageId, string Kind, string Name, string? Description, decimal Price, int DurationMonths, IReadOnlyList<int> VisitMonths,
-    IReadOnlyList<string> CoveredDisasterTypes, decimal? CoveragePercent, decimal? PerIncidentLimit, decimal? TermLimit, bool IsActive, int Revision);
+    IReadOnlyList<string> CoveredDisasterTypes, decimal? CoveragePercent, decimal? PerIncidentLimit, decimal? TermLimit, bool IsActive, int Revision, string? ImageUrl = null);
 
 public sealed record WarrantyOptionView(Guid OptionId, string Kind, int Months, bool IsDefault, bool IsActive);
 
 public sealed record SalesTaskView(Guid TaskId, string TaskType, string Status, Guid? RequestId, Guid? EntitlementId, Guid CustomerUserId, Guid? AssignedSalesUserId,
     DateTimeOffset? ClaimedAt, DateTimeOffset? StartedAt, DateTimeOffset? CompletedAt, string? Outcome, string? Note, DateTimeOffset CreatedAt, int Revision);
 
-public sealed record RefundView(Guid RefundId, Guid CustomerUserId, Guid? PaymentAttemptId, Guid? SubscriptionId, Guid? QuotationId, Guid? RequestId,
-    decimal OriginalAmount, decimal? ApprovedAmount, string Reason, string Status, Guid? ApprovedByUserId, DateTimeOffset? ApprovedAt, string? DecisionNote,
-    Guid? RecordedByUserId, DateTimeOffset? RefundedAt, string? RefundReference, DateTimeOffset CreatedAt, int Revision);
 
 public sealed record NotificationView(Guid NotificationId, string Type, string Message, Guid? RequestId, Guid? SubscriptionId, DateTimeOffset CreatedAt, DateTimeOffset? ReadAt);
 
@@ -136,7 +135,7 @@ public sealed class AfterSalesViews(IAfterSalesUnitOfWork data, Scheduling.Domai
 
     public static AssetView Asset(InstalledAsset a)
         => new(a.Id, a.AssetType, a.Manufacturer, a.Model, a.SerialNumber, a.PositionCode, a.Status, a.ReplacesAssetId, a.ServiceRequestId, a.Specifications,
-            a.WarrantyMonths, a.WarrantySource, a.WarrantyStartsAt, a.WarrantyEndsAt);
+            a.WarrantyMonths, a.WarrantySource, a.WarrantyStartsAt, a.WarrantyEndsAt, a.Quantity);
 
     public async Task<SubscriptionView> SubscriptionAsync(ServiceSubscription s, CancellationToken token)
     {
@@ -154,17 +153,13 @@ public sealed class AfterSalesViews(IAfterSalesUnitOfWork data, Scheduling.Domai
 
     public static PackageView Package(ServicePackage p)
         => new(p.Id, p.Kind, p.Name, p.Description, p.Price, p.DurationMonths, AfterSalesRules.ParseMonths(p.VisitMonths), AfterSalesRules.ParseList(p.CoveredDisasterTypes),
-            p.CoveragePercent, p.PerIncidentLimit, p.TermLimit, p.IsActive, p.Revision);
+            p.CoveragePercent, p.PerIncidentLimit, p.TermLimit, p.IsActive, p.Revision, p.ImageUrl);
 
     public static WarrantyOptionView Option(WarrantyOption o) => new(o.Id, o.Kind, o.Months, o.IsDefault, o.IsActive);
 
     public SalesTaskView Task(SalesTask t)
         => new(t.Id, t.TaskType, t.Status, t.RequestId, t.EntitlementId, t.CustomerUserId, t.AssignedSalesUserId, L(t.ClaimedAt), L(t.StartedAt), L(t.CompletedAt),
             t.Outcome, t.Note, L(t.CreatedAt), t.Revision);
-
-    public RefundView Refund(RefundRecord r)
-        => new(r.Id, r.CustomerUserId, r.PaymentAttemptId, r.SubscriptionId, r.QuotationId, r.RequestId, r.OriginalAmount, r.ApprovedAmount, r.Reason, r.Status,
-            r.ApprovedByUserId, L(r.ApprovedAt), r.DecisionNote, r.RecordedByUserId, L(r.RefundedAt), r.RefundReference, L(r.CreatedAt), r.Revision);
 
     public NotificationView Notification(AfterSalesNotification n) => new(n.Id, n.Type, n.Message, n.RequestId, n.SubscriptionId, L(n.CreatedAt), L(n.ReadAt));
 }

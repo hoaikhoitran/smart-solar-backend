@@ -158,9 +158,14 @@ Statuses: `PENDING_ASSIGNMENT`, `PENDING_TECHNICIAN_ACCEPTANCE`, `SCHEDULED`, `I
 { "reason": "Truck in repair that week", "expectedRevision": 5 }
 // POST …/{id}/evidence   (verified INSTALLATION_EVIDENCE file you uploaded; each file once)
 { "fileId": "…", "caption": "Array row 1" }
-// POST …/{id}/assets
-{ "assets": [ { "assetType": "PANEL", "productId": null, "manufacturer": "Jinko", "model": "Tiger Neo 550", "serialNumber": "JK-001",
-                "positionCode": "R1-C1", "warrantyMonths": 144 } ] }
+// POST …/{id}/assets — a lot confirmed by quantity (no serial; productId required) and a serialised device (quantity omitted or 1)
+{ "assets": [ { "assetType": "PANEL", "productId": "…", "manufacturer": "Jinko", "model": "Tiger Neo 550", "serialNumber": null,
+                "quantity": 100, "positionCode": "Roof A" },
+              { "assetType": "INVERTER", "productId": "…", "manufacturer": "Huawei", "model": "SUN2000-5KTL", "serialNumber": "HW-001",
+                "positionCode": null } ] }
+// assets[] in every view: { "assetId", "assetType", "productId", "manufacturer", "model", "serialNumber": null | "…", "quantity": 100,
+//   "positionCode", "warrantyMonths", "registeredAt" }; handover assets add "warrantyEndsOn" and carry "quantity" too.
+// Technician view also carries "requiresPanelAndInverterAssets" (Installation:RequirePanelAndInverterAssets) so the client can show what is missing.
 // POST …/{id}/completion-report
 { "completionReport": "All panels installed and commissioned.", "expectedRevision": 9 }
 // POST /api/customers/me/installation-projects/{id}/acceptance
@@ -207,13 +212,15 @@ Statuses: `PENDING_ASSIGNMENT`, `PENDING_TECHNICIAN_ACCEPTANCE`, `SCHEDULED`, `I
 | `INSTALLATION_REASON_REQUIRED` | 409 | reassign/reschedule, decline, cancel or return-to-rework without a reason |
 | `INSTALLATION_ASSIGNMENT_NOT_PENDING` · `INSTALLATION_ASSIGNMENT_NOT_ACCEPTED` | 409 | decline of an accepted job / execution before accepting |
 | `INSTALLATION_TOO_EARLY_TO_START` · `INSTALLATION_SCHEDULE_EXPIRED` · `INSTALLATION_CHECKLIST_INCOMPLETE` (details: `blocking`) | 409 | start gates (`INSTALLATION_SCHEDULE_EXPIRED`: the scheduled interval ended before the start — the Manager must reschedule; also reported as `startBlockedReason`) |
-| `INSTALLATION_EVIDENCE_REQUIRED` · `INSTALLATION_ASSETS_REQUIRED` · `INSTALLATION_DUPLICATE_SERIAL` | 409 | completion report / assets |
+| `INSTALLATION_EVIDENCE_REQUIRED` · `INSTALLATION_ASSETS_REQUIRED` (details: `missing`, e.g. `["INVERTER"]`) · `INSTALLATION_DUPLICATE_SERIAL` | 409 | completion report / assets |
+| `INSTALLATION_ASSET_QUANTITY_VALIDATION_FAILED` (details per `assets[i].quantity` / `assets[i].productId`) | 400 | a lot without a catalog product or with a quantity outside 1–10 000, or a serialised entry with a quantity other than 1 |
 | `INSTALLATION_NOT_HANDED_OVER` | 409 | handover before COMPLETED |
 | `TECHNICIAN_OUTSIDE_ZONE` · `TECHNICIAN_SCHEDULE_CONFLICT` · `TECHNICIAN_ON_LEAVE` · `OUTSIDE_WORKING_HOURS` · `TECHNICIAN_SCHEDULING_DISABLED` · `TECHNICIAN_INACTIVE` | 409 | assignment eligibility (details: `technicianUserId`, `technicianName`) |
 | `SITE_LOCATION_REQUIRED` · `NO_ZONE_COVERAGE` · `ZONE_NOT_SERVICEABLE` | 422 | the site has no valid commune / its commune is not mapped to an active zone / the zone is not serviceable (see [administrative-locations-and-zones.md](administrative-locations-and-zones.md)) |
 | `SITE_HAS_ACTIVE_INSTALLATION` | 409 | the customer changes the site's administrative location while a project of the site is not COMPLETED/CANCELLED |
 | `FILE_NOT_FOUND` 404 · `FILE_WRONG_PURPOSE` 400 · `FILE_NOT_OWNED` 403 · `FILE_NOT_VERIFIED` · `FILE_ALREADY_LINKED` 409 | | evidence file checks |
 | `VALIDATION_FAILED` | 400 | missing fields, report > 8000 chars, invalid asset, `disposition` other than `inline`/`attachment` |
+| `CONTRACT_NOT_FOUND` 404 · `CONTRACT_DOCUMENT_MISSING` 409 · `CONTRACT_SUBMISSION_NOT_FOUND` 404 | | `GET /api/contracts/{id}/official-document/url`, `…/submissions/{submissionId}/url` and the customer twins under `/api/customers/me/contracts/{id}/…` (presigned GET for the official PDF / a signed scan of any version the caller may read, superseded versions included; `disposition=inline\|attachment`; `Cache-Control: no-store`). Downloading never changes the contract: payment still needs SIGNED |
 | `INSTALLATION_EVIDENCE_NOT_FOUND` | 404 | evidence id unknown or not on the requested project |
 | `INSTALLATION_EVIDENCE_OBJECT_MISSING` | 410 | the photo's verified object (version) was deleted from storage; it cannot be shown any more |
 | `FILE_NOT_VERIFIED` · `FILE_NOT_SIGNABLE` | 409 | the evidence file is no longer VERIFIED (e.g. failed a later integrity check) / its stored reference is outside the allowed scope |

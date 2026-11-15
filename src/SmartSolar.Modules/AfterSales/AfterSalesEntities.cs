@@ -58,6 +58,10 @@ public sealed class ServicePackage
 
     public decimal? PerIncidentLimit { get; set; }
     public decimal? TermLimit { get; set; }
+
+    /// <summary>Cover picture shown to customers: an absolute https URL (a hosted picture, or the public address of an uploaded PACKAGE_IMAGE file). Same rules as a product image URL.</summary>
+    public string? ImageUrl { get; set; }
+
     public bool IsActive { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
@@ -648,8 +652,10 @@ public static class FollowUpOutcomes
 }
 
 /// <summary>
-/// A manual refund: requested (by the system or a cancellation), approved by a Manager, then executed outside the system and
-/// recorded by an Admin. Approval alone is never a refund. PayOS refunds are not called automatically.
+/// Money PayOS confirmed that could not be applied to anything (a second payment of a paid contract, a wrong amount, a payment after the
+/// checkout deadline): written by the payment settlement so no collected money is ever only a log line. The system does not process
+/// these rows any further (there is no refund workflow: SmartSolar decided not to handle refunds in the application); how such money is
+/// settled is a pending business decision. Rows written by the former approval/recording flow are kept as history.
 /// </summary>
 public sealed class RefundRecord
 {
@@ -745,7 +751,6 @@ public static class AfterSalesErrorCodes
     public const string SubscriptionNotFound = "SERVICE_SUBSCRIPTION_NOT_FOUND";
     public const string EntitlementNotFound = "MAINTENANCE_ENTITLEMENT_NOT_FOUND";
     public const string TaskNotFound = "SALES_TASK_NOT_FOUND";
-    public const string RefundNotFound = "REFUND_NOT_FOUND";
     public const string AssetNotFound = "AFTER_SALES_ASSET_NOT_FOUND";
     public const string OptionNotFound = "WARRANTY_OPTION_NOT_FOUND";
     public const string NotificationNotFound = "NOTIFICATION_NOT_FOUND";
@@ -755,6 +760,11 @@ public static class AfterSalesErrorCodes
     public const string StaleRevision = "AFTER_SALES_STALE_REVISION";
     public const string ReasonRequired = "AFTER_SALES_REASON_REQUIRED";
     public const string PaymentRequired = "AFTER_SALES_PAYMENT_REQUIRED";
+    /// <summary>
+    /// Cancelling paid work or a paid package would owe the customer money, and refunds are not handled in this system: the operation is refused
+    /// until a business decision defines what happens to the money (409). Unpaid work can still be cancelled.
+    /// </summary>
+    public const string PaidCancellationUnsupported = "AFTER_SALES_PAID_CANCELLATION_UNSUPPORTED";
     public const string QuotationExpired = "SERVICE_QUOTATION_EXPIRED";
     public const string BookingTooSoon = "MAINTENANCE_BOOKING_TOO_SOON";
     public const string OutsidePeriod = "MAINTENANCE_OUTSIDE_PERIOD";

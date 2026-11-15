@@ -54,6 +54,8 @@ public sealed class ServicePackageConfiguration : IEntityTypeConfiguration<Servi
             t.HasCheckConstraint("ck_service_package_disaster",
                 $"kind <> '{ServicePackageKinds.DisasterProtection}' OR (covered_disaster_types IS NOT NULL AND coverage_percent BETWEEN 0 AND 100 "
                 + "AND per_incident_limit >= 0 AND term_limit >= per_incident_limit)");
+            // Same rule as product_image.url: a cover is an https picture address.
+            t.HasCheckConstraint("ck_service_package_image_url_https", "image_url IS NULL OR image_url LIKE 'https://%'");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -67,6 +69,7 @@ public sealed class ServicePackageConfiguration : IEntityTypeConfiguration<Servi
         builder.Property(x => x.CoveragePercent).HasColumnName("coverage_percent").HasPrecision(5, 2);
         builder.Property(x => x.PerIncidentLimit).HasColumnName("per_incident_limit").HasPrecision(18, 2);
         builder.Property(x => x.TermLimit).HasColumnName("term_limit").HasPrecision(18, 2);
+        builder.Property(x => x.ImageUrl).HasColumnName("image_url").HasMaxLength(SmartSolar.Modules.Catalog.ProductImages.ProductImageRules.MaxUrlLength);
         builder.Property(x => x.IsActive).HasColumnName("is_active").IsRequired();
         builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();

@@ -1,6 +1,7 @@
 # Flow 3 — After-Sales Services
 
-Warranty and repairs, maintenance packages, disaster protection, the shared Sales queue, manual refunds and the Admin dashboard.
+Warranty and repairs, maintenance packages, disaster protection, the shared Sales queue and the Admin dashboard. Refunds are **not**
+handled in this system (business decision, November 2026): see "Cancellation" below.
 Module: `src/SmartSolar.Modules/AfterSales/` (one handler class per actor). Persistence: `src/SmartSolar.Infrastructure/Persistence/AfterSales/`.
 API: `src/SmartSolar.Api/Controllers/AfterSalesControllers.cs`. Migration: `20261021023128_AfterSalesServices` (**generated, not applied**).
 
@@ -72,16 +73,32 @@ Request statuses: `SUBMITTED → SCHEDULED → IN_PROGRESS → AWAITING_DECISION
 → SCHEDULED → IN_PROGRESS → PENDING_CUSTOMER_ACCEPTANCE → COMPLETED`, plus `DISPUTED`, `REWORK_REQUIRED`, `NOT_COMPLETED`,
 `CANCELLED`, `CLOSED_DUPLICATE`. After a visit the next status is derived from the items (`AfterSalesWorkflow.NextStatus`).
 
-### Cancellation and refunds
+### Cancellation (no refund workflow)
 * Free work not started: the customer cancels at once (reason required). Paid work not started: a cancellation **request** that a
-  Manager decides, keeping documented non-recoverable costs. Started work: only a Manager stop.
-* Refunds are **manual**: a refund record is approved by a Manager and recorded by an Admin once the money was returned outside
-  the system (the refund date drives the dashboard). Nothing calls PayOS for refunds.
+  Manager decides. Rejecting keeps the work going; approving cancels the request **only when nothing was paid**. When a quotation was
+  paid, approving answers `409 AFTER_SALES_PAID_CANCELLATION_UNSUPPORTED`: cancelling paid work would owe the customer money, and
+  refunds are not handled in this system. The same code refuses `POST requests/{id}/not-fulfilled` for a paid one-time maintenance.
+  Started work: only a Manager stop (`POST requests/{id}/stop`, reason only — no refund amount).
+* **Refunds are not handled in the application** (decision of the team, 13 November 2026): the former Manager approval
+  (`GET/POST …/refunds…`) and Admin recording (`POST refunds/{id}/record`) endpoints are removed, `StopWorkRequest.refundAmount`,
+  `CancellationDecisionRequest.nonRecoverableAmount` and `PackageCancellationDecisionRequest.refundAmount` are gone, and no request,
+  package or installation flow creates an approved refund any more. Nothing calls PayOS for refunds.
+* **Money that was received but could not be applied** (a second payment of an already paid contract, a wrong amount, a package or
+  quotation paid after its checkout deadline) is still recorded by the payment settlement as a `refund_record` row in status
+  `PENDING_APPROVAL`, so no collected money is ever only a log line — but the system processes these rows no further. **How such
+  money is settled is a pending business decision (BLOCKED)**; the rows written by the former approval flow are kept as history and the
+  Admin dashboard's "refunded" metric keeps reading them.
 
 ### Assets
+* An `installed_asset` row is a serialised device (`serial_number`, `quantity` 1) or a **lot** confirmed by count at the installation
+  (`serial_number` null, `quantity` ≥ 1); `AssetView.quantity` / `serialNumber` (nullable) carry this to clients.
 * A replacement is stored as `PENDING_ACCEPTANCE` with `replaces_asset_id` and `service_request_id`. On the customer's acceptance it
-  becomes `ACTIVE` and the old asset `REPLACED` (kept as history).
-* A Manager may correct equipment data with a reason; old and new values are written to `after_sales_event`.
+  becomes `ACTIVE` and the old asset `REPLACED` (kept as history). When the replaced asset is a lot of several units, one unit is split
+  off the lot as its own `REPLACED` row (the lot's quantity drops by one, the installed count of the handover never changes) and the
+  replacement's `replaces_asset_id` points at that unit.
+* A Manager may correct equipment data with a reason; old and new values are written to `after_sales_event`. A lot cannot be given one
+  serial number (`400 AFTER_SALES_VALIDATION_FAILED`); its position and specifications can be corrected, and one warranty activation
+  date covers the whole lot.
 
 ### Packages
 * Admin catalog: `MAINTENANCE` (visit plan months) and `DISASTER_PROTECTION` (covered types, percentage, per-incident and term
@@ -94,9 +111,17 @@ Request statuses: `SUBMITTED → SCHEDULED → IN_PROGRESS → AWAITING_DECISION
   settled by at most one payment. A checkout is one PayOS link: cancelling one unpaid package cancels the link, the other unpaid
   packages of it become `CHECKOUT_EXPIRED` (buy again), and the contract is simply paid again. While a contract-only payment link is
   live, a combined checkout for that contract answers `PAYMENT_CHECKOUT_IN_PROGRESS`. A line that cannot be applied (for example paid after its
-  deadline, by provider transaction time) is marked `REVIEW_REQUIRED` and a `PENDING_APPROVAL` refund is created.
-* Before activation a paid package can be cancelled by Manager decision (manual refund); an unpaid one at once. If the installation
-  is cancelled before handover, its packages are cancelled by the sweep.
+  deadline, by provider transaction time) is marked `REVIEW_REQUIRED` and a `PENDING_APPROVAL` `refund_record` row is written (an
+  unapplied-money ledger; see "Cancellation").
+* Only an **unpaid** package order can be cancelled online (at once). A paid or active package answers
+  `409 AFTER_SALES_PAID_CANCELLATION_UNSUPPORTED`; a `CANCELLATION_REQUESTED` row made before this rule can only be **rejected** by a
+  Manager (approving is refused for the same reason). If the installation is cancelled before handover, the sweep cancels its **unpaid**
+  orders only; a paid, never-started package stays `PAID` without a term until a business decision settles it.
+* **Cover picture**: `ServicePackage.ImageUrl` (nullable, same rules as a product image URL: absolute https, ≤ 1000 characters,
+  `Catalog:ImageAllowedHosts` when set). `PackageRequest` takes `imageUrl` (a hosted picture, or the address stored earlier) or
+  `imageFileId` (a VERIFIED `PACKAGE_IMAGE` file the Admin uploaded through the presigned flow; the API stores its public address
+  `{Storage:PublicFileBaseUrl}/api/files/public/{fileId}`, see [file-upload-api-integration.md](file-upload-api-integration.md) §7).
+  Both empty = no picture. `PackageView.imageUrl` carries it to customers and admins.
 
 ### Maintenance visits
 * Each plan month is a `maintenance_entitlement` with its own period. The customer books at least
@@ -141,8 +166,8 @@ PayOS transaction time and the refund date. `…/dashboard/export` returns the s
 | Customer | `api/customers/me/after-sales` | `GET installations/{projectId}/warranty` · `POST fault-requests` · `POST one-time-maintenance` · `GET requests`, `GET requests/{id}` · `POST requests/{id}/cancel`, `/completion`, `/reconsideration`, `/confirm-appointment`, `/reschedule`, `/report-fault` · `POST quotations/{id}/accept`, `/reject`, `/checkout` · `GET payments/{attemptId}` · `GET packages` · `POST purchases` · `GET subscriptions` · `POST subscriptions/{id}/cancel` · `POST maintenance/{entitlementId}/book` · `GET notifications` · `POST notifications/{notificationId}/read` |
 | Technician | `api/technicians/me/after-sales/visits` | `GET` · `GET {visitId}` · `POST {visitId}/respond`, `/start`, `/evidence`, `/inspection` (`stayOnSite`), `/continue-repair`, `/finish`, `/supplementary-items`, `/work-report`, `/absence` |
 | Sales | `api/sales/after-sales` | `GET warranty-options` · `GET tasks/open`, `GET tasks/mine` · `POST tasks/{id}/claim`, `/start`, `/follow-up` · `GET requests/{id}` · `POST requests/{id}/quotations` |
-| Manager, Admin | `api/manager/after-sales` | `GET requests`, `GET requests/{id}` · `POST requests/{id}/visits`, `/coverage`, `/claim-decision`, `/duplicate`, `/dispute-review`, `/cancellation-decision`, `/stop`, `/not-fulfilled` · `PUT assets/{id}` · `POST subscriptions/{id}/cancellation-decision` · `GET tasks` · `POST tasks/{id}/assign` · `GET refunds` · `POST refunds/{id}/decision` |
-| Admin | `api/admin/after-sales` | `GET/POST packages`, `PUT packages/{id}` · `GET/PUT warranty-options` · `POST refunds/{id}/record` · `GET dashboard`, `GET dashboard/export` |
+| Manager, Admin | `api/manager/after-sales` | `GET requests`, `GET requests/{id}` · `POST requests/{id}/visits`, `/coverage`, `/claim-decision`, `/duplicate`, `/dispute-review`, `/cancellation-decision` (`{ approve, note }`), `/stop` (`{ reason }`), `/not-fulfilled` · `PUT assets/{id}` · `POST subscriptions/{id}/cancellation-decision` (`{ approve, note }`, rejection only) · `GET tasks` · `POST tasks/{id}/assign` |
+| Admin | `api/admin/after-sales` | `GET/POST packages`, `PUT packages/{id}` (`imageUrl` / `imageFileId`) · `GET/PUT warranty-options` · `GET dashboard`, `GET dashboard/export` |
 
 Request bodies are in `src/SmartSolar.Api/Contracts/AfterSales/AfterSalesRequests.cs`. Customer photos and technician evidence
 use the file purpose `SERVICE_EVIDENCE` (prefix `after-sales/{userId}/`, jpeg/png/webp, 15 MB).

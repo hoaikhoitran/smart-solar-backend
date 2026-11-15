@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using SmartSolar.Modules.AfterSales;
 using SmartSolar.Modules.Common.Results;
 using SmartSolar.Modules.Identity.Constants;
@@ -21,14 +22,15 @@ public sealed class AfterSalesEndpointsTests
         Assert.Equal(HttpStatusCode.Forbidden, (await As(RoleCodes.Technician).GetAsync("/api/customers/me/after-sales/requests")).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await As(RoleCodes.Customer).GetAsync("/api/manager/after-sales/tasks")).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await As(RoleCodes.Customer).GetAsync("/api/sales/after-sales/tasks/open")).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await As(RoleCodes.Sales).GetAsync("/api/manager/after-sales/refunds")).StatusCode);
         // The dashboard is Admin only (a Manager may not see company money).
         Assert.Equal(HttpStatusCode.Forbidden, (await As(RoleCodes.Manager).GetAsync("/api/admin/after-sales/dashboard")).StatusCode);
 
         Assert.Equal(HttpStatusCode.OK, (await As(RoleCodes.Customer).GetAsync("/api/customers/me/after-sales/requests")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await As(RoleCodes.Sales).GetAsync("/api/sales/after-sales/tasks/open")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await As(RoleCodes.Manager).GetAsync("/api/manager/after-sales/tasks")).StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await As(RoleCodes.Admin).GetAsync("/api/manager/after-sales/refunds")).StatusCode);
+        // Refunds are not handled in this system: the former approval and recording endpoints no longer exist.
+        Assert.Equal(HttpStatusCode.NotFound, (await As(RoleCodes.Admin).GetAsync("/api/manager/after-sales/refunds")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await As(RoleCodes.Admin).PostAsJsonAsync($"/api/admin/after-sales/refunds/{Guid.NewGuid()}/record", new { })).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await As(RoleCodes.Admin).GetAsync("/api/admin/after-sales/dashboard")).StatusCode);
         var csv = await As(RoleCodes.Admin).GetAsync("/api/admin/after-sales/dashboard/export?from=2026-10-01&to=2026-10-31");
         Assert.Equal(HttpStatusCode.OK, csv.StatusCode);

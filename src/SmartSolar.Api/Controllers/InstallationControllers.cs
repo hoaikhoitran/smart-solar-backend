@@ -208,7 +208,7 @@ public sealed class TechnicianInstallationsController(InstallationHandlers handl
     public async Task<IActionResult> Assets(Guid projectId, [FromBody] AssetsRequest request, CancellationToken cancellationToken)
         => CurrentUserId() is { } user
             ? Respond(await handlers.RegisterAssetsAsync(user, projectId, (request.Assets ?? []).Select(a => new AssetInput(a.AssetType ?? "", a.ProductId, a.Manufacturer ?? "",
-                a.Model ?? "", a.SerialNumber ?? "", a.PositionCode, a.WarrantyMonths)).ToList(), cancellationToken))
+                a.Model ?? "", a.SerialNumber, a.PositionCode, a.WarrantyMonths, a.Quantity)).ToList(), cancellationToken))
             : UnauthorizedFailure();
 
     [HttpPost("{projectId:guid}/completion-report")]

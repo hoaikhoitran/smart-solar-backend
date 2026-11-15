@@ -26,7 +26,12 @@ public sealed record DeclineAssignmentRequest(string? Reason, int? ExpectedRevis
 
 public sealed record EvidenceRequest(Guid FileId, string? Caption);
 
-public sealed record AssetRequest(string? AssetType, Guid? ProductId, string? Manufacturer, string? Model, string? SerialNumber, string? PositionCode, int? WarrantyMonths);
+/// <summary>
+/// One serialised device (<c>serialNumber</c> set, <c>quantity</c> omitted or 1) or one lot of identical units of a catalog product confirmed by
+/// count (<c>serialNumber</c> omitted, <c>productId</c> and <c>quantity</c> 1–10000 required). Serial numbers are never invented for a lot.
+/// </summary>
+public sealed record AssetRequest(string? AssetType, Guid? ProductId, string? Manufacturer, string? Model, string? SerialNumber, string? PositionCode, int? WarrantyMonths,
+    int? Quantity = null);
 
 public sealed record AssetsRequest(IReadOnlyList<AssetRequest>? Assets);
 

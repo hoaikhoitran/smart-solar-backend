@@ -71,7 +71,7 @@ public abstract class OperationResultControllerBase : ControllerBase
             or "ADMINISTRATIVE_LOCATION_UNKNOWN" or "ADMINISTRATIVE_LOCATION_SUPERSEDED" or "ADMINISTRATIVE_LOCATION_OUT_OF_SERVICE_AREA")
             return StatusCodes.Status422UnprocessableEntity;
         if (code is CommonErrorCodes.FeaturePendingMigration or "PAYMENT_PROVIDER_NOT_CONFIGURED" or "RAG_SERVICE_UNAVAILABLE" or "FILE_STORAGE_UNAVAILABLE"
-            or "STORAGE_NOT_CONFIGURED" or "STORAGE_UNAVAILABLE")
+            or "STORAGE_NOT_CONFIGURED" or "STORAGE_UNAVAILABLE" or "STORAGE_PUBLIC_URL_NOT_CONFIGURED")
             return StatusCodes.Status503ServiceUnavailable;
         // The stored object of a verified file was deleted from storage: gone for good.
         if (code is "FILE_OBJECT_MISSING" or "INSTALLATION_EVIDENCE_OBJECT_MISSING") return StatusCodes.Status410Gone;

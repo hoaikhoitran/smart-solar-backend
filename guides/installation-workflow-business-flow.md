@@ -101,7 +101,7 @@ CANCELLED ◀── Manager cancel (only from PENDING_ASSIGNMENT, PENDING_TECHNI
 | PENDING_TECHNICIAN_ACCEPTANCE | accept (assigned technician) | SCHEDULED | repeat accept is a no-op; refused after the assigned interval ended |
 | PENDING_TECHNICIAN_ACCEPTANCE | decline (assigned technician, reason) | PENDING_ASSIGNMENT | assignment `DECLINED`, reason visible to the Manager; an accepted job cannot be declined |
 | SCHEDULED | start (responsible technician) | IN_PROGRESS | accepted assignment; local date ≥ scheduled start date; before the scheduled end (afterwards `409 INSTALLATION_SCHEDULE_EXPIRED`: the Manager must reschedule); every required checklist item SATISFIED or NOT_APPLICABLE; repeat is a no-op |
-| IN_PROGRESS, REWORK_REQUIRED | completion report (responsible technician) | PENDING_CUSTOMER_ACCEPTANCE | report ≤ 8000 chars; ≥ 1 evidence photo of the **current round**; ≥ 1 PANEL and ≥ 1 INVERTER asset (`Installation:RequirePanelAndInverterAssets`) |
+| IN_PROGRESS, REWORK_REQUIRED | completion report (responsible technician) | PENDING_CUSTOMER_ACCEPTANCE | report ≤ 8000 chars; ≥ 1 evidence photo of the **current round**; ≥ 1 PANEL and ≥ 1 INVERTER row (a lot by quantity or a serialised device; `Installation:RequirePanelAndInverterAssets`, exposed to the technician as `requiresPanelAndInverterAssets`); `INSTALLATION_ASSETS_REQUIRED` names the missing types in `details.missing` |
 | PENDING_CUSTOMER_ACCEPTANCE | ACCEPT (customer owner) | COMPLETED | completion + handover recorded; assignment `COMPLETED`; repeat accept is a no-op |
 | PENDING_CUSTOMER_ACCEPTANCE | REQUEST_REWORK (customer owner, reason) | REWORK_REQUIRED | the next round starts: new evidence is required for the next report |
 | PENDING_CUSTOMER_ACCEPTANCE | return-to-rework (Manager/Admin, reason ≤ 500) | REWORK_REQUIRED | the pending round is closed as `REWORK_REQUESTED` with the manager as decider and the reason (event `RETURNED_TO_REWORK`); as after a customer rework, new evidence is required for the next report. Completion stays customer-only |
@@ -153,8 +153,17 @@ Every other transition is refused with `409 INSTALLATION_INVALID_STATE`. Every t
   (`409 INSTALLATION_ASSIGNMENT_NOT_ACCEPTED`).
 * **Evidence**: verified `INSTALLATION_EVIDENCE` photos uploaded by the responsible technician themself, each file used once
   (`FILE_ALREADY_LINKED`), recorded per round in `installation_evidence` while IN_PROGRESS or REWORK_REQUIRED. Evidence is never deleted.
-* **Assets**: equipment actually installed (type PANEL/INVERTER/BATTERY/METER/OTHER, manufacturer, model, serial, position, warranty
-  months 0–600). Serial numbers are unique per manufacturer (`INSTALLATION_DUPLICATE_SERIAL`).
+* **Assets**: equipment actually installed (type PANEL/INVERTER/BATTERY/METER/OTHER, manufacturer, model, position, warranty from the
+  catalog product). Each `installed_asset` row is either **one serialised device** (`serial_number` set, `quantity` 1) or **one lot of a
+  catalog product confirmed by count** (`serial_number` null, `quantity` 1–10 000, `product_id` required): a 100-panel contract is
+  confirmed in one entry "PANEL × 100" instead of 100 serials, while the inverter (or any device that must be traceable) keeps its serial.
+  No serial number is ever invented for a lot. Serial numbers are unique per manufacturer (`INSTALLATION_DUPLICATE_SERIAL`); a serial
+  with a quantity other than 1, a lot without a product or a quantity outside 1–10 000 is `400 INSTALLATION_ASSET_QUANTITY_VALIDATION_FAILED`.
+  The contract comparison (D-05) counts **units** (lots by their quantity): 99 of 100 panels is a substitution the Manager and the
+  customer must approve, exactly as with serials. Every registration is audited (`ASSETS_REGISTERED`, detail e.g.
+  "101 units in 2 entries: PANEL ×100 (100 by count), INVERTER ×1 (1 serial)"); the photos of the round are the evidence.
+  After-sales: when one unit of a lot is replaced, that unit is split off as its own `REPLACED` row (the installed count of the handover
+  never changes) and the replacement points at it; a lot cannot be given a single serial through the equipment correction.
 * **Checklist** (Manager/Admin): EVN grid connection, PCCC fire safety, roof structural assessment. Items start not required; the
   Manager marks applicability and satisfaction (SATISFIED requires a verified `PROJECT_DOCUMENT`). Required PENDING items block the start.
   The checklist is staff-only; the technician sees `canStart` / `startBlockedReason`.
@@ -165,8 +174,8 @@ Every other transition is refused with `409 INSTALLATION_INVALID_STATE`. Every t
 * A Manager/Admin can return a pending report to rework (`POST /api/installation-projects/{id}/return-to-rework`) when it is wrong or
   incomplete, but cannot complete the project. A customer who never answers is a **manual business follow-up** (contact the
   customer); the system has no automatic acceptance or timeout.
-* On acceptance the project is COMPLETED and the **handover** (assets with warranty end dates, evidence, acceptance history, the
-  technician's name) is available to the customer and staff.
+* On acceptance the project is COMPLETED and the **handover** (assets with quantities and warranty end dates, evidence, acceptance
+  history, the technician's name) is available to the customer and staff.
 
 ### 5.5 Cancellation
 * Manager/Admin only, before IN_PROGRESS, with a reason. The contract stays `PAID` and no payment is changed: **refunds are a manual

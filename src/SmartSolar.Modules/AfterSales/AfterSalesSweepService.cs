@@ -21,8 +21,9 @@ public sealed record AfterSalesSweepResult(int ExpiredCheckouts, int ExpiredQuot
 /// <list type="bullet">
 /// <item>Unpaid checkouts and quotations expire only after the provider confirmed (server-to-server) that nothing was paid; an expired
 /// quotation releases its reserved disaster support and goes back to Sales.</item>
-/// <item>Paid packages start when the installation is handed over and become active on their start date; packages of an installation
-/// cancelled before handover are cancelled (refund request for a Manager) and never activated.</item>
+/// <item>Paid packages start when the installation is handed over and become active on their start date; UNPAID orders of an installation
+/// cancelled before handover are cancelled. Paid ones are never cancelled automatically (that would owe the customer money and refunds are
+/// not handled here): they stay PAID without a term until a business decision settles them.</item>
 /// <item>Terms expire at their end; unused visits expire with them (a SmartSolar-delayed booking keeps its extension window).</item>
 /// <item>Maintenance notices, Sales follow-ups after the customer's silence, and acceptance reminders (silence is never acceptance).</item>
 /// <item>A technician still waiting on site after the visit's reserved interval is checked out (the repair needs its own visit).</item>
@@ -32,7 +33,6 @@ public sealed class AfterSalesSweepService(
     IAfterSalesUnitOfWork data,
     PaymentService payments,
     SubscriptionTerms terms,
-    ServicePackageHandlers packages,
     ISchedulingPolicyProvider policies,
     WorkingCalendar calendar,
     TimeProvider time,
@@ -161,11 +161,14 @@ public sealed class AfterSalesSweepService(
         return count;
     }
 
+    /// <summary>
+    /// Unpaid package orders of a cancelled installation are cancelled. A PAID (or CANCELLATION_REQUESTED) package of a cancelled installation is
+    /// left untouched: cancelling it would owe the customer money, and refunds are not handled in this system (pending business decision).
+    /// </summary>
     private async Task<int> CancelForCancelledInstallationsAsync(CancellationToken cancellationToken)
     {
         var count = 0;
-        var pending = await data.ListSubscriptionsByStatusAsync(
-            [SubscriptionStatuses.AwaitingPayment, SubscriptionStatuses.Paid, SubscriptionStatuses.CancellationRequested], cancellationToken);
+        var pending = await data.ListSubscriptionsByStatusAsync([SubscriptionStatuses.AwaitingPayment], cancellationToken);
         foreach (var subscription in pending.Where(s => s.StartsAt is null))
         {
             var contract = await data.GetContractAsync(subscription.ContractId, cancellationToken);
@@ -173,23 +176,15 @@ public sealed class AfterSalesSweepService(
             count += await InTransactionAsync(async token =>
             {
                 var tracked = await data.FindSubscriptionAsync(subscription.Id, true, token);
-                if (tracked is null || tracked.StartsAt is not null) return false;
+                if (tracked is null || tracked.StartsAt is not null || tracked.Status != SubscriptionStatuses.AwaitingPayment) return false;
                 var now = time.GetUtcNow();
-                if (tracked.Status == SubscriptionStatuses.AwaitingPayment)
-                {
-                    tracked.Status = SubscriptionStatuses.Cancelled;
-                    tracked.CancelledAt = now;
-                    AfterSalesHistory.Record(data, EventSubjects.Subscription, tracked.Id, "CANCELLED_WITH_INSTALLATION", null, null, now);
-                }
-                else
-                {
-                    // Paid but never activated: a Manager reviews the refund arrangement; an Admin records it.
-                    await packages.CancelPaidAsync(tracked, null, tracked.Price, "Installation cancelled before handover", now, token);
-                }
+                tracked.Status = SubscriptionStatuses.Cancelled;
+                tracked.CancelledAt = now;
+                AfterSalesHistory.Record(data, EventSubjects.Subscription, tracked.Id, "CANCELLED_WITH_INSTALLATION", null, null, now);
                 tracked.UpdatedAt = now;
                 tracked.Revision++;
                 return true;
-            }, "cancelling packages of a cancelled installation", cancellationToken);
+            }, "cancelling unpaid packages of a cancelled installation", cancellationToken);
         }
         return count;
     }

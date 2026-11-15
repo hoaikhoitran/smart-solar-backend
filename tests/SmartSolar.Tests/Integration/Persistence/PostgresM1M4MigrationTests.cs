@@ -63,8 +63,8 @@ public sealed class PostgresM1M4MigrationTests
         // Down to the schema before M-1 (disposable database only).
         await db.GetService<IMigrator>().MigrateAsync(BeforeM1);
         // Readiness reports exactly the missing migrations: M-1..M-4 and the later M-7.
-        Assert.Equal(M1ToM4.Append(M7), await db.Database.GetPendingMigrationsAsync());
-        Assert.Equal(M1ToM4.Append(M7), await ProbeAsync(database));
+        Assert.Equal(M1ToM4.Append(M7).Append(M8), await db.Database.GetPendingMigrationsAsync());
+        Assert.Equal(M1ToM4.Append(M7).Append(M8), await ProbeAsync(database));
         Assert.False(await db.Database.SqlQueryRaw<bool>(
             "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'knowledge_document' AND column_name = 'audience') AS \"Value\"").SingleAsync());
 
@@ -149,6 +149,8 @@ public sealed class PostgresM1M4MigrationTests
     }
 
     private const string M7 = "20261031043834_ContractDraftDiscard";
+    /// <summary>Quantity lots on installed_asset and the service package cover (after M-7).</summary>
+    private const string M8 = "20261114130345_InstalledAssetLotsAndPackageImage";
 
     [PostgresFact]
     public async Task M7_goes_down_and_up_over_draft_issued_signed_and_paid_contracts_without_changing_them()
@@ -176,12 +178,12 @@ public sealed class PostgresM1M4MigrationTests
 
         // Down to M-4: the readiness probe reports exactly M-7; Up restores it; history lists all seven pending-era migrations in order.
         await db.GetService<IMigrator>().MigrateAsync(M1ToM4[^1]);
-        Assert.Equal([M7], await ProbeAsync(database));
+        Assert.Equal([M7, M8], await ProbeAsync(database));
         await db.Database.MigrateAsync();
         Assert.Empty((await ProbeAsync(database))!);
         var applied = (await db.Database.GetAppliedMigrationsAsync()).ToList();
-        Assert.Equal(M7, applied[^1]);
-        Assert.Equal(new[] { "20261021164225_AddCommuneReferencePoints", "20261030122441_AutomatedInstallationQuotation" }.Concat(M1ToM4).Append(M7),
+        Assert.Equal(M8, applied[^1]);
+        Assert.Equal(new[] { "20261021164225_AddCommuneReferencePoints", "20261030122441_AutomatedInstallationQuotation" }.Concat(M1ToM4).Append(M7).Append(M8),
             applied.SkipWhile(m => m != "20261021164225_AddCommuneReferencePoints"));
 
         // Every existing contract is unchanged; none became DISCARDED or got discard data.
@@ -205,7 +207,9 @@ public sealed class PostgresM1M4MigrationTests
             CancellationToken.None)).Succeeded);
         Assert.NotNull(await Record.ExceptionAsync(() => db.GetService<IMigrator>().MigrateAsync(M1ToM4[^1])));
         await using var check = database.NewContext();
+        // M-8 (no lots yet) went down first; M-7 refused, so the schema stays at M-7 and only M-8 is pending again.
         Assert.Equal(M7, (await check.Database.GetAppliedMigrationsAsync()).Last());
+        Assert.Equal([M8], await ProbeAsync(database));
         Assert.Equal("DISCARDED", await check.Database.SqlQuery<string>($"SELECT status AS \"Value\" FROM customer_contract WHERE id = {draftId}").SingleAsync());
     }
 }

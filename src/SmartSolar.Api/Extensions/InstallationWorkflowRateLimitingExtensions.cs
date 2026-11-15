@@ -5,6 +5,8 @@ public static partial class RateLimitingExtensions
 {
     public const string FilesReadPolicy = "files-read";
     public const string FilesWritePolicy = "files-write";
+    /// <summary>Anonymous catalog image redirects (partitioned by client IP): a product page loads a handful of pictures.</summary>
+    public const string FilesPublicReadPolicy = "files-public-read";
     public const string OnSiteSurveyReadPolicy = "onsite-survey-read";
     public const string OnSiteSurveyWritePolicy = "onsite-survey-write";
     public const string QuotationReadPolicy = "quotation-read";
@@ -23,6 +25,7 @@ public static partial class RateLimitingExtensions
     [
         new(FilesReadPolicy, "RateLimiting:FilesRead", 60, 1),
         new(FilesWritePolicy, "RateLimiting:FilesWrite", 20, 1, Distributed: true),
+        new(FilesPublicReadPolicy, "RateLimiting:FilesPublicRead", 120, 1),
         new(OnSiteSurveyReadPolicy, "RateLimiting:OnSiteSurveyRead", 60, 1),
         new(OnSiteSurveyWritePolicy, "RateLimiting:OnSiteSurveyWrite", 20, 1),
         new(QuotationReadPolicy, "RateLimiting:QuotationRead", 60, 1),

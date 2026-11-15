@@ -26,6 +26,11 @@ public static class FileStorageModuleExtensions
         if (!string.IsNullOrWhiteSpace(storage.S3.ServiceUrl)
             && (!Uri.TryCreate(storage.S3.ServiceUrl.Trim(), UriKind.Absolute, out var endpoint) || endpoint.Scheme is not ("https" or "http")))
             throw new InvalidOperationException("'Storage:S3:ServiceUrl' must be an absolute https:// (or, for a local emulator, http://) URL.");
+        // Stored on products/packages as an https picture address (the catalog only accepts https URLs), so it must be an https origin.
+        if (!string.IsNullOrWhiteSpace(storage.PublicFileBaseUrl)
+            && (!Uri.TryCreate(storage.PublicFileBaseUrl.Trim(), UriKind.Absolute, out var publicBase) || publicBase.Scheme != Uri.UriSchemeHttps
+                || !string.IsNullOrEmpty(publicBase.Query) || !string.IsNullOrEmpty(publicBase.Fragment)))
+            throw new InvalidOperationException("'Storage:PublicFileBaseUrl' must be an absolute https:// origin (for example the frontend origin), without query or fragment.");
         services.AddSingleton(storage);
         if (storage.S3.Enabled)
         {
@@ -43,6 +48,7 @@ public static class FileStorageModuleExtensions
         services.AddScoped<FileService>();
         services.AddScoped<FileReadUrlService>();
         services.AddScoped<FileUploadUrlService>();
+        services.AddScoped<PublicFileService>();
         return services;
     }
 }

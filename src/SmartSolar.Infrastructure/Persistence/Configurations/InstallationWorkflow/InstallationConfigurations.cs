@@ -199,6 +199,9 @@ public sealed class InstalledAssetConfiguration : IEntityTypeConfiguration<Insta
                 $"(warranty_months IS NULL) = (warranty_source IS NULL) AND (warranty_source IS NULL OR warranty_source IN ({string.Join(", ", EquipmentWarrantySources.All.Select(s => $"'{s}'"))}))");
             t.HasCheckConstraint("ck_installed_asset_warranty_period",
                 "warranty_ends_at IS NULL OR (warranty_starts_at IS NOT NULL AND warranty_months IS NOT NULL AND warranty_ends_at > warranty_starts_at)");
+            // A serialised device is exactly one unit; a lot (no serial) counts at least one unit and names its catalog product.
+            t.HasCheckConstraint("ck_installed_asset_quantity", $"quantity BETWEEN 1 AND {InstallationLimits.MaxLotQuantity} AND (serial_number IS NULL OR quantity = 1)");
+            t.HasCheckConstraint("ck_installed_asset_lot_product", "serial_number IS NOT NULL OR product_id IS NOT NULL");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -207,7 +210,9 @@ public sealed class InstalledAssetConfiguration : IEntityTypeConfiguration<Insta
         builder.Property(x => x.ProductId).HasColumnName("product_id");
         builder.Property(x => x.Manufacturer).HasColumnName("manufacturer").HasMaxLength(100).IsRequired();
         builder.Property(x => x.Model).HasColumnName("model").HasMaxLength(100).IsRequired();
-        builder.Property(x => x.SerialNumber).HasColumnName("serial_number").HasMaxLength(100).IsRequired();
+        builder.Property(x => x.SerialNumber).HasColumnName("serial_number").HasMaxLength(100);
+        // Existing rows (all serialised) become single units through the column default.
+        builder.Property(x => x.Quantity).HasColumnName("quantity").HasDefaultValue(1).IsRequired();
         builder.Property(x => x.PositionCode).HasColumnName("position_code").HasMaxLength(50);
         builder.Property(x => x.WarrantyMonths).HasColumnName("warranty_months");
         builder.Property(x => x.RegisteredByUserId).HasColumnName("registered_by_user_id").IsRequired();
@@ -220,7 +225,8 @@ public sealed class InstalledAssetConfiguration : IEntityTypeConfiguration<Insta
         builder.Property(x => x.WarrantySource).HasColumnName("warranty_source").HasMaxLength(30);
         builder.Property(x => x.WarrantyStartsAt).HasColumnName("warranty_starts_at");
         builder.Property(x => x.WarrantyEndsAt).HasColumnName("warranty_ends_at");
-        // A serial number is unique for its manufacturer across all assets, replaced ones included (history is kept).
+        // A serial number is unique for its manufacturer across all assets, replaced ones included (history is kept). Lots have no serial:
+        // NULLs are distinct in a unique index (PostgreSQL and SQLite), so any number of lots per manufacturer is allowed.
         builder.HasIndex(x => new { x.Manufacturer, x.SerialNumber }).IsUnique().HasDatabaseName("ux_installed_asset_manufacturer_serial");
         builder.HasOne<InstalledAsset>().WithMany().HasForeignKey(x => x.ReplacesAssetId).OnDelete(DeleteBehavior.Restrict)
             .HasConstraintName("fk_installed_asset_replaces");
