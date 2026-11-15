@@ -17,7 +17,7 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "8.0.32")
+                .HasAnnotation("ProductVersion", "8.0.34")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -1085,6 +1085,11 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("duration_months");
 
+                    b.Property<string>("ImageUrl")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("image_url");
+
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean")
                         .HasColumnName("is_active");
@@ -1138,6 +1143,8 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.ToTable("service_package", null, t =>
                         {
                             t.HasCheckConstraint("ck_service_package_disaster", "kind <> 'DISASTER_PROTECTION' OR (covered_disaster_types IS NOT NULL AND coverage_percent BETWEEN 0 AND 100 AND per_incident_limit >= 0 AND term_limit >= per_incident_limit)");
+
+                            t.HasCheckConstraint("ck_service_package_image_url_https", "image_url IS NULL OR image_url LIKE 'https://%'");
 
                             t.HasCheckConstraint("ck_service_package_kind", "kind IN ('MAINTENANCE', 'DISASTER_PROTECTION')");
 
@@ -2448,7 +2455,7 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         {
                             t.HasCheckConstraint("ck_file_reference_checksum_format", "(verified_checksum_sha256 IS NULL OR (length(verified_checksum_sha256) = 64 AND verified_checksum_sha256 = lower(verified_checksum_sha256))) AND (declared_checksum_sha256 IS NULL OR (length(declared_checksum_sha256) = 64 AND declared_checksum_sha256 = lower(declared_checksum_sha256)))");
 
-                            t.HasCheckConstraint("ck_file_reference_purpose", "purpose IN ('ONSITE_SURVEY_EVIDENCE', 'QUOTATION_DOCUMENT', 'CONTRACT_DOCUMENT', 'SIGNED_CONTRACT', 'INSTALLATION_EVIDENCE', 'KNOWLEDGE_DOCUMENT', 'PROJECT_DOCUMENT', 'SERVICE_EVIDENCE')");
+                            t.HasCheckConstraint("ck_file_reference_purpose", "purpose IN ('ONSITE_SURVEY_EVIDENCE', 'QUOTATION_DOCUMENT', 'CONTRACT_DOCUMENT', 'SIGNED_CONTRACT', 'INSTALLATION_EVIDENCE', 'KNOWLEDGE_DOCUMENT', 'PROJECT_DOCUMENT', 'SERVICE_EVIDENCE', 'PRODUCT_IMAGE', 'PACKAGE_IMAGE')");
 
                             t.HasCheckConstraint("ck_file_reference_sizes", "declared_size_bytes > 0 AND (verified_size_bytes IS NULL OR verified_size_bytes > 0)");
 
@@ -3406,6 +3413,12 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("project_id");
 
+                    b.Property<int>("Quantity")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("quantity");
+
                     b.Property<DateTimeOffset>("RegisteredAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("registered_at");
@@ -3419,7 +3432,6 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnName("replaces_asset_id");
 
                     b.Property<string>("SerialNumber")
-                        .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)")
                         .HasColumnName("serial_number");
@@ -3477,6 +3489,10 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
 
                     b.ToTable("installed_asset", null, t =>
                         {
+                            t.HasCheckConstraint("ck_installed_asset_lot_product", "serial_number IS NOT NULL OR product_id IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_installed_asset_quantity", "quantity BETWEEN 1 AND 10000 AND (serial_number IS NULL OR quantity = 1)");
+
                             t.HasCheckConstraint("ck_installed_asset_status", "status IN ('ACTIVE', 'PENDING_ACCEPTANCE', 'REPLACED')");
 
                             t.HasCheckConstraint("ck_installed_asset_type", "asset_type IN ('PANEL', 'INVERTER', 'BATTERY', 'METER', 'OTHER')");

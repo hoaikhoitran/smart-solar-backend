@@ -26,6 +26,7 @@ public static class InstallationWorkflowModuleExtensions
 
         services.AddScoped<SmartSolar.Modules.CustomerContracts.IContractUnitOfWork, ContractUnitOfWork>();
         services.AddScoped<SmartSolar.Modules.CustomerContracts.ContractHandlers>();
+        services.AddScoped<SmartSolar.Modules.CustomerContracts.ContractDocumentHandlers>();
 
         var payments = ConfigurationBinding.Bind<SmartSolar.Modules.Payments.PaymentOptions>(configuration, SmartSolar.Modules.Payments.PaymentOptions.SectionName);
         var payOs = ConfigurationBinding.Bind<SmartSolar.Infrastructure.ExternalProviders.PayOS.PayOsOptions>(configuration, SmartSolar.Infrastructure.ExternalProviders.PayOS.PayOsOptions.SectionName);

@@ -171,13 +171,6 @@ public sealed class AfterSalesUnitOfWork(AppDbContext db) : TransactionalUnitOfW
             && (requestId == null || t.RequestId == requestId) && (entitlementId == null || t.EntitlementId == entitlementId)
             && (t.Status == SalesTaskStatuses.Open || t.Status == SalesTaskStatuses.Claimed || t.Status == SalesTaskStatuses.InProgress), cancellationToken);
 
-    public async Task<IReadOnlyList<RefundRecord>> ListRefundsAsync(string? status, CancellationToken cancellationToken)
-        => (await Db.RefundRecords.AsNoTracking().Where(r => status == null || r.Status == status).ToListAsync(cancellationToken))
-            .OrderByDescending(r => r.CreatedAt).ToList();
-
-    public Task<RefundRecord?> FindRefundAsync(Guid refundId, bool track, CancellationToken cancellationToken)
-        => (track ? Db.RefundRecords : Db.RefundRecords.AsNoTracking()).FirstOrDefaultAsync(r => r.Id == refundId, cancellationToken);
-
     public async Task<IReadOnlyList<AfterSalesEvent>> ListEventsAsync(string subjectType, Guid subjectId, CancellationToken cancellationToken)
         => (await Db.AfterSalesEvents.AsNoTracking().Where(e => e.SubjectType == subjectType && e.SubjectId == subjectId).ToListAsync(cancellationToken))
             .OrderBy(e => e.CreatedAt).ToList();

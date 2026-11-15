@@ -72,23 +72,69 @@ public sealed class ServicePackageTests
     }
 
     [Fact]
-    public async Task Package_cancellation_before_activation_is_decided_by_a_manager_with_a_manual_refund()
+    public async Task Only_unpaid_packages_can_be_cancelled_a_paid_one_is_refused_because_refunds_are_not_handled()
     {
         await using var ctx = Create();
         var h = await ctx.HandedOverAsync();
         var care = await ctx.PackageAsync(h.AdminId, ServicePackageKinds.Maintenance);
-        await ctx.ActiveTermAsync(h, care);
+        var active = await ctx.ActiveTermAsync(h, care);
         var renewal = await ctx.ActiveTermAsync(h, care);   // paid, starts later
 
+        // Main flow: an unpaid order is cancelled at once by the customer.
         var unpaid = (await ctx.Packages().PurchaseAsync(h.CustomerId, new PurchaseInput(h.ContractId, null,
             (await ctx.PackageAsync(h.AdminId, ServicePackageKinds.DisasterProtection)).Id, false), None)).Value!;
         Assert.Equal(SubscriptionStatuses.Cancelled, (await ctx.Packages().RequestCancellationAsync(h.CustomerId, unpaid.SubscriptionIds[0], "No need", None)).Value!.Status);
 
-        Assert.Equal(SubscriptionStatuses.CancellationRequested, (await ctx.Packages().RequestCancellationAsync(h.CustomerId, renewal.Id, "Moving house", None)).Value!.Status);
-        Assert.Equal(AfterSalesErrorCodes.ValidationFailed, (await ctx.Packages().DecideCancellationAsync(h.ManagerId, renewal.Id, true, 3_000_000m, null, None)).ErrorCode);
-        Assert.Equal(SubscriptionStatuses.Cancelled, (await ctx.Packages().DecideCancellationAsync(h.ManagerId, renewal.Id, true, null, null, None)).Value!.Status);
-        var refund = Assert.Single(await ctx.Refunds().ListAsync(RefundStatuses.Approved, None));
-        Assert.Equal((renewal.Id, 2_000_000m), (refund.SubscriptionId!.Value, refund.ApprovedAmount!.Value));
+        // Business rule: paid and active packages are not cancelled online (that would owe a refund, which this system does not handle); nothing changes.
+        foreach (var subscriptionId in new[] { renewal.Id, active.Id })
+        {
+            var refused = await ctx.Packages().RequestCancellationAsync(h.CustomerId, subscriptionId, "Moving house", None);
+            Assert.Equal(AfterSalesErrorCodes.PaidCancellationUnsupported, refused.ErrorCode);
+            Assert.Equal(409, SmartSolar.Api.Controllers.OperationResultControllerBase.StatusFor(refused.ErrorCode!));
+        }
+        Assert.Equal(SubscriptionStatuses.Paid, (await ctx.Db.ServiceSubscriptions.AsNoTracking().SingleAsync(s => s.Id == renewal.Id)).Status);
+        Assert.Equal(SubscriptionStatuses.Active, (await ctx.Db.ServiceSubscriptions.AsNoTracking().SingleAsync(s => s.Id == active.Id)).Status);
+        Assert.Empty(await ctx.Db.RefundRecords.AsNoTracking().ToListAsync());
+
+        // A request made before this rule (CANCELLATION_REQUESTED in the database): the Manager can only reject it; approving is refused.
+        var tracked = await ctx.Db.ServiceSubscriptions.SingleAsync(s => s.Id == renewal.Id);
+        tracked.Status = SubscriptionStatuses.CancellationRequested;
+        tracked.CancellationRequestedAt = ctx.Clock.GetUtcNow();
+        tracked.CancellationReason = "Moving house";
+        await ctx.Db.SaveChangesAsync();
+        ctx.Db.ChangeTracker.Clear();
+        Assert.Equal(AfterSalesErrorCodes.PaidCancellationUnsupported, (await ctx.Packages().DecideCancellationAsync(h.ManagerId, renewal.Id, true, null, None)).ErrorCode);
+        Assert.Equal(SubscriptionStatuses.CancellationRequested, (await ctx.Db.ServiceSubscriptions.AsNoTracking().SingleAsync(s => s.Id == renewal.Id)).Status);
+        var rejected = (await ctx.Packages().DecideCancellationAsync(h.ManagerId, renewal.Id, false, "Keep the package", None)).Value!;
+        Assert.Equal((SubscriptionStatuses.Paid, (DateTimeOffset?)null), (rejected.Status, rejected.CancellationRequestedAt));
+        // Nothing left to decide: the state machine refuses a second decision.
+        Assert.Equal(AfterSalesErrorCodes.InvalidState, (await ctx.Packages().DecideCancellationAsync(h.ManagerId, renewal.Id, false, null, None)).ErrorCode);
+        Assert.Empty(await ctx.Db.RefundRecords.AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
+    public async Task The_sweep_cancels_unpaid_orders_of_a_cancelled_installation_but_never_a_paid_package()
+    {
+        await using var ctx = Create();
+        var (paid, project, _, _) = await InstallationTests.ScheduledAsync(ctx.Installation);
+        var admin = await ctx.Installation.Scheduling.Inner.SeedUserAsync("Admin");
+        var care = await ctx.PackageAsync(admin.Id, ServicePackageKinds.Maintenance);
+        var shield = await ctx.PackageAsync(admin.Id, ServicePackageKinds.DisasterProtection);
+        var paidOrder = (await ctx.Packages().PurchaseAsync(paid.CustomerId, new PurchaseInput(paid.ContractId, care.Id, null, false), None)).Value!;
+        await ctx.PayAsync(paidOrder.Checkout);
+        var unpaidOrder = (await ctx.Packages().PurchaseAsync(paid.CustomerId, new PurchaseInput(paid.ContractId, null, shield.Id, false), None)).Value!;
+        Assert.Equal(SubscriptionStatuses.Paid, (await ctx.Db.ServiceSubscriptions.AsNoTracking().SingleAsync(s => s.Id == paidOrder.SubscriptionIds[0])).Status);
+
+        // The installation is cancelled before handover.
+        var staff = (await ctx.Installation.Installations().GetForManagerAsync(project.ProjectId, None)).Value!;
+        Assert.True((await ctx.Installation.Installations().CancelAsync(paid.ManagerId, project.ProjectId, staff.Revision, "Customer moved", None)).Succeeded);
+        await ctx.Sweep().RunOnceAsync(None);
+
+        // The unpaid order is cancelled; the paid one is untouched (no automatic cancellation of paid orders, no refund record).
+        Assert.Equal(SubscriptionStatuses.Cancelled, (await ctx.Db.ServiceSubscriptions.AsNoTracking().SingleAsync(s => s.Id == unpaidOrder.SubscriptionIds[0])).Status);
+        var stillPaid = await ctx.Db.ServiceSubscriptions.AsNoTracking().SingleAsync(s => s.Id == paidOrder.SubscriptionIds[0]);
+        Assert.Equal((SubscriptionStatuses.Paid, (DateTimeOffset?)null, (DateTimeOffset?)null), (stillPaid.Status, stillPaid.StartsAt, stillPaid.CancelledAt));
+        Assert.Empty(await ctx.Db.RefundRecords.AsNoTracking().ToListAsync());
     }
 
     [Fact]

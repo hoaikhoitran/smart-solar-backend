@@ -64,12 +64,10 @@ public interface IAfterSalesUnitOfWork : ITransactionalUnitOfWork
     Task<MaintenanceEntitlement?> FindEntitlementAsync(Guid entitlementId, bool track, CancellationToken cancellationToken);
     Task<IReadOnlyList<MaintenanceEntitlement>> ListEntitlementsByStatusAsync(IReadOnlyCollection<string> statuses, CancellationToken cancellationToken);
 
-    // ---- sales queue, refunds, history
+    // ---- sales queue, history (money that PayOS confirmed but that could not be applied is kept as RefundRecord rows; see AfterSalesPaymentSettlement)
     Task<IReadOnlyList<SalesTask>> ListTasksAsync(string? status, Guid? assignedSalesUserId, CancellationToken cancellationToken);
     Task<SalesTask?> FindTaskAsync(Guid taskId, bool track, CancellationToken cancellationToken);
     Task<SalesTask?> FindOpenTaskAsync(Guid? requestId, Guid? entitlementId, string taskType, bool track, CancellationToken cancellationToken);
-    Task<IReadOnlyList<RefundRecord>> ListRefundsAsync(string? status, CancellationToken cancellationToken);
-    Task<RefundRecord?> FindRefundAsync(Guid refundId, bool track, CancellationToken cancellationToken);
     Task<IReadOnlyList<AfterSalesEvent>> ListEventsAsync(string subjectType, Guid subjectId, CancellationToken cancellationToken);
     Task<IReadOnlyList<AfterSalesNotification>> ListNotificationsAsync(Guid recipientUserId, CancellationToken cancellationToken);
     /// <summary>One notification of <paramref name="recipientUserId"/>; null when it does not exist or belongs to someone else.</summary>

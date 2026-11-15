@@ -56,8 +56,17 @@ public static class FilePurposes
     /// <summary>After-sales photos: technician visit evidence and customer fault / rejection photos.</summary>
     public const string ServiceEvidence = "SERVICE_EVIDENCE";
 
+    /// <summary>Catalog product gallery image uploaded from the Admin/Manager's device; served to anyone through <c>GET /api/files/public/{id}</c>.</summary>
+    public const string ProductImage = "PRODUCT_IMAGE";
+
+    /// <summary>Service package cover image uploaded from the Admin's device; served to anyone through <c>GET /api/files/public/{id}</c>.</summary>
+    public const string PackageImage = "PACKAGE_IMAGE";
+
     public static readonly IReadOnlyList<string> All =
-        [OnSiteSurveyEvidence, QuotationDocument, ContractDocument, SignedContract, InstallationEvidence, KnowledgeDocument, ProjectDocument, ServiceEvidence];
+        [OnSiteSurveyEvidence, QuotationDocument, ContractDocument, SignedContract, InstallationEvidence, KnowledgeDocument, ProjectDocument, ServiceEvidence, ProductImage, PackageImage];
+
+    /// <summary>The only purposes an anonymous visitor may read (catalog pictures). Every other purpose is served after authorization only.</summary>
+    public static readonly IReadOnlyList<string> PublicImagePurposes = [ProductImage, PackageImage];
 }
 
 public static class FileErrorCodes
@@ -86,9 +95,12 @@ public static class FileErrorCodes
     public const string UploadNotAllowed = "FILE_UPLOAD_NOT_ALLOWED";
 }
 
-/// <summary>Presigned URL outcomes that are not file-specific (both 503).</summary>
+/// <summary>Presigned URL outcomes that are not file-specific (all 503).</summary>
 public static class StorageErrorCodes
 {
     public const string NotConfigured = "STORAGE_NOT_CONFIGURED";
     public const string Unavailable = "STORAGE_UNAVAILABLE";
+
+    /// <summary><c>Storage:PublicFileBaseUrl</c> is not set: uploaded catalog images have no stable public address to store.</summary>
+    public const string PublicUrlNotConfigured = "STORAGE_PUBLIC_URL_NOT_CONFIGURED";
 }

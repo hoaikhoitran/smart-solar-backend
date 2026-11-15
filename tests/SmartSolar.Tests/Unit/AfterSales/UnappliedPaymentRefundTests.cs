@@ -9,7 +9,8 @@ namespace SmartSolar.Tests.Unit.AfterSales;
 
 /// <summary>
 /// Contract money that PayOS confirmed but that could not be applied (a second payment of an already paid contract, a wrong amount)
-/// becomes a PENDING_APPROVAL refund request in the Manager queue, in the confirmation transaction, exactly once. Amounts are SYNTHETIC.
+/// is recorded as an unapplied-money ledger row (refund_record, PENDING_APPROVAL) in the confirmation transaction, exactly once, so no
+/// collected money is ever only a log line. The system processes these rows no further (refunds are not handled). Amounts are SYNTHETIC.
 /// </summary>
 public sealed class UnappliedPaymentRefundTests
 {
@@ -33,7 +34,7 @@ public sealed class UnappliedPaymentRefundTests
         await payments.HandleWebhookAsync(payOs.Webhook(first.OrderCode, (long)first.Amount, "FT-1"), None);
         await payments.HandleWebhookAsync(payOs.Webhook(first.OrderCode, (long)first.Amount, "FT-1"), None);
 
-        var refund = Assert.Single(await ctx.Refunds().ListAsync(RefundStatuses.PendingApproval, None));
+        var refund = Assert.Single(await ctx.Db.RefundRecords.AsNoTracking().Where(r => r.Status == RefundStatuses.PendingApproval).ToListAsync());
         Assert.Equal((customer, first.PaymentAttemptId, first.Amount), (refund.CustomerUserId, refund.PaymentAttemptId!.Value, refund.OriginalAmount));
         Assert.Contains("already paid", refund.Reason);
         Assert.Equal(ContractStatuses.Paid, (await ctx.Db.CustomerContracts.AsNoTracking().SingleAsync(c => c.Id == contract.ContractId)).Status);
@@ -51,7 +52,7 @@ public sealed class UnappliedPaymentRefundTests
 
         Assert.Equal(PaymentStatuses.ReviewRequired, (await ctx.Db.PaymentAttempts.AsNoTracking().SingleAsync(a => a.Id == attempt.PaymentAttemptId)).Status);
         Assert.Equal(ContractStatuses.Signed, (await ctx.Db.CustomerContracts.AsNoTracking().SingleAsync(c => c.Id == contract.ContractId)).Status);
-        var refund = Assert.Single(await ctx.Refunds().ListAsync(RefundStatuses.PendingApproval, None));
+        var refund = Assert.Single(await ctx.Db.RefundRecords.AsNoTracking().Where(r => r.Status == RefundStatuses.PendingApproval).ToListAsync());
         Assert.Equal(1_000_000m, refund.OriginalAmount);
     }
 }

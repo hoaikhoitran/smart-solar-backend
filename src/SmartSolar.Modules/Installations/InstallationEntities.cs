@@ -122,7 +122,12 @@ public sealed class InstallationAcceptance
     public string? Reason { get; set; }
 }
 
-/// <summary>Equipment actually installed (no invented data: entered by the responsible technician from the real devices).</summary>
+/// <summary>
+/// Equipment actually installed (no invented data: entered by the responsible technician from the real devices). A row is either ONE
+/// serialised device (<see cref="SerialNumber"/> set, <see cref="Quantity"/> 1) or a LOT of identical units of one catalog product that the
+/// technician confirmed by count (<see cref="SerialNumber"/> null, <see cref="Quantity"/> ≥ 1), e.g. "100 × contracted panel". No serial
+/// number is ever invented for a lot.
+/// </summary>
 public sealed class InstalledAsset
 {
     public Guid Id { get; set; }
@@ -131,7 +136,13 @@ public sealed class InstalledAsset
     public Guid? ProductId { get; set; }
     public string Manufacturer { get; set; } = null!;
     public string Model { get; set; } = null!;
-    public string SerialNumber { get; set; } = null!;
+
+    /// <summary>The device's serial number; null for a lot confirmed by quantity.</summary>
+    public string? SerialNumber { get; set; }
+
+    /// <summary>Units this row stands for: 1 for a serialised device, the confirmed count for a lot.</summary>
+    public int Quantity { get; set; } = 1;
+
     public string? PositionCode { get; set; }
     public int? WarrantyMonths { get; set; }
     public Guid RegisteredByUserId { get; set; }
@@ -334,6 +345,15 @@ public static class AssetTypes
     public static readonly IReadOnlyList<string> All = [Panel, Inverter, "BATTERY", "METER", "OTHER"];
 }
 
+public static class InstallationLimits
+{
+    /// <summary>Entries (serialised devices or lots) accepted in one registration.</summary>
+    public const int MaxAssetsPerRequest = 500;
+
+    /// <summary>Units one lot may confirm at once (a residential roof carries far fewer; the bound only stops typos such as 1000 instead of 100).</summary>
+    public const int MaxLotQuantity = 10_000;
+}
+
 public static class InstallationEventTypes
 {
     public const string ProjectCreated = "PROJECT_CREATED";
@@ -380,6 +400,8 @@ public static class InstallationErrorCodes
     public const string EvidenceRequired = "INSTALLATION_EVIDENCE_REQUIRED";
     public const string AssetsRequired = "INSTALLATION_ASSETS_REQUIRED";
     public const string DuplicateSerial = "INSTALLATION_DUPLICATE_SERIAL";
+    /// <summary>A quantity confirmation (no serial) is invalid: no catalog product, quantity outside 1–<see cref="InstallationLimits.MaxLotQuantity"/>, or a quantity other than 1 together with a serial (400).</summary>
+    public const string AssetQuantityInvalid = "INSTALLATION_ASSET_QUANTITY_VALIDATION_FAILED";
     /// <summary>Waiving a prerequisite (not required / not applicable) needs a reason in the note (400).</summary>
     public const string WaiverReasonRequired = "INSTALLATION_CHECKLIST_WAIVER_REASON_REQUIRED";
     /// <summary>An asset names an unknown/deleted catalog product, or a product of another kind (e.g. a PANEL that is an inverter) (400).</summary>

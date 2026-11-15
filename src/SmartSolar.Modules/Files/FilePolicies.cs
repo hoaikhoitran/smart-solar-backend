@@ -30,6 +30,14 @@ public sealed class StorageOptions
 
     public S3VerificationOptions S3 { get; set; } = new();
 
+    /// <summary>
+    /// Absolute https origin through which anonymous visitors reach <c>GET /api/files/public/{fileId}</c> (normally the frontend origin,
+    /// whose <c>/api</c> proxy forwards to this API). Uploaded catalog images are stored as <c>{PublicFileBaseUrl}/api/files/public/{id}</c>,
+    /// so the bucket stays private: the endpoint redirects to a short-lived presigned URL. Empty = device uploads for catalog images are off
+    /// (503 STORAGE_PUBLIC_URL_NOT_CONFIGURED); https links to externally hosted pictures keep working.
+    /// </summary>
+    public string PublicFileBaseUrl { get; set; } = "";
+
     public IReadOnlyList<string> Buckets()
     {
         var list = AllowedBuckets.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
@@ -91,6 +99,8 @@ public static partial class FilePolicies
         [FilePurposes.KnowledgeDocument] = new(FilePurposes.KnowledgeDocument, "knowledge/", [Pdf, Docx, PlainText, Markdown], 50 * Mb, true),
         [FilePurposes.ProjectDocument] = new(FilePurposes.ProjectDocument, "project-documents/", [Pdf, Jpeg, Png], 20 * Mb, true),
         [FilePurposes.ServiceEvidence] = new(FilePurposes.ServiceEvidence, "after-sales/", [Jpeg, Png, Webp], 15 * Mb, true),
+        [FilePurposes.ProductImage] = new(FilePurposes.ProductImage, "products/", [Jpeg, Png, Webp], 10 * Mb, true),
+        [FilePurposes.PackageImage] = new(FilePurposes.PackageImage, "packages/", [Jpeg, Png, Webp], 10 * Mb, true),
     };
 
     /// <summary>
@@ -107,6 +117,9 @@ public static partial class FilePolicies
         [FilePurposes.SignedContract] = [RoleCodes.Customer],
         [FilePurposes.ProjectDocument] = [RoleCodes.Manager, RoleCodes.Admin],
         [FilePurposes.KnowledgeDocument] = [RoleCodes.Admin],
+        // The roles that manage the catalog (AdminProductsController) and the package catalog (AdminAfterSalesController).
+        [FilePurposes.ProductImage] = [RoleCodes.Admin, RoleCodes.Manager],
+        [FilePurposes.PackageImage] = [RoleCodes.Admin],
     };
 
     /// <summary>Declared content type, file name extension and size against the purpose; null when they are acceptable.</summary>

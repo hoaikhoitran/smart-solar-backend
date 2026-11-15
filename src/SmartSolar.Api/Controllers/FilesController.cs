@@ -58,3 +58,31 @@ public sealed class FilesController(FileService files, FileUploadUrlService uplo
 
     private bool IsStaff() => IsInRole(RoleCodes.Admin) || IsInRole(RoleCodes.Manager) || IsInRole(RoleCodes.Sales);
 }
+
+/// <summary>
+/// Anonymous catalog pictures: a product gallery image or a service package cover that staff uploaded from their device is stored on the
+/// product / package as <c>{Storage:PublicFileBaseUrl}/api/files/public/{fileId}</c>; this endpoint redirects to a short-lived presigned URL
+/// of the VERIFIED object, so the bucket stays private. Only PRODUCT_IMAGE and PACKAGE_IMAGE files are served; anything else is 404.
+/// </summary>
+[ApiController]
+[Route("api/files/public")]
+[AllowAnonymous]
+public sealed class PublicFilesController(PublicFileService files) : OperationResultControllerBase
+{
+    /// <summary>Browsers may cache the redirect for a little less than the presigned URL's lifetime; nothing of the URL is stored by the API.</summary>
+    [HttpGet("{fileId:guid}")]
+    [ProducesResponseType(StatusCodes.Status302Found)]
+    [EnableRateLimiting(RateLimitingExtensions.FilesPublicReadPolicy)]
+    public async Task<IActionResult> Get(Guid fileId, CancellationToken cancellationToken)
+    {
+        var signed = await files.CreateReadUrlAsync(fileId, cancellationToken);
+        if (!signed.Succeeded)
+        {
+            NoStore();
+            return Respond(signed);
+        }
+        var seconds = (int)Math.Clamp((signed.Value!.ExpiresAt - DateTimeOffset.UtcNow).TotalSeconds - 60, 0, 240);
+        Response.Headers.CacheControl = seconds > 0 ? $"public, max-age={seconds}" : "no-store, max-age=0";
+        return Redirect(signed.Value.Url);
+    }
+}

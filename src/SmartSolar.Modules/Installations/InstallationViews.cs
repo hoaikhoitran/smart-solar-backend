@@ -8,7 +8,9 @@ public sealed record EvidenceView(Guid EvidenceId, Guid FileId, int Round, strin
 /// <param name="DecidedBy">CUSTOMER, STAFF (a Manager returned the report to rework) or null while pending.</param>
 public sealed record AcceptanceView(int Round, DateTimeOffset RequestedAt, string CompletionReport, string Decision, DateTimeOffset? DecidedAt, string? Reason,
     string? DecidedBy = null);
-public sealed record AssetView(Guid AssetId, string AssetType, Guid? ProductId, string Manufacturer, string Model, string SerialNumber, string? PositionCode, int? WarrantyMonths);
+/// <summary>One registered row: a serialised device (<see cref="SerialNumber"/> set, <see cref="Quantity"/> 1) or a lot confirmed by count (<see cref="SerialNumber"/> null).</summary>
+public sealed record AssetView(Guid AssetId, string AssetType, Guid? ProductId, string Manufacturer, string Model, string? SerialNumber, string? PositionCode, int? WarrantyMonths,
+    int Quantity = 1, DateTimeOffset? RegisteredAt = null);
 public sealed record ChecklistItemView(Guid ItemId, string Code, string Title, bool IsRequired, string Status, Guid? EvidenceFileId, string? Note, DateTimeOffset? VerifiedAt);
 public sealed record InstallationEventView(string EventType, Guid ActorUserId, string? FromStatus, string? ToStatus, string? Detail, DateTimeOffset CreatedAt);
 public sealed record AssignmentView(Guid AssignmentId, Guid TechnicianUserId, string TechnicianName, DateTimeOffset StartsAt, DateTimeOffset EndsAt, string Status,
@@ -34,12 +36,13 @@ public sealed record InstallationProjectSummary(Guid ProjectId, Guid ContractId,
 /// The responsible technician's view. <see cref="CanStart"/>/<see cref="StartBlockedReason"/> replace the staff checklist
 /// (the checklist itself is staff-only).
 /// </summary>
+/// <param name="RequiresPanelAndInverterAssets">The completion report needs at least one PANEL and one INVERTER row (<c>Installation:RequirePanelAndInverterAssets</c>); the client shows what is missing before submitting.</param>
 public sealed record InstallationTechnicianView(
     Guid ProjectId, string Status, string MyAssignmentStatus, Guid AssignmentId, DateTimeOffset StartsAt, DateTimeOffset EndsAt,
     string? ZoneName, InstallationSiteInfo? Site, DateTimeOffset? StartedAt, DateTimeOffset? AcceptanceRequestedAt, DateTimeOffset? CompletedAt,
     int CurrentRound, int Revision, bool CanStart, string? StartBlockedReason,
     IReadOnlyList<EvidenceView> Evidence, IReadOnlyList<AssetView> Assets, IReadOnlyList<AcceptanceView> Acceptances,
-    EquipmentComparisonView? Equipment = null);
+    EquipmentComparisonView? Equipment = null, bool RequiresPanelAndInverterAssets = true);
 
 /// <summary>The customer's view: the technician's name only once they accepted the job.</summary>
 public sealed record InstallationCustomerView(
@@ -59,5 +62,5 @@ public sealed record InstallationCandidateView(Guid TechnicianUserId, string Ful
 /// <summary>Handover summary: the integration contract for a future warranty module (no warranty system exists yet).</summary>
 public sealed record HandoverView(Guid ProjectId, Guid ContractId, DateTimeOffset HandoverAt, string? TechnicianName, IReadOnlyList<HandoverAssetView> Assets,
     IReadOnlyList<EvidenceView> Evidence, IReadOnlyList<AcceptanceView> Acceptances);
-public sealed record HandoverAssetView(string AssetType, Guid? ProductId, string Manufacturer, string Model, string SerialNumber, string? PositionCode,
-    int? WarrantyMonths, DateOnly? WarrantyEndsOn);
+public sealed record HandoverAssetView(string AssetType, Guid? ProductId, string Manufacturer, string Model, string? SerialNumber, string? PositionCode,
+    int? WarrantyMonths, DateOnly? WarrantyEndsOn, int Quantity = 1);

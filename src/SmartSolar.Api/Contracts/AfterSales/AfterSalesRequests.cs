@@ -37,18 +37,23 @@ public sealed record CoverageRequest(IReadOnlyList<CoverageDecisionRequest>? Dec
 public sealed record DecisionRequest(bool Approve, string? Reason);
 public sealed record DuplicateRequest(Guid OriginalRequestId, string? Reason);
 public sealed record DisputeReviewRequest(bool RequireRework, string? Note);
-public sealed record CancellationDecisionRequest(bool Approve, decimal NonRecoverableAmount, string? Note);
-public sealed record StopWorkRequest(string? Reason, decimal RefundAmount);
+/// <summary>Approval cancels unpaid work only; paid work answers 409 AFTER_SALES_PAID_CANCELLATION_UNSUPPORTED (refunds are not handled in this system).</summary>
+public sealed record CancellationDecisionRequest(bool Approve, string? Note);
+public sealed record StopWorkRequest(string? Reason);
 public sealed record AssetCorrectionRequest(string? Manufacturer, string? Model, string? SerialNumber, string? PositionCode, string? Specifications, string? Reason);
-public sealed record PackageCancellationDecisionRequest(bool Approve, decimal? RefundAmount, string? Note);
+/// <summary>Only a rejection is possible: a paid package cannot be cancelled without a refund decision (409 AFTER_SALES_PAID_CANCELLATION_UNSUPPORTED).</summary>
+public sealed record PackageCancellationDecisionRequest(bool Approve, string? Note);
 public sealed record AssignTaskRequest(Guid SalesUserId, string? Reason);
-public sealed record RefundDecisionRequest(bool Approve, decimal? ApprovedAmount, string? Note);
 
 // ---- Admin
+/// <summary>
+/// Cover picture: <c>imageUrl</c> (https link, or the stored address of an earlier upload) or <c>imageFileId</c> (a VERIFIED PACKAGE_IMAGE file the
+/// caller uploaded; the API stores its public address). Both empty = no picture.
+/// </summary>
 public sealed record PackageRequest(string? Kind, string? Name, string? Description, decimal Price, int DurationMonths, IReadOnlyList<int>? VisitMonths,
-    IReadOnlyList<string>? CoveredDisasterTypes, decimal? CoveragePercent, decimal? PerIncidentLimit, decimal? TermLimit, bool IsActive, int Revision = 0);
+    IReadOnlyList<string>? CoveredDisasterTypes, decimal? CoveragePercent, decimal? PerIncidentLimit, decimal? TermLimit, bool IsActive, int Revision = 0,
+    string? ImageUrl = null, Guid? ImageFileId = null);
 public sealed record WarrantyOptionRequest(string? Kind, int Months, bool IsActive, bool IsDefault);
-public sealed record RecordRefundRequest(DateTimeOffset RefundedAt, string? Reference);
 
 /// <summary>Verified manufacturer-warranty activation: ISO 8601 date with offset, a verified PROJECT_DOCUMENT file, and a reason.</summary>
 public sealed record WarrantyActivationRequest(string? ActivatedAt, Guid? EvidenceFileId, string? Reason);

@@ -81,7 +81,11 @@ public sealed record UpdateProductRequest(
 
 public sealed record ChangeProductStatusRequest(string? Status);
 
-public sealed record AddProductImageRequest(string? Url, string? AltText, bool? MakePrimary);
+/// <summary>
+/// Either <c>url</c> (an https link to a hosted picture) or <c>fileId</c> (a VERIFIED PRODUCT_IMAGE file uploaded through
+/// <c>POST /api/files/presigned-upload</c>; the API stores its public address <c>{Storage:PublicFileBaseUrl}/api/files/public/{fileId}</c>).
+/// </summary>
+public sealed record AddProductImageRequest(string? Url, string? AltText, bool? MakePrimary, Guid? FileId = null);
 
 /// <summary>Must list exactly the product's current image ids, in the new order.</summary>
 public sealed record ReorderProductImagesRequest(IReadOnlyList<Guid>? ImageIds);

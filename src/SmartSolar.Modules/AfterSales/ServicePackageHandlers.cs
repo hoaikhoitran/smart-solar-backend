@@ -9,8 +9,9 @@ using SmartSolar.Modules.SystemSettings;
 
 namespace SmartSolar.Modules.AfterSales;
 
+/// <param name="ImageUrl">Cover picture: absolute https URL (the public address of an uploaded PACKAGE_IMAGE file, or a hosted picture); null removes it.</param>
 public sealed record PackageInput(string? Kind, string? Name, string? Description, decimal Price, int DurationMonths, IReadOnlyList<int>? VisitMonths,
-    IReadOnlyList<string>? CoveredDisasterTypes, decimal? CoveragePercent, decimal? PerIncidentLimit, decimal? TermLimit, bool IsActive);
+    IReadOnlyList<string>? CoveredDisasterTypes, decimal? CoveragePercent, decimal? PerIncidentLimit, decimal? TermLimit, bool IsActive, string? ImageUrl = null);
 
 /// <summary>
 /// Packages to buy for one installation contract. When <see cref="IncludeContract"/> is true the SIGNED contract is paid in the same
@@ -86,15 +87,20 @@ public sealed class SubscriptionTerms(IAfterSalesUnitOfWork data, ISchedulingPol
 
 /// <summary>
 /// Service packages: Admin catalog and warranty duration options (changes affect future purchases only), customer purchases (standalone
-/// or combined with the contract payment), and cancellation before activation (Manager decision, manual refund).
+/// or combined with the contract payment), and cancellation of UNPAID orders. A paid package is not cancelled online or by a Manager: that
+/// would owe the customer money and refunds are not handled in this system.
 /// </summary>
 public sealed class ServicePackageHandlers(
     IAfterSalesUnitOfWork data,
     PaymentService payments,
     ISchedulingPolicyProvider policies,
     AfterSalesViews views,
-    TimeProvider time)
+    TimeProvider time,
+    Catalog.ProductImages.CatalogOptions? catalog = null)
 {
+    /// <summary>Package covers follow the product image URL rules (https, no credentials, optional host allow-list).</summary>
+    private readonly Catalog.ProductImages.CatalogOptions _catalog = catalog ?? new Catalog.ProductImages.CatalogOptions();
+
     // ================================================================== Admin: catalog
 
     public async Task<IReadOnlyList<PackageView>> ListPackagesAsync(string? kind, bool activeOnly, CancellationToken cancellationToken)
@@ -102,7 +108,7 @@ public sealed class ServicePackageHandlers(
 
     public async Task<OperationResult<PackageView>> CreatePackageAsync(Guid adminUserId, PackageInput input, CancellationToken cancellationToken)
     {
-        if (ValidatePackage(input) is { } error) return OperationResult<PackageView>.Fail(AfterSalesErrorCodes.ValidationFailed, error);
+        if (ValidatePackage(input, _catalog) is { } error) return OperationResult<PackageView>.Fail(AfterSalesErrorCodes.ValidationFailed, error);
         var now = time.GetUtcNow();
         var package = new ServicePackage { Id = Guid.NewGuid(), Kind = input.Kind!, CreatedAt = now };
         Apply(package, input, now);
@@ -119,7 +125,7 @@ public sealed class ServicePackageHandlers(
     /// <summary>Edits a package (kind is fixed). Existing purchases keep their own snapshot; only future purchases see the change.</summary>
     public async Task<OperationResult<PackageView>> UpdatePackageAsync(Guid adminUserId, Guid packageId, PackageInput input, int expectedRevision, CancellationToken cancellationToken)
     {
-        if (ValidatePackage(input) is { } error) return OperationResult<PackageView>.Fail(AfterSalesErrorCodes.ValidationFailed, error);
+        if (ValidatePackage(input, _catalog) is { } error) return OperationResult<PackageView>.Fail(AfterSalesErrorCodes.ValidationFailed, error);
         try
         {
             var result = await data.ExecuteInTransactionAsync<OperationResult<PackageView>>(async token =>
@@ -144,10 +150,12 @@ public sealed class ServicePackageHandlers(
         }
     }
 
-    private static string? ValidatePackage(PackageInput input)
+    private static string? ValidatePackage(PackageInput input, Catalog.ProductImages.CatalogOptions catalog)
     {
         if (!ServicePackageKinds.All.Contains(input.Kind ?? "")) return $"Kind must be one of {string.Join(", ", ServicePackageKinds.All)}.";
         if (Text.Trim(input.Name, 150) is null) return "A name is required.";
+        if (!string.IsNullOrWhiteSpace(input.ImageUrl) && Catalog.ProductImages.ProductImageRules.UrlError(input.ImageUrl, catalog) is { } imageError)
+            return $"Cover image: {imageError}";
         if (input.Price <= 0 || decimal.Truncate(input.Price) != input.Price) return "The price is a whole VND amount above 0.";
         if (input.DurationMonths is < 1 or > 120) return "The duration is between 1 and 120 months.";
         if (input.Kind == ServicePackageKinds.Maintenance)
@@ -179,13 +187,14 @@ public sealed class ServicePackageHandlers(
         package.CoveragePercent = maintenance ? null : input.CoveragePercent;
         package.PerIncidentLimit = maintenance ? null : input.PerIncidentLimit;
         package.TermLimit = maintenance ? null : input.TermLimit;
+        package.ImageUrl = string.IsNullOrWhiteSpace(input.ImageUrl) ? null : Catalog.ProductImages.ProductImageRules.NormalizeUrl(input.ImageUrl);
         package.IsActive = input.IsActive;
         package.UpdatedAt = now;
     }
 
     private static string Describe(ServicePackage p)
         => $"{p.Name}; {p.Price:0} VND; {p.DurationMonths} months; visits {p.VisitMonths}; types {p.CoveredDisasterTypes}; {p.CoveragePercent}% ; "
-           + $"per incident {p.PerIncidentLimit:0}; term {p.TermLimit:0}; active {p.IsActive}";
+           + $"per incident {p.PerIncidentLimit:0}; term {p.TermLimit:0}; image {(p.ImageUrl is null ? "none" : "set")}; active {p.IsActive}";
 
     // ================================================================== Admin: warranty durations
 
@@ -304,9 +313,10 @@ public sealed class ServicePackageHandlers(
     // ================================================================== cancellation before activation
 
     /// <summary>
-    /// Before activation the customer may cancel one purchased package. An unpaid order is cancelled at once; its PayOS checkout is one
+    /// Before payment the customer may cancel one purchased package. An unpaid order is cancelled at once; its PayOS checkout is one
     /// link for every line, so the other unpaid packages of that checkout become CHECKOUT_EXPIRED (buy them again) and a contract line is
-    /// simply paid again. A paid package becomes a cancellation request for a Manager. Active packages cannot be cancelled online.
+    /// simply paid again. A paid or active package cannot be cancelled online (cancelling paid money needs a refund decision that this
+    /// system does not handle): 409 AFTER_SALES_PAID_CANCELLATION_UNSUPPORTED.
     /// </summary>
     public async Task<OperationResult<SubscriptionView>> RequestCancellationAsync(Guid customerUserId, Guid subscriptionId, string? reason, CancellationToken cancellationToken)
     {
@@ -332,14 +342,9 @@ public sealed class ServicePackageHandlers(
                     AfterSalesHistory.Record(data, EventSubjects.Subscription, s.Id, "CANCELLED_UNPAID", customerUserId, why, now);
                     await ReleaseSiblingsOfCancelledCheckoutAsync(s, now, token);
                     return OperationResult<bool>.Ok(true);
-                case SubscriptionStatuses.Paid:
-                    s.Status = SubscriptionStatuses.CancellationRequested;
-                    s.CancellationRequestedAt = now;
-                    s.CancellationReason = why;
-                    AfterSalesHistory.Record(data, EventSubjects.Subscription, s.Id, "CANCELLATION_REQUESTED", customerUserId, why, now);
-                    AfterSalesHistory.NotifyAll(data, await data.ListActiveUserIdsWithRoleAsync(RoleCodes.Manager, CancellationToken.None), "PACKAGE_CANCELLATION_REQUESTED",
-                        $"A customer asks to cancel {s.PackageName} before activation.", now, subscriptionId: s.Id);
-                    return OperationResult<bool>.Ok(true);
+                case SubscriptionStatuses.Paid or SubscriptionStatuses.CancellationRequested or SubscriptionStatuses.Active:
+                    return OperationResult<bool>.Fail(AfterSalesErrorCodes.PaidCancellationUnsupported,
+                        "A paid package cannot be cancelled online: refunds are not handled in this system. Contact SmartSolar.");
                 default:
                     return OperationResult<bool>.Fail(AfterSalesErrorCodes.InvalidState, $"A {s.Status} package cannot be cancelled online.");
             }
@@ -361,49 +366,24 @@ public sealed class ServicePackageHandlers(
         }
     }
 
-    /// <summary>Manager decision on a pre-activation cancellation; approval records an APPROVED manual refund (default: the full price).</summary>
-    public async Task<OperationResult<SubscriptionView>> DecideCancellationAsync(Guid managerUserId, Guid subscriptionId, bool approve, decimal? refundAmount, string? note,
+    /// <summary>
+    /// Manager decision on a cancellation request that a customer made before this system stopped handling refunds (status
+    /// CANCELLATION_REQUESTED). Rejecting puts the package back to PAID. Approving is refused: it would cancel a paid package and owe the
+    /// customer money, which needs a business decision outside this system.
+    /// </summary>
+    public async Task<OperationResult<SubscriptionView>> DecideCancellationAsync(Guid managerUserId, Guid subscriptionId, bool approve, string? note,
         CancellationToken cancellationToken)
-        => await SubscriptionMutateAsync(subscriptionId, async (s, now, token) =>
+        => await SubscriptionMutateAsync(subscriptionId, (s, now, _) =>
         {
-            if (s.Status != SubscriptionStatuses.CancellationRequested) return OperationResult<bool>.Fail(AfterSalesErrorCodes.InvalidState, "No cancellation is waiting.");
-            if (!approve)
-            {
-                s.Status = SubscriptionStatuses.Paid;
-                s.CancellationRequestedAt = null;
-                AfterSalesHistory.Record(data, EventSubjects.Subscription, s.Id, "CANCELLATION_REJECTED", managerUserId, Text.Trim(note, 500), now);
-                return OperationResult<bool>.Ok(true);
-            }
-            var amount = refundAmount ?? s.Price;
-            if (amount < 0 || amount > s.Price || decimal.Truncate(amount) != amount)
-                return OperationResult<bool>.Fail(AfterSalesErrorCodes.ValidationFailed, "The refund is a whole VND amount up to the price paid.");
-            await CancelPaidAsync(s, managerUserId, amount, $"Package cancelled before activation: {s.CancellationReason}", now, token);
-            return OperationResult<bool>.Ok(true);
+            if (s.Status != SubscriptionStatuses.CancellationRequested) return Task.FromResult(OperationResult<bool>.Fail(AfterSalesErrorCodes.InvalidState, "No cancellation is waiting."));
+            if (approve)
+                return Task.FromResult(OperationResult<bool>.Fail(AfterSalesErrorCodes.PaidCancellationUnsupported,
+                    "A paid package cannot be cancelled: refunds are not handled in this system. Reject the request or settle the money outside the system first."));
+            s.Status = SubscriptionStatuses.Paid;
+            s.CancellationRequestedAt = null;
+            AfterSalesHistory.Record(data, EventSubjects.Subscription, s.Id, "CANCELLATION_REJECTED", managerUserId, Text.Trim(note, 500), now);
+            return Task.FromResult(OperationResult<bool>.Ok(true));
         }, cancellationToken);
-
-    /// <summary>Cancels a paid, not yet active term (customer request or installation cancelled before handover) with an approved refund.</summary>
-    public async Task CancelPaidAsync(ServiceSubscription s, Guid? managerUserId, decimal refundAmount, string reason, DateTimeOffset now, CancellationToken token)
-    {
-        s.Status = SubscriptionStatuses.Cancelled;
-        s.CancelledAt = now;
-        foreach (var entitlement in await data.ListEntitlementsAsync(s.Id, true, token))
-        {
-            entitlement.Status = EntitlementStatuses.Expired;
-            entitlement.UpdatedAt = now;
-            entitlement.Revision++;
-        }
-        var refund = new RefundRecord
-        {
-            Id = Guid.NewGuid(), CustomerUserId = s.CustomerUserId, PaymentAttemptId = s.CurrentPaymentAttemptId, SubscriptionId = s.Id, OriginalAmount = s.Price,
-            ApprovedAmount = managerUserId is null ? null : refundAmount, Reason = Text.Trim(reason, 1000)!,
-            Status = managerUserId is null ? RefundStatuses.PendingApproval : RefundStatuses.Approved, ApprovedByUserId = managerUserId,
-            ApprovedAt = managerUserId is null ? null : now, CreatedAt = now, UpdatedAt = now,
-        };
-        data.Add(refund);
-        AfterSalesHistory.Record(data, EventSubjects.Subscription, s.Id, "CANCELLED", managerUserId, reason, now);
-        AfterSalesHistory.Record(data, EventSubjects.Refund, refund.Id, managerUserId is null ? "REFUND_REQUESTED" : "REFUND_APPROVED", managerUserId,
-            $"{refund.ApprovedAmount ?? refund.OriginalAmount:0} VND for {s.PackageName}", now);
-    }
 
     private async Task<OperationResult<SubscriptionView>> SubscriptionMutateAsync(Guid subscriptionId,
         Func<ServiceSubscription, DateTimeOffset, CancellationToken, Task<OperationResult<bool>>> change, CancellationToken cancellationToken)

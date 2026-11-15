@@ -283,12 +283,30 @@ public sealed class ServiceCustomerHandlers(
             foreach (var paid in (await data.ListQuotationsAsync(request.Id, false, token)).Where(q => q.Status == QuotationStatuses.Paid && q.DisasterSupportAmount > 0))
                 AfterSalesWorkflow.Consume(data, claim, term, paid.DisasterSupportAmount, now);
 
-        // Replacement equipment becomes the active asset; the replaced asset stays as history.
+        // Replacement equipment becomes the active asset; the replaced asset stays as history. When one unit of a lot confirmed by count was
+        // replaced, that unit is split off the lot as its own REPLACED row (the installed count of the handover never changes) and the
+        // replacement's lineage points at that unit.
         var assets = await data.ListAssetsAsync(request.ProjectId, true, token);
         foreach (var replacement in assets.Where(a => a.ServiceRequestId == request.Id && a.Status == InstalledAssetStatuses.PendingAcceptance))
         {
             replacement.Status = InstalledAssetStatuses.Active;
-            if (assets.FirstOrDefault(a => a.Id == replacement.ReplacesAssetId) is { } old) old.Status = InstalledAssetStatuses.Replaced;
+            if (assets.FirstOrDefault(a => a.Id == replacement.ReplacesAssetId) is { } old)
+            {
+                if (old.Quantity > 1)
+                {
+                    old.Quantity -= 1;
+                    var unit = new InstalledAsset
+                    {
+                        Id = Guid.NewGuid(), ProjectId = old.ProjectId, AssetType = old.AssetType, ProductId = old.ProductId, Manufacturer = old.Manufacturer, Model = old.Model,
+                        SerialNumber = null, Quantity = 1, PositionCode = old.PositionCode, WarrantyMonths = old.WarrantyMonths, WarrantySource = old.WarrantySource,
+                        WarrantyStartsAt = old.WarrantyStartsAt, WarrantyEndsAt = old.WarrantyEndsAt, RegisteredByUserId = old.RegisteredByUserId, RegisteredAt = old.RegisteredAt,
+                        Status = InstalledAssetStatuses.Replaced,
+                    };
+                    data.Add(unit);
+                    replacement.ReplacesAssetId = unit.Id;
+                }
+                else old.Status = InstalledAssetStatuses.Replaced;
+            }
             AfterSalesHistory.Record(data, EventSubjects.Asset, replacement.Id, "ASSET_REPLACEMENT_ACTIVATED", customerUserId,
                 $"{replacement.SerialNumber} replaces {replacement.ReplacesAssetId}", now);
         }

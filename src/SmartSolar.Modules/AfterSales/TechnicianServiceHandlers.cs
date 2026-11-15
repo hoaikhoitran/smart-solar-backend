@@ -352,7 +352,8 @@ public sealed class TechnicianServiceHandlers(IAfterSalesUnitOfWork data, FileSe
                 // The replacement is registered by the technician who installed it, not by the original installer.
                 ServiceRequestId = request.Id, Specifications = specifications, RegisteredByUserId = technicianUserId, RegisteredAt = now,
             });
-            AfterSalesHistory.Record(data, EventSubjects.Asset, old.Id, "ASSET_REPLACEMENT_RECORDED", technicianUserId, $"{old.SerialNumber} → {serial} ({request.RequestNumber})", now);
+            AfterSalesHistory.Record(data, EventSubjects.Asset, old.Id, "ASSET_REPLACEMENT_RECORDED", technicianUserId,
+                $"{old.SerialNumber ?? $"one of {old.Quantity} {old.AssetType} units without serial"} → {serial} ({request.RequestNumber})", now);
         }
         return null;
     }

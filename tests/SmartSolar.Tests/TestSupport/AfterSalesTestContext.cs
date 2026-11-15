@@ -74,10 +74,13 @@ public sealed class AfterSalesTestContext : IAsyncDisposable
         return new(data, Payments(db), Installation.Scheduling.Policies, Views(data), Clock);
     }
 
+    /// <summary>Package cover URL rules follow the catalog image settings (default: any https host).</summary>
+    public SmartSolar.Modules.Catalog.ProductImages.CatalogOptions CatalogOptions { get; } = new();
+
     public ServicePackageHandlers Packages(AppDbContext? db = null)
     {
         var data = Data(db);
-        return new(data, Payments(db), Installation.Scheduling.Policies, Views(data), Clock);
+        return new(data, Payments(db), Installation.Scheduling.Policies, Views(data), Clock, CatalogOptions);
     }
 
     public SalesTaskHandlers Tasks(AppDbContext? db = null)
@@ -86,17 +89,11 @@ public sealed class AfterSalesTestContext : IAsyncDisposable
         return new(data, Views(data), Clock);
     }
 
-    public RefundHandlers Refunds()
-    {
-        var data = Data();
-        return new(data, Views(data), Clock);
-    }
-
     public AfterSalesSweepService Sweep()
     {
         var data = Data();
         var terms = Terms(data);
-        return new(data, Payments(), terms, Packages(), Installation.Scheduling.Policies, Installation.Scheduling.Calendar, Clock, NullLogger<AfterSalesSweepService>.Instance);
+        return new(data, Payments(), terms, Installation.Scheduling.Policies, Installation.Scheduling.Calendar, Clock, NullLogger<AfterSalesSweepService>.Instance);
     }
 
     public AfterSalesDashboard Dashboard() => new(new AfterSalesReportQueries(Db), Installation.Scheduling.Calendar, Clock);

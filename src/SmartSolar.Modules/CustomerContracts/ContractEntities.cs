@@ -135,6 +135,8 @@ public static class ContractErrorCodes
     public const string StaleRevision = "CONTRACT_STALE_REVISION";
     public const string CanonicalHashMismatch = "CONTRACT_CANONICAL_HASH_MISMATCH";
     public const string DocumentMissing = "CONTRACT_DOCUMENT_MISSING";
+    /// <summary>No signed-scan submission with that id on this contract version (404).</summary>
+    public const string SubmissionNotFound = "CONTRACT_SUBMISSION_NOT_FOUND";
     public const string WrongDocumentVersion = "CONTRACT_WRONG_DOCUMENT_VERSION";
     public const string ReasonRequired = "CONTRACT_REJECTION_REASON_REQUIRED";
     public const string InvalidWarranty = "CONTRACT_WARRANTY_VALIDATION_FAILED";

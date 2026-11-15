@@ -22,8 +22,8 @@ public sealed record AssetCorrection(string? Manufacturer, string? Model, string
 
 /// <summary>
 /// Manager / Admin side of after-sales requests: scheduling technician visits (shared overlap rules and locks), warranty coverage per
-/// diagnosed item, disaster-claim decisions (one reconsideration), duplicates, disputed completions, cancellation and refund
-/// decisions, and equipment-data corrections with an audit trail.
+/// diagnosed item, disaster-claim decisions (one reconsideration), duplicates, disputed completions, cancellation decisions (unpaid work
+/// only: refunds are not handled in this system), and equipment-data corrections with an audit trail.
 /// </summary>
 public sealed class ServiceManagerHandlers(
     IAfterSalesUnitOfWork data,
@@ -337,15 +337,13 @@ public sealed class ServiceManagerHandlers(
     }
 
     /// <summary>
-    /// Decides a customer's cancellation request for paid work that has not started. Approval cancels the request and records an
-    /// APPROVED refund of what was paid minus documented non-recoverable costs (an Admin executes and records it manually).
+    /// Decides a customer's cancellation request for work that has not started. Rejecting keeps the request going. Approving cancels the
+    /// request when nothing was paid; when a quotation was paid the approval is refused (409 AFTER_SALES_PAID_CANCELLATION_UNSUPPORTED):
+    /// cancelling paid work owes the customer money, and refunds are not handled in this system.
     /// </summary>
-    public async Task<OperationResult<ServiceRequestView>> DecideCancellationAsync(Guid managerUserId, Guid requestId, bool approve, decimal nonRecoverableAmount,
-        string? note, CancellationToken cancellationToken)
-    {
-        if (nonRecoverableAmount < 0 || decimal.Truncate(nonRecoverableAmount) != nonRecoverableAmount)
-            return Fail(AfterSalesErrorCodes.ValidationFailed, "The non-recoverable amount must be a whole VND amount ≥ 0.");
-        return await MutateAsync(requestId, null, async (request, now, token) =>
+    public async Task<OperationResult<ServiceRequestView>> DecideCancellationAsync(Guid managerUserId, Guid requestId, bool approve, string? note,
+        CancellationToken cancellationToken)
+        => await MutateAsync(requestId, null, async (request, now, token) =>
         {
             if (request.CancellationRequestedAt is null) return Bad("The customer did not request a cancellation.");
             if (!approve)
@@ -359,31 +357,28 @@ public sealed class ServiceManagerHandlers(
             }
             if ((await data.ListVisitsAsync(requestId, false, token)).Any(v => v.Status is VisitStatuses.InProgress))
                 return Bad("Work has started: use the exceptional stop instead.");
-            await RefundPaidQuotationsAsync(request, managerUserId, nonRecoverableAmount, "Cancelled before work started: " + request.CancellationReason, now, token);
+            var paid = await PaidAmountAsync(requestId, token);
+            if (paid > 0)
+                return OperationResult<bool>.Fail(AfterSalesErrorCodes.PaidCancellationUnsupported,
+                    $"The customer paid {paid:0} VND for this work; cancelling it would owe a refund, which this system does not handle. Reject the request, or settle the money outside the system first.");
             await CloseEverythingAsync(request, managerUserId, "cancelled", now, token);
             request.CancelledAt = now;
             AfterSalesWorkflow.Move(data, request, ServiceRequestStatuses.Cancelled, managerUserId, Text.Trim(note, 500), now);
             AfterSalesHistory.Notify(data, request.CustomerUserId, "CANCELLATION_APPROVED", $"{request.RequestNumber} was cancelled.", now, requestId);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
-    }
 
     /// <summary>
-    /// Exceptional stop of a request after work started (the customer cannot cancel it online). A refund is recorded only when the
-    /// Manager decides one is owed (<paramref name="refundAmount"/> &gt; 0); free warranty work never costs a cancellation fee.
+    /// Exceptional stop of a request after work started (the customer cannot cancel it online). Nothing is refunded or recorded as owed:
+    /// refunds are not handled in this system; free warranty work never costs a cancellation fee.
     /// </summary>
-    public async Task<OperationResult<ServiceRequestView>> StopWorkAsync(Guid managerUserId, Guid requestId, string? reason, decimal refundAmount,
-        CancellationToken cancellationToken)
+    public async Task<OperationResult<ServiceRequestView>> StopWorkAsync(Guid managerUserId, Guid requestId, string? reason, CancellationToken cancellationToken)
     {
         var why = Text.Trim(reason, 1000);
         if (why is null) return Fail(AfterSalesErrorCodes.ReasonRequired, "A reason is required.");
-        if (refundAmount < 0 || decimal.Truncate(refundAmount) != refundAmount) return Fail(AfterSalesErrorCodes.ValidationFailed, "The refund must be a whole VND amount ≥ 0.");
         return await MutateAsync(requestId, null, async (request, now, token) =>
         {
             if (ServiceRequestStatuses.IsFinal(request.Status)) return Bad("The request is already closed.");
-            var paid = (await data.ListQuotationsAsync(requestId, false, token)).Where(q => q.Status == QuotationStatuses.Paid).ToList();
-            if (refundAmount > paid.Sum(q => q.CustomerAmount)) return Bad("The refund cannot exceed what the customer paid.");
-            if (refundAmount > 0) AddRefund(request, paid.FirstOrDefault(), paid.Sum(q => q.CustomerAmount), refundAmount, "Work stopped: " + why, managerUserId, now);
             await CloseEverythingAsync(request, managerUserId, "work stopped", now, token);
             request.CancelledAt = now;
             request.CancellationReason ??= why;
@@ -395,7 +390,8 @@ public sealed class ServiceManagerHandlers(
 
     /// <summary>
     /// One-time maintenance that SmartSolar cannot provide (no suitable technician; the customer rejected the alternatives): the request is
-    /// cancelled and a 100 % refund of the service payment is approved (executed manually by an Admin).
+    /// cancelled when nothing was paid. A paid maintenance cannot be closed this way (409 AFTER_SALES_PAID_CANCELLATION_UNSUPPORTED): the
+    /// customer would be owed money and refunds are not handled in this system.
     /// </summary>
     public async Task<OperationResult<ServiceRequestView>> ConfirmCannotFulfillAsync(Guid managerUserId, Guid requestId, string? reason, CancellationToken cancellationToken)
     {
@@ -407,15 +403,22 @@ public sealed class ServiceManagerHandlers(
                 return Bad("Only an open one-time maintenance request can be closed this way.");
             if ((await data.ListVisitsAsync(requestId, false, token)).Any(v => v.Status is VisitStatuses.InProgress or VisitStatuses.Reported))
                 return Bad("The maintenance was already performed.");
-            await RefundPaidQuotationsAsync(request, managerUserId, 0, "SmartSolar could not provide the service: " + why, now, token);
+            var paid = await PaidAmountAsync(requestId, token);
+            if (paid > 0)
+                return OperationResult<bool>.Fail(AfterSalesErrorCodes.PaidCancellationUnsupported,
+                    $"The customer paid {paid:0} VND for this maintenance; closing it would owe a refund, which this system does not handle. Settle the money outside the system first.");
             await CloseEverythingAsync(request, managerUserId, "not fulfilled", now, token);
             request.CancelledAt = now;
             request.CancellationReason ??= why;
             AfterSalesWorkflow.Move(data, request, ServiceRequestStatuses.Cancelled, managerUserId, "SmartSolar could not fulfil: " + why, now);
-            AfterSalesHistory.Notify(data, request.CustomerUserId, "SERVICE_NOT_FULFILLED", $"We are sorry: {request.RequestNumber} could not be scheduled. A full refund is approved.", now, requestId);
+            AfterSalesHistory.Notify(data, request.CustomerUserId, "SERVICE_NOT_FULFILLED", $"We are sorry: {request.RequestNumber} could not be scheduled.", now, requestId);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
     }
+
+    /// <summary>What the customer paid for the request (PAID quotations), in VND.</summary>
+    private async Task<decimal> PaidAmountAsync(Guid requestId, CancellationToken token)
+        => (await data.ListQuotationsAsync(requestId, false, token)).Where(q => q.Status == QuotationStatuses.Paid).Sum(q => q.CustomerAmount);
 
     // ================================================================== equipment corrections
 
@@ -428,7 +431,10 @@ public sealed class ServiceManagerHandlers(
         if (asset is null) return OperationResult<AssetView>.Fail(AfterSalesErrorCodes.AssetNotFound, "Asset was not found.");
         var manufacturer = Text.Trim(input.Manufacturer, 100) ?? asset.Manufacturer;
         var serial = Text.Trim(input.SerialNumber, 100) ?? asset.SerialNumber;
-        if ((manufacturer != asset.Manufacturer || serial != asset.SerialNumber) && await data.SerialExistsAsync(manufacturer, serial, assetId, cancellationToken))
+        // A lot confirmed by count has no single serial number: devices of a lot are identified when they are replaced, never retyped here.
+        if (serial is not null && asset.SerialNumber is null && asset.Quantity > 1)
+            return OperationResult<AssetView>.Fail(AfterSalesErrorCodes.ValidationFailed, $"This row confirms {asset.Quantity} units without serial numbers; it cannot carry one serial number.");
+        if (serial is not null && (manufacturer != asset.Manufacturer || serial != asset.SerialNumber) && await data.SerialExistsAsync(manufacturer, serial, assetId, cancellationToken))
             return OperationResult<AssetView>.Fail(AfterSalesErrorCodes.DuplicateSerial, "Another asset already has this manufacturer and serial number.");
         try
         {
@@ -525,27 +531,6 @@ public sealed class ServiceManagerHandlers(
             entitlement.UpdatedAt = now;
             entitlement.Revision++;
         }
-    }
-
-    /// <summary>Records an approved manual refund of the paid quotations, minus the documented non-recoverable costs.</summary>
-    private async Task RefundPaidQuotationsAsync(ServiceRequest request, Guid managerUserId, decimal nonRecoverable, string reason, DateTimeOffset now, CancellationToken token)
-    {
-        var paid = (await data.ListQuotationsAsync(request.Id, false, token)).Where(q => q.Status == QuotationStatuses.Paid).ToList();
-        var total = paid.Sum(q => q.CustomerAmount);
-        if (total <= 0) return;
-        AddRefund(request, paid[0], total, Math.Max(0, total - nonRecoverable), reason, managerUserId, now);
-    }
-
-    private void AddRefund(ServiceRequest request, ServiceQuotation? quotation, decimal original, decimal approved, string reason, Guid managerUserId, DateTimeOffset now)
-    {
-        var refund = new RefundRecord
-        {
-            Id = Guid.NewGuid(), CustomerUserId = request.CustomerUserId, PaymentAttemptId = quotation?.CurrentPaymentAttemptId, QuotationId = quotation?.Id,
-            RequestId = request.Id, OriginalAmount = original, ApprovedAmount = approved, Reason = Text.Trim(reason, 1000)!, Status = RefundStatuses.Approved,
-            ApprovedByUserId = managerUserId, ApprovedAt = now, CreatedAt = now, UpdatedAt = now,
-        };
-        data.Add(refund);
-        AfterSalesHistory.Record(data, EventSubjects.Refund, refund.Id, "REFUND_APPROVED", managerUserId, $"{approved:0} of {original:0} VND: {refund.Reason}", now);
     }
 
     /// <summary>Loads the request tracked, checks the revision when given, applies <paramref name="change"/> and commits.</summary>

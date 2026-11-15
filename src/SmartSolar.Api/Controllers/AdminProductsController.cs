@@ -31,6 +31,8 @@ public sealed class AdminProductsController : ControllerBase
     private readonly ProductImageHandlers _imageHandlers;
     private readonly IValidator<AddProductImageCommand> _addImageValidator;
     private readonly IValidator<ReorderProductImagesCommand> _reorderImagesValidator;
+    private readonly SmartSolar.Modules.Files.FileService _files;
+    private readonly SmartSolar.Modules.Files.PublicFileService _publicFiles;
 
     public AdminProductsController(
         CreateProductHandler createHandler,
@@ -42,7 +44,9 @@ public sealed class AdminProductsController : ControllerBase
         IValidator<ChangeProductStatusCommand> changeStatusValidator,
         ProductImageHandlers imageHandlers,
         IValidator<AddProductImageCommand> addImageValidator,
-        IValidator<ReorderProductImagesCommand> reorderImagesValidator)
+        IValidator<ReorderProductImagesCommand> reorderImagesValidator,
+        SmartSolar.Modules.Files.FileService files,
+        SmartSolar.Modules.Files.PublicFileService publicFiles)
     {
         _createHandler = createHandler;
         _updateHandler = updateHandler;
@@ -54,6 +58,8 @@ public sealed class AdminProductsController : ControllerBase
         _imageHandlers = imageHandlers;
         _addImageValidator = addImageValidator;
         _reorderImagesValidator = reorderImagesValidator;
+        _files = files;
+        _publicFiles = publicFiles;
     }
 
     /// <summary>
@@ -232,7 +238,10 @@ public sealed class AdminProductsController : ControllerBase
         return Ok(Success(new ProductDeletedResponse(id, Deleted: true)));
     }
 
-    /// <summary>Appends an image (the first image of a product is always primary). Returns the product with its gallery.</summary>
+    /// <summary>
+    /// Appends an image (the first image of a product is always primary) from an https link, or from a VERIFIED PRODUCT_IMAGE file the caller
+    /// uploaded (<c>fileId</c>; stored as its public address, see <c>GET /api/files/public/{fileId}</c>). Returns the product with its gallery.
+    /// </summary>
     [HttpPost("{id:guid}/images")]
     [ProducesResponseType(typeof(ApiResponse<ProductResponse>), StatusCodes.Status201Created)]
     public async Task<IActionResult> AddImage(
@@ -240,8 +249,21 @@ public sealed class AdminProductsController : ControllerBase
         [FromBody] AddProductImageRequest request,
         CancellationToken cancellationToken)
     {
-        var command = new AddProductImageCommand(
-            id, request.Url ?? string.Empty, request.AltText, request.MakePrimary ?? false);
+        var url = request.Url ?? string.Empty;
+        if (request.FileId is { } fileId)
+        {
+            if (!string.IsNullOrWhiteSpace(request.Url))
+                return BadRequest(Failure(AuthErrorCodes.ValidationFailed, "One or more fields are invalid.",
+                    new Dictionary<string, string[]> { ["fileId"] = ["Give either 'url' or 'fileId', not both."] }));
+            var verified = await _files.RequireVerifiedAsync([fileId], SmartSolar.Modules.Files.FilePurposes.ProductImage, null, cancellationToken);
+            if (!verified.Succeeded)
+                return StatusCode(OperationResultControllerBase.StatusFor(verified.ErrorCode!), Failure(verified.ErrorCode!, verified.Message!, verified.Details));
+            var publicUrl = _publicFiles.PublicUrlFor(verified.Value![0]);
+            if (!publicUrl.Succeeded)
+                return StatusCode(OperationResultControllerBase.StatusFor(publicUrl.ErrorCode!), Failure(publicUrl.ErrorCode!, publicUrl.Message!));
+            url = publicUrl.Value!;
+        }
+        var command = new AddProductImageCommand(id, url, request.AltText, request.MakePrimary ?? false);
 
         if (await Validate(_addImageValidator, command, cancellationToken) is { } validationError)
         {

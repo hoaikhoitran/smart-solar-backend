@@ -122,21 +122,22 @@ public sealed partial class InstallationHandlers
     private async Task<EquipmentComparisonView> EquipmentComparisonAsync(InstallationProject p, CancellationToken cancellationToken)
     {
         var contracted = await unitOfWork.GetContractedEquipmentAsync(p.ContractId, cancellationToken);
+        // Units, not rows: a serialised device counts 1, a lot confirmed by quantity counts its quantity.
         var installed = (await unitOfWork.GetAssetsAsync(p.Id, cancellationToken))
             .Where(a => a.ServiceRequestId is null && a.AssetType is AssetTypes.Panel or AssetTypes.Inverter)
             .GroupBy(a => (a.ProductId, a.AssetType)).ToList();
-        var fingerprint = Fingerprint(contracted, installed.Select(g => ($"{g.Key.ProductId}", g.Key.AssetType, g.Count())));
+        var fingerprint = Fingerprint(contracted, installed.Select(g => ($"{g.Key.ProductId}", g.Key.AssetType, g.Sum(a => a.Quantity))));
         if (contracted.Count == 0) return new(EquipmentComparisonStatuses.NotComparable, [], fingerprint, null, null);
 
         var differences = new List<EquipmentDifference>();
         foreach (var c in contracted)
         {
-            var count = installed.Where(g => g.Key.ProductId == c.ProductId).Sum(g => g.Count());
+            var count = installed.Where(g => g.Key.ProductId == c.ProductId).Sum(g => g.Sum(a => a.Quantity));
             if (count != c.Quantity) differences.Add(new(c.ProductId, c.ProductType, c.Name, c.Quantity, count));
         }
         foreach (var g in installed.Where(g => g.Key.ProductId is not { } id || contracted.All(c => c.ProductId != id)))
             differences.Add(new(g.Key.ProductId ?? Guid.Empty, g.Key.AssetType == AssetTypes.Panel ? Catalog.Constants.ProductTypes.SolarPanel : Catalog.Constants.ProductTypes.Inverter,
-                g.First().Model, 0, g.Count()));
+                g.First().Model, 0, g.Sum(a => a.Quantity)));
         if (differences.Count == 0) return new(EquipmentComparisonStatuses.Matches, [], fingerprint, null, null);
 
         // Only the stored, active decision for exactly this comparison counts (events are the audit trail, not the source).

@@ -25,7 +25,6 @@ public static class AfterSalesModuleExtensions
         services.AddScoped<ServiceQuotationHandlers>();
         services.AddScoped<ServicePackageHandlers>();
         services.AddScoped<SalesTaskHandlers>();
-        services.AddScoped<RefundHandlers>();
         services.AddScoped<AfterSalesSweepService>();
         services.AddScoped<AfterSalesDashboard>();
         if (configuration.GetValue("AfterSales:WorkerEnabled", true))
