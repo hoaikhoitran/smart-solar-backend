@@ -6,16 +6,28 @@ namespace SmartSolar.Modules.KnowledgeBase;
 
 public sealed record RagConfigurationView(int Version, string Status, string GenerationModel, decimal? Temperature, bool SupportsTemperature, string TokenParameter,
     int MaxOutputTokens, int ChunkCharacters, int ChunkOverlap, int TopK, decimal MinScore, int MaxContextTokens, int MaxHistoryMessages, string PromptVersion,
-    string? Notes, int? BasedOnVersion, Guid? CreatedBy, DateTimeOffset? CreatedAt, DateTimeOffset? UpdatedAt, Guid? ActivatedBy, DateTimeOffset? ActivatedAt, int Revision);
+    string? Notes, int? BasedOnVersion, Guid? CreatedBy, DateTimeOffset? CreatedAt, DateTimeOffset? UpdatedAt, Guid? ActivatedBy, DateTimeOffset? ActivatedAt, int Revision,
+    string? ReasoningEffort = null, bool GenerationEnabled = true, int UserRequestsPerDay = RagCostDefaults.UserRequestsPerDay,
+    int UserConcurrency = RagCostDefaults.UserConcurrency, int GlobalConcurrency = RagCostDefaults.GlobalConcurrency,
+    int MaxQuestionCharacters = RagCostDefaults.MaxQuestionCharacters, int GenerationTimeoutSeconds = RagCostDefaults.GenerationTimeoutSeconds,
+    decimal DailyBudgetUsd = RagCostDefaults.DailyBudgetUsd, decimal MonthlyBudgetUsd = RagCostDefaults.MonthlyBudgetUsd,
+    decimal MonthlyIngestionBudgetUsd = RagCostDefaults.MonthlyIngestionBudgetUsd);
 
 /// <param name="Bootstrap">True while no admin configuration is ACTIVE: <paramref name="Effective"/> then holds the RagOptions values (version 0).</param>
 public sealed record RagConfigurationStateView(bool Bootstrap, RagConfigurationView Effective, RagConfigurationView? Active, RagConfigurationView? Draft);
 
-public sealed record RagGenerationModelView(string Id, string DisplayName, bool SupportsTemperature, string TokenParameter, int MaxOutputTokensLimit);
+/// <param name="IsDefault">The least expensive usable model (the bootstrap default; any other one needs an explicit admin activation).</param>
+public sealed record RagGenerationModelView(string Id, string DisplayName, bool SupportsTemperature, string TokenParameter, int MaxOutputTokensLimit,
+    string Provider = RagProviders.OpenAi, bool Enabled = true, bool Usable = true, IReadOnlyList<string>? ReasoningEfforts = null, string? DefaultReasoningEffort = null,
+    decimal? InputUsdPerMillion = null, decimal? CachedInputUsdPerMillion = null, decimal? OutputUsdPerMillion = null, string? PricingSource = null,
+    string? PricingEffectiveDate = null, bool IsDefault = false);
 
 public sealed record RagConfigurationLimitsView(int ChunkCharactersMin, int ChunkCharactersMax, string ChunkOverlapRule, int TopKMin, int TopKMax, decimal MinScoreMin,
     decimal MinScoreMax, int MaxContextTokensMin, int MaxContextTokensMax, int MaxOutputTokensMin, int MaxOutputTokensMax, decimal TemperatureMin, decimal TemperatureMax,
-    int MaxHistoryMessagesMin, int MaxHistoryMessagesMax);
+    int MaxHistoryMessagesMin, int MaxHistoryMessagesMax, int UserRequestsPerDayMin = 0, int UserRequestsPerDayMax = 0, int UserConcurrencyMin = 0,
+    int UserConcurrencyMax = 0, int GlobalConcurrencyMin = 0, int GlobalConcurrencyMax = 0, int MaxQuestionCharactersMin = 0, int MaxQuestionCharactersMax = 0,
+    int GenerationTimeoutSecondsMin = 0, int GenerationTimeoutSecondsMax = 0, decimal DailyBudgetUsdMax = 0, decimal MonthlyBudgetUsdMax = 0,
+    decimal MonthlyIngestionBudgetUsdMax = 0);
 
 public sealed record RagModelCatalogView(IReadOnlyList<RagGenerationModelView> Models, IReadOnlyList<string> PromptVersions, RagConfigurationLimitsView Limits);
 
@@ -25,14 +37,18 @@ public sealed record RagConfigurationValidationView(int Version, bool Valid, IRe
 
 public sealed record RagActivationView(RagConfigurationView Active, int? SupersededVersion, bool ChunkSettingsChanged, int VersionsNeedingReindex);
 
-public sealed record RagReindexStaleView(int ConfigVersion, int Stale, int Queued, int SkippedOpenJob);
+/// <param name="EstimatedCostUsd">Upper bound of the embedding cost of the queued versions (their extracted characters at the configured embedding price).</param>
+public sealed record RagReindexStaleView(int ConfigVersion, int Stale, int Queued, int SkippedOpenJob, decimal EstimatedCostUsd = 0, decimal RemainingIngestionBudgetUsd = 0);
 
 /// <summary>
 /// Draft values from the admin. Null fields keep the current draft's value (or, when no draft exists, the active / bootstrap value).
 /// <paramref name="TemperatureSpecified"/> distinguishes "keep" (false) from an explicit value or null (true).
 /// </summary>
 public sealed record RagConfigurationInput(string? GenerationModel, bool TemperatureSpecified, decimal? Temperature, int? MaxOutputTokens, int? ChunkCharacters,
-    int? ChunkOverlap, int? TopK, decimal? MinScore, int? MaxContextTokens, int? MaxHistoryMessages, string? PromptVersion, string? Notes);
+    int? ChunkOverlap, int? TopK, decimal? MinScore, int? MaxContextTokens, int? MaxHistoryMessages, string? PromptVersion, string? Notes,
+    bool ReasoningEffortSpecified = false, string? ReasoningEffort = null, bool? GenerationEnabled = null, int? UserRequestsPerDay = null, int? UserConcurrency = null,
+    int? GlobalConcurrency = null, int? MaxQuestionCharacters = null, int? GenerationTimeoutSeconds = null, decimal? DailyBudgetUsd = null,
+    decimal? MonthlyBudgetUsd = null, decimal? MonthlyIngestionBudgetUsd = null);
 
 /// <summary>
 /// Admin lifecycle of the chatbot runtime configuration: one DRAFT is edited (revision-checked), validated against the model
@@ -55,12 +71,73 @@ public sealed class RagConfigurationService(IKnowledgeUnitOfWork unitOfWork, Rag
     public RagModelCatalogView Catalog()
     {
         var l = rules.Limits;
+        var cheapest = rules.CheapestUsableModel()?.Id;
         return new RagModelCatalogView(
-            rules.Models.Select(m => new RagGenerationModelView(m.Id, m.DisplayName ?? m.Id, m.SupportsTemperature, m.TokenParameter, rules.MaxOutputTokensFor(m))).ToList(),
+            rules.Models.Select(m => new RagGenerationModelView(m.Id, m.DisplayName ?? m.Id, m.SupportsTemperature, m.TokenParameter, rules.MaxOutputTokensFor(m),
+                m.EffectiveProvider, m.Enabled, m.Usable, m.ReasoningEfforts, m.DefaultReasoningEffort, m.InputUsdPerMillion, m.CachedInputUsdPerMillion, m.OutputUsdPerMillion,
+                m.PricingSource, m.PricingEffectiveDate, m.Id == cheapest)).ToList(),
             rules.PromptVersions,
             new RagConfigurationLimitsView(l.ChunkCharactersMin, l.ChunkCharactersMax, "0 <= chunkOverlap <= chunkCharacters / 2", l.TopKMin, l.TopKMax, l.MinScoreMin,
                 l.MinScoreMax, l.MaxContextTokensMin, l.MaxContextTokensMax, l.MaxOutputTokensMin, l.MaxOutputTokensMax, l.TemperatureMin, l.TemperatureMax,
-                l.MaxHistoryMessagesMin, l.MaxHistoryMessagesMax));
+                l.MaxHistoryMessagesMin, l.MaxHistoryMessagesMax, l.UserRequestsPerDayMin, l.UserRequestsPerDayMax, l.UserConcurrencyMin, l.UserConcurrencyMax,
+                l.GlobalConcurrencyMin, l.GlobalConcurrencyMax, l.MaxQuestionCharactersMin, l.MaxQuestionCharactersMax, l.GenerationTimeoutSecondsMin,
+                l.GenerationTimeoutSecondsMax, l.DailyBudgetUsdMax, l.MonthlyBudgetUsdMax, l.MonthlyIngestionBudgetUsdMax));
+    }
+
+    /// <summary>
+    /// Changes only the cost controls (budgets, quotas, concurrency, the generation switch): a NEW version copied from the ACTIVE one (or the
+    /// bootstrap values) with these values is validated against the hard ceilings and activated in one transaction — versioned, audited (who
+    /// and when) and reversible by rollback. An existing draft is left untouched. <paramref name="expectedActiveVersion"/> guards against a
+    /// concurrent change (0 = bootstrap).
+    /// </summary>
+    public async Task<OperationResult<RagActivationView>> SetCostControlsAsync(Guid adminUserId, RagConfigurationInput input, int expectedActiveVersion, string? notes,
+        CancellationToken cancellationToken)
+    {
+        if (notes is { Length: > 500 }) return Invalid<RagActivationView>(new() { ["notes"] = ["At most 500 characters."] });
+        OperationResult<RagActivationView> result;
+        try
+        {
+            result = await unitOfWork.ExecuteInTransactionAsync<OperationResult<RagActivationView>>(async token =>
+            {
+                var active = await unitOfWork.FindConfigurationAsync(RagConfigurationStatuses.Active, false, token);
+                if ((active?.Version ?? 0) != expectedActiveVersion)
+                    return (OperationResult<RagActivationView>.Fail(RagConfigurationErrorCodes.StaleRevision, "The active configuration changed meanwhile. Reload and try again.",
+                        new { currentVersion = active?.Version ?? 0 }), false);
+                var baseline = active?.Values() ?? rules.Bootstrap(options).Values;
+                var values = baseline with
+                {
+                    GenerationEnabled = input.GenerationEnabled ?? baseline.GenerationEnabled,
+                    UserRequestsPerDay = input.UserRequestsPerDay ?? baseline.UserRequestsPerDay,
+                    UserConcurrency = input.UserConcurrency ?? baseline.UserConcurrency,
+                    GlobalConcurrency = input.GlobalConcurrency ?? baseline.GlobalConcurrency,
+                    MaxQuestionCharacters = input.MaxQuestionCharacters ?? baseline.MaxQuestionCharacters,
+                    GenerationTimeoutSeconds = input.GenerationTimeoutSeconds ?? baseline.GenerationTimeoutSeconds,
+                    DailyBudgetUsd = input.DailyBudgetUsd ?? baseline.DailyBudgetUsd,
+                    MonthlyBudgetUsd = input.MonthlyBudgetUsd ?? baseline.MonthlyBudgetUsd,
+                    MonthlyIngestionBudgetUsd = input.MonthlyIngestionBudgetUsd ?? baseline.MonthlyIngestionBudgetUsd,
+                };
+                if (values == baseline) return (OperationResult<RagActivationView>.Fail(RagConfigurationErrorCodes.ValidationFailed, "Nothing to change."), false);
+                var errors = rules.Validate(values);
+                if (errors.Count > 0) return (Invalid<RagActivationView>(errors), false);
+                var now = time.GetUtcNow();
+                var copy = new RagConfigurationRow(active?.Version, adminUserId, now, await unitOfWork.MaxConfigurationVersionAsync(token) + 1).Entity;
+                copy.Apply(values);
+                copy.Notes = string.IsNullOrWhiteSpace(notes) ? "Cost controls changed." : notes.Trim();
+                var view = await ActivateAsync(copy, isNew: true, adminUserId, token);
+                return (OperationResult<RagActivationView>.Ok(view), true);
+            }, cancellationToken);
+        }
+        catch (PersistenceConflictException)
+        {
+            return Stale<RagActivationView>(null);
+        }
+        if (result.Succeeded)
+        {
+            provider.Invalidate();
+            logger.LogInformation("RAG cost controls changed by {AdminId}: version {Version} activated (generation enabled {Enabled}, daily {Daily} USD, monthly {Monthly} USD).",
+                adminUserId, result.Value!.Active.Version, result.Value.Active.GenerationEnabled, result.Value.Active.DailyBudgetUsd, result.Value.Active.MonthlyBudgetUsd);
+        }
+        return result;
     }
 
     public async Task<RagConfigurationHistoryView> HistoryAsync(int page, int pageSize, CancellationToken cancellationToken)
@@ -230,15 +307,31 @@ public sealed class RagConfigurationService(IKnowledgeUnitOfWork unitOfWork, Rag
                         || (embeddingModel is not null && !string.Equals(v.EmbeddingModel, embeddingModel, StringComparison.Ordinal))).ToList();
                 var open = (await unitOfWork.GetVersionsWithOpenJobsAsync(token)).ToHashSet();
                 var now = time.GetUtcNow();
+                // Cost check before anything is queued: the extracted characters of the versions (their last ingestion), at the configured
+                // embedding price, must fit the remaining monthly ingestion budget. Each run still reserves its own maximum when it starts.
+                var toQueue = stale.Where(v => !open.Contains(v.Id)).ToList();
+                var embedding = rules.FindEmbeddingModel(options.EmbeddingModel);
+                var price = embedding is { Provider: RagProviders.Ollama } ? 0m
+                    : embedding?.InputUsdPerMillion ?? rules.EmbeddingModels.Where(m => m.Provider == RagProviders.OpenAi).Select(m => m.InputUsdPerMillion ?? 0).DefaultIfEmpty(0).Max();
+                var estimate = AiCostCalculator.RoundUp(toQueue.Sum(v => AiCostCalculator.EstimateTokens(v.ExtractedCharacters ?? (int)Math.Min(int.MaxValue, options.MaxDocumentCharacters)))
+                    * price / 1_000_000m);
+                var month = new DateOnly(now.UtcDateTime.Year, now.UtcDateTime.Month, 1);
+                var spent = (await unitOfWork.GetBudgetPeriodsAsync([(AiBudgetPeriodKinds.IngestMonth, month)], token))[0];
+                var remaining = Math.Max(0, config.Values.MonthlyIngestionBudgetUsd - spent.CommittedUsd);
+                if (estimate > remaining)
+                    return (new RagReindexStaleView(config.Version, stale.Count, 0, stale.Count, estimate, remaining), false);
                 var queued = 0;
-                foreach (var version in stale.Where(v => !open.Contains(v.Id)))
+                foreach (var version in toQueue)
                 {
                     await KnowledgeJobs.QueueAsync(unitOfWork, version.Id, JobKinds.Ingest, options.MaxIngestAttempts, config, now, token);
                     queued++;
                 }
                 if (queued > 0) await unitOfWork.SaveChangesAsync(token);
-                return (new RagReindexStaleView(config.Version, stale.Count, queued, stale.Count - queued), queued > 0);
+                return (new RagReindexStaleView(config.Version, stale.Count, queued, stale.Count - queued, estimate, remaining), queued > 0);
             }, cancellationToken);
+            if (view.Queued == 0 && view.EstimatedCostUsd > view.RemainingIngestionBudgetUsd)
+                return OperationResult<RagReindexStaleView>.Fail(AiCostErrorCodes.BudgetExceeded,
+                    "Reindexing these versions could exceed the remaining monthly ingestion budget. Raise the budget or wait for the next month.", view);
             logger.LogInformation("Reindex of {Queued} stale knowledge versions queued by {AdminId} (config version {Version}).", view.Queued, adminUserId, view.ConfigVersion);
             return OperationResult<RagReindexStaleView>.Ok(view);
         }
@@ -286,19 +379,33 @@ public sealed class RagConfigurationService(IKnowledgeUnitOfWork unitOfWork, Rag
         var model = string.IsNullOrWhiteSpace(i.GenerationModel) ? b.GenerationModel : i.GenerationModel.Trim();
         return new RagConfigurationValues(model, i.TemperatureSpecified ? i.Temperature : b.Temperature, i.MaxOutputTokens ?? b.MaxOutputTokens,
             i.ChunkCharacters ?? b.ChunkCharacters, i.ChunkOverlap ?? b.ChunkOverlap, i.TopK ?? b.TopK, i.MinScore ?? b.MinScore, i.MaxContextTokens ?? b.MaxContextTokens,
-            i.MaxHistoryMessages ?? b.MaxHistoryMessages, string.IsNullOrWhiteSpace(i.PromptVersion) ? b.PromptVersion : i.PromptVersion.Trim());
+            i.MaxHistoryMessages ?? b.MaxHistoryMessages, string.IsNullOrWhiteSpace(i.PromptVersion) ? b.PromptVersion : i.PromptVersion.Trim(),
+            i.ReasoningEffortSpecified ? (string.IsNullOrWhiteSpace(i.ReasoningEffort) ? null : i.ReasoningEffort.Trim()) : b.ReasoningEffort,
+            i.GenerationEnabled ?? b.GenerationEnabled, i.UserRequestsPerDay ?? b.UserRequestsPerDay, i.UserConcurrency ?? b.UserConcurrency,
+            i.GlobalConcurrency ?? b.GlobalConcurrency, i.MaxQuestionCharacters ?? b.MaxQuestionCharacters, i.GenerationTimeoutSeconds ?? b.GenerationTimeoutSeconds,
+            i.DailyBudgetUsd ?? b.DailyBudgetUsd, i.MonthlyBudgetUsd ?? b.MonthlyBudgetUsd, i.MonthlyIngestionBudgetUsd ?? b.MonthlyIngestionBudgetUsd);
     }
 
     /// <summary>Applies the "temperature only for models that support it" rule to a kept (not re-specified) temperature.</summary>
     private RagConfigurationValues Normalise(RagConfigurationValues v, RagConfigurationInput i)
-        => !i.TemperatureSpecified && rules.FindModel(v.GenerationModel) is { SupportsTemperature: false } ? v with { Temperature = null } : v;
+    {
+        var model = rules.FindModel(v.GenerationModel);
+        if (!i.TemperatureSpecified && model is { SupportsTemperature: false }) v = v with { Temperature = null };
+        // A kept reasoning effort the new model does not accept falls back to that model's default (explicit values are validated instead).
+        if (!i.ReasoningEffortSpecified && v.ReasoningEffort is { } e && (model is null || !model.ReasoningEfforts.Contains(e)))
+            v = v with { ReasoningEffort = model?.DefaultReasoningEffort };
+        if (!i.ReasoningEffortSpecified && v.ReasoningEffort is null && model?.DefaultReasoningEffort is { } d) v = v with { ReasoningEffort = d };
+        return v;
+    }
 
     private RagConfigurationView View(RagConfiguration c)
     {
         var model = rules.FindModel(c.GenerationModel);
         return new RagConfigurationView(c.Version, c.Status, c.GenerationModel, c.Temperature, model?.SupportsTemperature ?? c.Temperature is not null,
             rules.TokenParameterFor(c.GenerationModel), c.MaxOutputTokens, c.ChunkCharacters, c.ChunkOverlap, c.TopK, c.MinScore, c.MaxContextTokens, c.MaxHistoryMessages,
-            c.PromptVersion, c.Notes, c.BasedOnVersion, c.CreatedByUserId, c.CreatedAt, c.UpdatedAt, c.ActivatedByUserId, c.ActivatedAt, c.Revision);
+            c.PromptVersion, c.Notes, c.BasedOnVersion, c.CreatedByUserId, c.CreatedAt, c.UpdatedAt, c.ActivatedByUserId, c.ActivatedAt, c.Revision,
+            c.ReasoningEffort, c.GenerationEnabled, c.UserRequestsPerDay, c.UserConcurrency, c.GlobalConcurrency, c.MaxQuestionCharacters, c.GenerationTimeoutSeconds,
+            c.DailyBudgetUsd, c.MonthlyBudgetUsd, c.MonthlyIngestionBudgetUsd);
     }
 
     private RagConfigurationView BootstrapView()
@@ -307,7 +414,8 @@ public sealed class RagConfigurationService(IKnowledgeUnitOfWork unitOfWork, Rag
         var v = b.Values;
         return new RagConfigurationView(0, RagConfigurationStatuses.Active, v.GenerationModel, v.Temperature, rules.FindModel(v.GenerationModel)?.SupportsTemperature ?? true,
             b.TokenParameter, v.MaxOutputTokens, v.ChunkCharacters, v.ChunkOverlap, v.TopK, v.MinScore, v.MaxContextTokens, v.MaxHistoryMessages, v.PromptVersion,
-            "Bootstrap values from application settings.", null, null, null, null, null, null, 0);
+            "Bootstrap values from application settings.", null, null, null, null, null, null, 0, v.ReasoningEffort, v.GenerationEnabled, v.UserRequestsPerDay,
+            v.UserConcurrency, v.GlobalConcurrency, v.MaxQuestionCharacters, v.GenerationTimeoutSeconds, v.DailyBudgetUsd, v.MonthlyBudgetUsd, v.MonthlyIngestionBudgetUsd);
     }
 
     private static OperationResult<T> Invalid<T>(Dictionary<string, string[]> errors)

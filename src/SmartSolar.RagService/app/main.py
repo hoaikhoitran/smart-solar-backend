@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from .answering import MIN_GENERATION_SECONDS, AnswerOutcome, DeadlineExceeded, answer_question
 from .config import MAX_CHUNK_CHARACTERS, MIN_CHUNK_CHARACTERS, Settings
-from .embeddings import Embedder, ProviderError, create_embedder
+from .embeddings import Embedder, ProviderError, create_embedder, create_query_embedder
 from .ingestion import ingest
 from .llm import ChatModel, GenerationOptions, create_chat_model
 from .prompting import PROMPT_TEMPLATES
@@ -83,6 +83,8 @@ class AnswerBody(StrictBody):
     generationModel: Optional[str] = Field(default=None, pattern=r"^[A-Za-z0-9._:-]{1,100}$")
     temperature: Optional[float] = Field(default=None, ge=0, le=1)
     tokenParameter: Optional[Literal["max_tokens", "max_completion_tokens"]] = None
+    # Chat Completions reasoning_effort for models that support it (the API's model registry decides); absent = not sent.
+    reasoningEffort: Optional[Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]] = None
     minScore: Optional[float] = Field(default=None, ge=0, le=1)
     promptVersion: Optional[str] = Field(default=None, min_length=1, max_length=20)
     # How long the caller (the .NET API) will still wait for this answer, in seconds. Optional for compatibility; without it the
@@ -91,7 +93,8 @@ class AnswerBody(StrictBody):
 
     def generation(self, settings: Settings) -> GenerationOptions:
         temperature = self.temperature if "temperature" in self.model_fields_set else settings.llm_temperature
-        return GenerationOptions(self.generationModel or settings.llm_model, temperature, self.tokenParameter or "max_tokens")
+        return GenerationOptions(self.generationModel or settings.llm_model, temperature, self.tokenParameter or "max_tokens",
+                                 self.reasoningEffort)
 
 
 @dataclass
@@ -101,19 +104,24 @@ class Services:
     storage: ObjectStorage
     embedder: Embedder
     store: VectorStore
+    # Questions only (the ingestion embedder unless an embedding-model migration is in progress).
+    query_embedder: Embedder
     model: ChatModel
     generations: threading.BoundedSemaphore
     ingestions: threading.BoundedSemaphore
 
 
 def build_services(settings: Settings, storage: Optional[ObjectStorage] = None, embedder: Optional[Embedder] = None,
-                   store: Optional[VectorStore] = None, model: Optional[ChatModel] = None) -> Services:
+                   store: Optional[VectorStore] = None, model: Optional[ChatModel] = None,
+                   query_embedder: Optional[Embedder] = None) -> Services:
     settings.validate()
+    ingest_embedder = embedder or create_embedder(settings)
     return Services(
         settings=settings,
         verifier=SignatureVerifier(settings.shared_secret, settings.signature_window_seconds),
         storage=storage or create_storage(settings),
-        embedder=embedder or create_embedder(settings),
+        embedder=ingest_embedder,
+        query_embedder=query_embedder or create_query_embedder(settings, ingest_embedder),
         store=store or create_vector_store(settings.vector_store, settings.database_url, settings.embedding_dimension),
         model=model or create_chat_model(settings),
         generations=threading.BoundedSemaphore(max(1, settings.max_concurrent_generations)),
@@ -164,7 +172,7 @@ def create_app(services: Optional[Services] = None) -> FastAPI:
         # The vector table has the configured dimension, and every local (Ollama) model is pulled: before that the service
         # would accept requests it can only answer with 503.
         s = svc()
-        return s.store.ready() and all(getattr(part, "available", lambda: True)() for part in (s.embedder, s.model))
+        return s.store.ready() and all(getattr(part, "available", lambda: True)() for part in (s.embedder, s.query_embedder, s.model))
 
     @app.get("/health/ready")
     async def ready() -> JSONResponse:
@@ -195,6 +203,8 @@ def create_app(services: Optional[Services] = None) -> FastAPI:
                 "status": outcome.status, "pageCount": outcome.page_count, "chunkCount": outcome.chunk_count, "characters": outcome.characters,
                 "embeddingModel": outcome.embedding_model, "embeddingDimension": outcome.embedding_dimension, "error": outcome.error,
                 "configVersion": outcome.config_version, "chunkCharacters": outcome.chunk_characters, "chunkOverlap": outcome.chunk_overlap,
+                # Cost accounting: billable embedding tokens of this run (also of a failed run) and whether a failed call may have billed.
+                "embeddingTokens": outcome.embedding_tokens, "embeddingProvider": outcome.embedding_provider, "billing": outcome.billing,
             }
 
         return await anyio.to_thread.run_sync(run)
@@ -238,13 +248,15 @@ def create_app(services: Optional[Services] = None) -> FastAPI:
                     [t.model_dump() for t in body.history], [v.model_dump(mode="json") for v in body.allowedVersions],
                     body.topK, body.maxContextTokens, body.maxOutputTokens,
                     min_score=min_score, prompt_version=prompt_version, generation=generation, deadline=deadline,
+                    query_embedder=s.query_embedder,
                 )
             except DeadlineExceeded as exc:
-                logger.warning("Answer abandoned before generation: %s.", exc)
-                raise HTTPException(status_code=503, detail="deadline exceeded") from exc
+                logger.warning("Answer abandoned: %s.", exc)
+                return failure(503, "deadline exceeded", exc)
             except ProviderError as exc:
                 logger.warning("Answer generation failed: %s.", exc)
-                raise HTTPException(status_code=503, detail="provider unavailable") from exc
+                rate_limited = type(exc).__name__ == "ProviderRateLimited"
+                return failure(503, "provider rate limited" if rate_limited else "provider unavailable", exc)
             except EmbeddingDimensionError as exc:
                 logger.error("Embedding configuration does not match the vector schema: %s.", exc)
                 raise HTTPException(status_code=503, detail="embedding configuration mismatch") from exc
@@ -257,21 +269,40 @@ def create_app(services: Optional[Services] = None) -> FastAPI:
                         outcome.completion_tokens, timing_detail(outcome))
             return {
                 "answer": outcome.answer, "grounded": outcome.grounded, "citations": outcome.citations,
-                "usage": {"promptTokens": outcome.prompt_tokens, "completionTokens": outcome.completion_tokens},
+                "usage": {
+                    "promptTokens": outcome.prompt_tokens, "completionTokens": outcome.completion_tokens,
+                    "cachedPromptTokens": outcome.cached_prompt_tokens, "reasoningTokens": outcome.reasoning_tokens,
+                    "usageReported": outcome.usage_reported, "embeddingTokens": outcome.embedding_tokens,
+                    "embeddingModel": outcome.embedding_model, "embeddingProvider": outcome.embedding_provider,
+                    "generationProvider": outcome.generation_provider, "generationCalled": outcome.generation_provider is not None,
+                },
+                "contextMs": outcome.context_ms,
                 "model": outcome.model, "retrievalMs": outcome.retrieval_ms, "generationMs": outcome.generation_ms, "timings": outcome.timings,
                 # What this answer was produced with (after the environment ceilings).
                 "configVersion": body.configVersion, "promptVersion": prompt_version,
                 "parameters": {
                     "generationModel": generation.model, "temperature": generation.temperature, "tokenParameter": generation.token_parameter,
+                    "reasoningEffort": generation.reasoning_effort,
                     "maxOutputTokens": min(body.maxOutputTokens, s.settings.max_output_tokens),
                     "maxContextTokens": min(body.maxContextTokens, s.settings.max_context_tokens),
                     "topK": min(body.topK, s.settings.max_top_k), "minScore": min_score,
                 },
             }
 
-        return await anyio.to_thread.run_sync(run)
+        result = await anyio.to_thread.run_sync(run)
+        return result
 
     return app
+
+
+def failure(status: int, detail: str, exc: Exception) -> JSONResponse:
+    """A failed answer with what the API needs to settle its cost ledger: whether the provider may have billed the failed call
+    ("uncertain") and the question-embedding tokens already spent. Never the provider's message body."""
+    return JSONResponse(status_code=status, content={
+        "detail": detail,
+        "billing": getattr(exc, "billing", "none"),
+        "usage": {"embeddingTokens": int(getattr(exc, "embedding_tokens", 0) or 0), "embeddingProvider": getattr(exc, "embedding_provider", None)},
+    })
 
 
 def timing_detail(outcome: AnswerOutcome) -> str:

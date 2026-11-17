@@ -8,8 +8,8 @@ from typing import Any, Dict, List, Optional, Protocol
 
 import httpx
 
-from .config import TOKEN_PARAMETERS, Settings
-from .embeddings import ProviderError, ProviderTimeout, ollama_model_available, ollama_options
+from .config import REASONING_EFFORTS, TOKEN_PARAMETERS, Settings
+from .embeddings import ProviderError, ProviderTimeout, ollama_model_available, ollama_options, status_error, transport_error
 
 
 def _timeout(seconds: Optional[float]) -> Dict[str, Any]:
@@ -28,6 +28,13 @@ class Completion:
     model: str
     # Provider-reported breakdown in milliseconds (Ollama: loadMs, promptEvalMs, evalMs, totalMs); None when the provider gives none.
     timings: Optional[Dict[str, int]] = None
+    # Of prompt_tokens, how many the provider served from its prompt cache (billed at the cached rate); of completion_tokens, how
+    # many were reasoning tokens (billed as output). usage_reported is False when the provider gave no usage (counts are estimates).
+    cached_prompt_tokens: int = 0
+    reasoning_tokens: int = 0
+    usage_reported: bool = True
+    # "openai" is billed; "ollama" and "extractive" are not.
+    provider: str = "extractive"
 
 
 @dataclass(frozen=True)
@@ -35,12 +42,15 @@ class GenerationOptions:
     """Per-request generation values (from the API's active RAG configuration).
 
     model: provider model id; temperature: None means the field is omitted from the provider call (models without
-    temperature support); token_parameter: "max_tokens" (classic chat models) or "max_completion_tokens" (reasoning-style models).
+    temperature support); token_parameter: "max_tokens" (classic chat models) or "max_completion_tokens" (reasoning-style models);
+    reasoning_effort: Chat Completions ``reasoning_effort`` (None = not sent). With an effort other than "none" the temperature is
+    never sent (OpenAI GPT-6 models reject temperature/top_p unless reasoning is off).
     """
 
     model: str
     temperature: Optional[float]
     token_parameter: str = "max_tokens"  # noqa: S105 - an API field name, not a secret
+    reasoning_effort: Optional[str] = None
 
 
 class ChatModel(Protocol):
@@ -56,13 +66,18 @@ def estimate_tokens(text: str) -> int:
 
 
 class OpenAICompatibleChatModel:
-    def __init__(self, settings: Settings) -> None:
+    """OpenAI Chat Completions. One call per question: never retried with another model, never streamed, no tools."""
+
+    provider = "openai"
+
+    def __init__(self, settings: Settings, transport: Optional[httpx.BaseTransport] = None) -> None:
         self.model = settings.llm_model
         self._temperature = settings.llm_temperature
         self._client = httpx.Client(
             base_url=(settings.llm_base_url or "").rstrip("/") + "/",
             headers={"Authorization": f"Bearer {settings.llm_api_key}"},
             timeout=settings.provider_timeout_seconds,
+            transport=transport,
         )
 
     def payload(self, messages: List[Dict[str, str]], max_tokens: int, options: Optional[GenerationOptions] = None) -> Dict[str, Any]:
@@ -71,8 +86,13 @@ class OpenAICompatibleChatModel:
             options = GenerationOptions(self.model, self._temperature, "max_tokens")
         if options.token_parameter not in TOKEN_PARAMETERS:
             raise ValueError("unsupported token parameter")
+        if options.reasoning_effort is not None and options.reasoning_effort not in REASONING_EFFORTS:
+            raise ValueError("unsupported reasoning effort")
         body: Dict[str, Any] = {"model": options.model, "messages": messages, options.token_parameter: max_tokens}
-        if options.temperature is not None:
+        if options.reasoning_effort is not None:
+            body["reasoning_effort"] = options.reasoning_effort
+        reasoning_on = options.reasoning_effort not in (None, "none")
+        if options.temperature is not None and not reasoning_on:
             body["temperature"] = options.temperature
         return body
 
@@ -82,19 +102,36 @@ class OpenAICompatibleChatModel:
         try:
             response = self._client.post("chat/completions", json=body, **_timeout(timeout_seconds))
         except httpx.HTTPError as exc:
-            raise ProviderError(f"LLM provider unreachable ({type(exc).__name__})") from exc
+            raise transport_error(exc, "LLM provider") from exc
         if response.status_code >= 400:
-            raise ProviderError(f"LLM provider returned HTTP {response.status_code}")
-        reply = response.json()
+            raise status_error(response.status_code, "LLM provider")
+        try:
+            reply = response.json()
+        except ValueError as exc:
+            error = ProviderError("LLM provider returned a non-JSON body")
+            error.billing = "uncertain"
+            raise error from exc
         choices = reply.get("choices") or []
         text = ((choices[0].get("message") or {}).get("content") or "") if choices else ""
-        usage = reply.get("usage") or {}
+        usage = reply.get("usage") if isinstance(reply.get("usage"), dict) else {}
+        reported = _count(usage.get("prompt_tokens")) is not None and _count(usage.get("completion_tokens")) is not None
+        prompt_details = usage.get("prompt_tokens_details") if isinstance(usage.get("prompt_tokens_details"), dict) else {}
+        completion_details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
         return Completion(
             text=text,
-            prompt_tokens=int(usage.get("prompt_tokens") or sum(estimate_tokens(m["content"]) for m in messages)),
-            completion_tokens=int(usage.get("completion_tokens") or estimate_tokens(text)),
+            # Without reported usage the estimate is conservative: the full output budget is assumed generated.
+            prompt_tokens=_count(usage.get("prompt_tokens")) or sum(estimate_tokens(m["content"]) for m in messages),
+            completion_tokens=_count(usage.get("completion_tokens")) if reported else max(max_tokens, estimate_tokens(text)),
             model=str(reply.get("model") or body["model"]),
+            cached_prompt_tokens=_count(prompt_details.get("cached_tokens")) or 0,
+            reasoning_tokens=_count(completion_details.get("reasoning_tokens")) or 0,
+            usage_reported=reported,
+            provider=self.provider,
         )
+
+
+def _count(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
 _THINKING = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -107,6 +144,8 @@ class OllamaChatModel:
     window (``options.num_ctx``; Ollama otherwise truncates the prompt silently). The token limit becomes ``num_predict``,
     whatever token parameter the request names (an OpenAI concept). A thinking block is never returned as the answer.
     """
+
+    provider = "ollama"
 
     def __init__(self, settings: Settings, transport: Optional[httpx.BaseTransport] = None) -> None:
         self.model = settings.llm_model
@@ -158,6 +197,7 @@ class OllamaChatModel:
             completion_tokens=int(reply.get("eval_count") or estimate_tokens(text)),
             model=str(reply.get("model") or body["model"]),
             timings=ollama_timings(reply),
+            provider=self.provider,
         )
 
 

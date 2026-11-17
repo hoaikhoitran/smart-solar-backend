@@ -3,6 +3,11 @@
 pgvector: the knowledge_chunk table is defined in sql/knowledge_chunk.sql and must be created by an
 approved manual migration (this service never creates or alters schema). Replacing a version's
 chunks is a single transaction (delete + insert), so retried ingestion never duplicates chunks.
+
+Chunks of different embedding models coexist per version (unique key version_id + embedding_model + chunk_index, see the
+EF migration CloudRagCostControl): replacing a version's chunks only touches the chunks of the model being written, so a
+reindex to a new model never removes the chunks questions are still answered from. On a database without that key the
+store falls back to replacing every chunk of the version (the previous behaviour).
 """
 
 from __future__ import annotations
@@ -84,8 +89,10 @@ class InMemoryVectorStore:
 
     def replace_version(self, version_id: str, chunks: Sequence[StoredChunk]) -> None:
         check_chunks(chunks, self._dimension)
+        models = {c.embedding_model for c in chunks}
         with self._lock:
-            self._chunks[version_id] = list(chunks)
+            kept = [c for c in self._chunks.get(version_id, []) if c.embedding_model not in models]
+            self._chunks[version_id] = kept + list(chunks)
 
     def delete_version(self, version_id: str) -> int:
         with self._lock:
@@ -101,8 +108,8 @@ class InMemoryVectorStore:
     def ready(self) -> bool:
         return True
 
-    def count(self, version_id: str) -> int:
-        return len(self._chunks.get(version_id, []))
+    def count(self, version_id: str, embedding_model: Optional[str] = None) -> int:
+        return len([c for c in self._chunks.get(version_id, []) if embedding_model is None or c.embedding_model == embedding_model])
 
 
 def _vector_literal(values: List[float]) -> str:
@@ -118,10 +125,23 @@ class PgVectorStore:
 
     def replace_version(self, version_id: str, chunks: Sequence[StoredChunk]) -> None:
         check_chunks(chunks, self._dimension)
+        model = chunks[0].embedding_model if chunks else None
+        from psycopg import errors  # type: ignore[import-not-found]
+
+        try:
+            self._replace(version_id, chunks, model)
+        except errors.UniqueViolation:
+            # Older schema (unique version_id + chunk_index): the version holds one model's chunks only.
+            self._replace(version_id, chunks, None)
+
+    def _replace(self, version_id: str, chunks: Sequence[StoredChunk], model: Optional[str]) -> None:
         with self._pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
             # Serialise concurrent ingests of one version (a retry overlapping a slow first run).
             cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", ("knowledge_chunk:" + version_id,))
-            cur.execute("DELETE FROM knowledge_chunk WHERE version_id = %s", (version_id,))
+            if model is None:
+                cur.execute("DELETE FROM knowledge_chunk WHERE version_id = %s", (version_id,))
+            else:
+                cur.execute("DELETE FROM knowledge_chunk WHERE version_id = %s AND embedding_model = %s", (version_id, model))
             cur.executemany(
                 "INSERT INTO knowledge_chunk (chunk_id, version_id, document_id, chunk_index, page_number, section, content, content_sha256,"
                 " embedding, embedding_model) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s)",

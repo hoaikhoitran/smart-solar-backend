@@ -174,6 +174,10 @@ public sealed class RagUsageReservation
     public Guid UserId { get; set; }
     public DateOnly UsageDate { get; set; }
     public long ReservedTokens { get; set; }
+    /// <summary>USD reserved in the AI budget (0 = no billable provider call, e.g. a deterministic advisor answer).</summary>
+    public decimal ReservedUsd { get; set; }
+    /// <summary>The question's client message id while it is being answered: a concurrent duplicate cannot be admitted twice.</summary>
+    public string? ClientMessageId { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset ExpiresAt { get; set; }
 }

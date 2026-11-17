@@ -21,8 +21,10 @@ SCHEMA_EMBEDDING_DIMENSION = 1536
 # sql/knowledge_chunk_local_1024.sql (1024, local qwen3-embedding:0.6b).
 SCHEMA_EMBEDDING_DIMENSIONS = (SCHEMA_EMBEDDING_DIMENSION, 1024)
 
-# Production embedding models and the dimension each must return (requested explicitly via `dimensions`).
-PRODUCTION_EMBEDDING_MODELS = {"text-embedding-3-small": 1536}
+# Production embedding models and the dimensions each may return (requested explicitly via the API's `dimensions` parameter, which
+# text-embedding-3 models support: the provider shortens the vector, it is never truncated here). 1536 is the model's native size;
+# 1024 fits the vector(1024) column created for local embeddings, so moving to OpenAI needs a reindex but no schema change.
+PRODUCTION_EMBEDDING_MODELS = {"text-embedding-3-small": (1536, 1024)}
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
@@ -30,6 +32,8 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 # still checked against RAG_EMBEDDING_DIMENSION, so a model not listed here only needs the right dimension configured.
 OLLAMA_EMBEDDING_MODELS = {"qwen3-embedding:0.6b": 1024}
 LLM_PROVIDERS = ("openai", "ollama", "extractive")
+# Chat Completions `reasoning_effort` values (OpenAI); each model supports a subset, chosen by the API's model registry.
+REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 # Offline stand-in for development and tests only; its vectors are tagged with this model name, so they
 # can never be retrieved by (or mixed with) real embeddings.
@@ -84,6 +88,13 @@ class Settings:
     embedding_base_url: Optional[str] = None
     embedding_api_key: Optional[str] = None
     embedding_batch_size: int = 64
+    # Optional separate embedder for QUESTIONS (retrieval). Unset = the ingestion embedder above. Used during an embedding-model
+    # migration: ingestion (reindex) already writes the new model's chunks while questions keep using the old model's chunks, so a
+    # half-reindexed corpus is never served; when every version is reindexed the query settings are removed.
+    query_embedding_provider: Optional[str] = None
+    query_embedding_model: Optional[str] = None
+    query_embedding_base_url: Optional[str] = None
+    query_embedding_api_key: Optional[str] = None
 
     llm_provider: str = "extractive"  # openai | ollama | extractive
     llm_model: str = "extractive-dev"
@@ -143,6 +154,10 @@ class Settings:
             embedding_base_url=_str("RAG_EMBEDDING_BASE_URL") or (DEFAULT_OPENAI_BASE_URL if provider == "openai" else None),
             embedding_api_key=_str("RAG_EMBEDDING_API_KEY"),
             embedding_batch_size=_int("RAG_EMBEDDING_BATCH_SIZE", 64),
+            query_embedding_provider=_str("RAG_QUERY_EMBEDDING_PROVIDER"),
+            query_embedding_model=_str("RAG_QUERY_EMBEDDING_MODEL"),
+            query_embedding_base_url=_str("RAG_QUERY_EMBEDDING_BASE_URL"),
+            query_embedding_api_key=_str("RAG_QUERY_EMBEDDING_API_KEY"),
             llm_provider=_str("RAG_LLM_PROVIDER", "extractive") or "extractive",
             llm_model=_str("RAG_LLM_MODEL", "extractive-dev") or "extractive-dev",
             llm_base_url=_str("RAG_LLM_BASE_URL"),
@@ -220,36 +235,68 @@ class Settings:
         if problems:
             raise ValueError("Invalid RAG service configuration: " + "; ".join(problems))
 
+    def has_query_embedder(self) -> bool:
+        """True when questions use their own embedder (an embedding-model migration in progress)."""
+        return bool(self.query_embedding_provider or self.query_embedding_model)
+
+    def query_settings(self) -> "Settings":
+        """These settings with the query embedder in the embedding_* fields (same dimension: one vector column)."""
+        if not self.has_query_embedder():
+            return self
+        from dataclasses import replace
+
+        provider = self.query_embedding_provider or self.embedding_provider
+        same_provider = provider == self.embedding_provider
+        return replace(
+            self,
+            embedding_provider=provider,
+            embedding_model=self.query_embedding_model or self.embedding_model,
+            embedding_base_url=self.query_embedding_base_url or (self.embedding_base_url if same_provider
+                                                                  else DEFAULT_OPENAI_BASE_URL if provider == "openai" else None),
+            embedding_api_key=self.query_embedding_api_key or (self.embedding_api_key if same_provider else None),
+            query_embedding_provider=None, query_embedding_model=None, query_embedding_base_url=None, query_embedding_api_key=None,
+        )
+
     def _embedding_problems(self) -> List[str]:
         """Model and dimension must match the vector schema; the offline provider never runs in production."""
-        problems = []
-        if self.embedding_provider == "openai":
-            expected = PRODUCTION_EMBEDDING_MODELS.get(self.embedding_model)
-            if expected is None:
-                problems.append(f"RAG_EMBEDDING_MODEL must be one of: {', '.join(PRODUCTION_EMBEDDING_MODELS)}")
-            elif self.embedding_dimension != expected:
-                problems.append(f"RAG_EMBEDDING_DIMENSION must be {expected} for RAG_EMBEDDING_MODEL={self.embedding_model}")
-            if not self.embedding_base_url or not self.embedding_api_key:
-                problems.append("RAG_EMBEDDING_BASE_URL and RAG_EMBEDDING_API_KEY are required for openai embeddings")
-        elif self.embedding_provider == "ollama":
-            if not self.embedding_base_url:
-                problems.append("RAG_EMBEDDING_BASE_URL is required for ollama embeddings")
-            if not MODEL_ID_PATTERN.match(self.embedding_model) or self.embedding_model in (DEV_EMBEDDING_MODEL, DEFAULT_EMBEDDING_MODEL):
-                problems.append("RAG_EMBEDDING_MODEL must name an Ollama embedding model for the ollama provider")
-            expected = OLLAMA_EMBEDDING_MODELS.get(self.embedding_model)
-            if expected is not None and self.embedding_dimension != expected:
-                problems.append(f"RAG_EMBEDDING_DIMENSION must be {expected} for RAG_EMBEDDING_MODEL={self.embedding_model}")
-        elif self.embedding_provider == "hashing":
-            if self.environment not in NON_PRODUCTION_ENVIRONMENTS:
-                problems.append("RAG_EMBEDDING_PROVIDER=hashing is only allowed with RAG_ENV=development or test")
-            if self.embedding_model != DEV_EMBEDDING_MODEL:
-                problems.append(f"RAG_EMBEDDING_MODEL must be {DEV_EMBEDDING_MODEL} for the hashing provider")
-            if not 8 <= self.embedding_dimension <= 4096:
-                problems.append("RAG_EMBEDDING_DIMENSION must be between 8 and 4096")
-        else:
-            problems.append("RAG_EMBEDDING_PROVIDER must be openai, ollama or hashing")
+        problems = self._one_embedder_problems("RAG_EMBEDDING")
+        if self.has_query_embedder():
+            query = self.query_settings()
+            problems.extend(query._one_embedder_problems("RAG_QUERY_EMBEDDING"))
+            if query.embedding_model == self.embedding_model and query.embedding_provider == self.embedding_provider:
+                problems.append("RAG_QUERY_EMBEDDING_MODEL must differ from RAG_EMBEDDING_MODEL (leave the query settings unset otherwise)")
         # Which of these the live column has is checked by /health/ready (vectorstore.PgVectorStore.ready).
         if self.vector_store == "pgvector" and self.embedding_dimension not in SCHEMA_EMBEDDING_DIMENSIONS:
             sizes = " or ".join(str(d) for d in SCHEMA_EMBEDDING_DIMENSIONS)
             problems.append(f"RAG_EMBEDDING_DIMENSION must be {sizes} to match knowledge_chunk.embedding")
+        return problems
+
+    def _one_embedder_problems(self, prefix: str) -> List[str]:
+        problems = []
+        if self.embedding_provider == "openai":
+            allowed = PRODUCTION_EMBEDDING_MODELS.get(self.embedding_model)
+            if allowed is None:
+                problems.append(f"{prefix}_MODEL must be one of: {', '.join(PRODUCTION_EMBEDDING_MODELS)}")
+            elif self.embedding_dimension not in allowed:
+                sizes = " or ".join(str(d) for d in allowed)
+                problems.append(f"RAG_EMBEDDING_DIMENSION must be {sizes} for {prefix}_MODEL={self.embedding_model}")
+            if not self.embedding_base_url or not self.embedding_api_key:
+                problems.append(f"{prefix}_BASE_URL and {prefix}_API_KEY are required for openai embeddings")
+        elif self.embedding_provider == "ollama":
+            if not self.embedding_base_url:
+                problems.append(f"{prefix}_BASE_URL is required for ollama embeddings")
+            if not MODEL_ID_PATTERN.match(self.embedding_model) or self.embedding_model in (DEV_EMBEDDING_MODEL, DEFAULT_EMBEDDING_MODEL):
+                problems.append(f"{prefix}_MODEL must name an Ollama embedding model for the ollama provider")
+            expected = OLLAMA_EMBEDDING_MODELS.get(self.embedding_model)
+            if expected is not None and self.embedding_dimension != expected:
+                problems.append(f"RAG_EMBEDDING_DIMENSION must be {expected} for {prefix}_MODEL={self.embedding_model}")
+        elif self.embedding_provider == "hashing":
+            if self.environment not in NON_PRODUCTION_ENVIRONMENTS:
+                problems.append(f"{prefix}_PROVIDER=hashing is only allowed with RAG_ENV=development or test")
+            if self.embedding_model != DEV_EMBEDDING_MODEL:
+                problems.append(f"{prefix}_MODEL must be {DEV_EMBEDDING_MODEL} for the hashing provider")
+            if not 8 <= self.embedding_dimension <= 4096:
+                problems.append("RAG_EMBEDDING_DIMENSION must be between 8 and 4096")
+        else:
+            problems.append(f"{prefix}_PROVIDER must be openai, ollama or hashing")
         return problems

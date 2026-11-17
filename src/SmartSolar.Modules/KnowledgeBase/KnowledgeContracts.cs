@@ -17,14 +17,24 @@ public sealed class RagOptions
     /// whose chunks were embedded with another model (retrieval only reads chunks of the configured model, so those are invisible).
     /// </summary>
     public string? EmbeddingModel { get; set; }
-    public int MaxQuestionCharacters { get; set; } = 8000;
+    public int MaxQuestionCharacters { get; set; } = RagCostDefaults.MaxQuestionCharacters;
     public int MaxHistoryMessages { get; set; } = 6;
     public int TopK { get; set; } = 6;
     public int MaxTopK { get; set; } = 10;
-    public int MaxContextTokens { get; set; } = 3000;
-    public int MaxOutputTokens { get; set; } = 700;
-    public int MaxConcurrentGenerationsPerUser { get; set; } = 2;
-    public int DailyRequestsPerUser { get; set; } = 100;
+    public int MaxContextTokens { get; set; } = RagCostDefaults.MaxContextTokens;
+    public int MaxOutputTokens { get; set; } = RagCostDefaults.MaxOutputTokens;
+    public int MaxConcurrentGenerationsPerUser { get; set; } = RagCostDefaults.UserConcurrency;
+    public int DailyRequestsPerUser { get; set; } = RagCostDefaults.UserRequestsPerDay;
+    /// <summary>Bootstrap cost controls (an ACTIVE configuration version replaces them; hard ceilings in <see cref="RagConfigurationLimits.Hard"/>).</summary>
+    public bool GenerationEnabled { get; set; } = true;
+    public int GlobalConcurrentGenerations { get; set; } = RagCostDefaults.GlobalConcurrency;
+    public decimal DailyBudgetUsd { get; set; } = RagCostDefaults.DailyBudgetUsd;
+    public decimal MonthlyBudgetUsd { get; set; } = RagCostDefaults.MonthlyBudgetUsd;
+    public decimal MonthlyIngestionBudgetUsd { get; set; } = RagCostDefaults.MonthlyIngestionBudgetUsd;
+    /// <summary>Upper bound of characters the RAG service extracts from one document (its RAG_MAX_CHARACTERS): bounds an ingestion estimate.</summary>
+    public long MaxDocumentCharacters { get; set; } = 3_000_000;
+    /// <summary>Embedding models and their prices. Empty = the built-in list (<see cref="RagConfigurationRules.DefaultEmbeddingModels"/>).</summary>
+    public List<RagEmbeddingModelOptions> EmbeddingModels { get; set; } = [];
     public long DailyTokensPerUser { get; set; } = 200_000;
     public long GlobalDailyTokens { get; set; } = 5_000_000;
     public int MaxIngestAttempts { get; set; } = 5;
@@ -34,7 +44,8 @@ public sealed class RagOptions
     // ---- Bootstrap values: the effective configuration (version 0) while no admin configuration is ACTIVE.
     // TopK, MaxContextTokens, MaxOutputTokens and MaxHistoryMessages above are bootstrap values too.
 
-    public string GenerationModel { get; set; } = "gpt-4.1-mini";
+    /// <summary>Bootstrap generation model; empty = the least expensive usable model of the registry.</summary>
+    public string GenerationModel { get; set; } = "";
     /// <summary>Ignored (sent as null) when the bootstrap model does not support temperature.</summary>
     public decimal? Temperature { get; set; } = 0.1m;
     public int ChunkCharacters { get; set; } = 2400;
@@ -59,8 +70,11 @@ public sealed record RagIngestRequest(Guid VersionId, Guid DocumentId, string Bu
     string ExpectedSha256, string Title, int VersionNumber, int ConfigVersion = 0, int? ChunkCharacters = null, int? ChunkOverlap = null);
 
 /// <param name="ConfigVersion">Echoed by the RAG service with the chunk settings it actually used (null from an older service).</param>
+/// <param name="EmbeddingTokens">Billable embedding tokens the run spent (also when it failed after embedding); null from an older service.</param>
+/// <param name="Billing">"uncertain" when a failed provider call may still have been charged; "none" otherwise.</param>
 public sealed record RagIngestResult(bool Reached, string Status, int? PageCount, int? ChunkCount, int? Characters, string? EmbeddingModel, int? EmbeddingDimension, string? Error,
-    int? ConfigVersion = null, int? ChunkCharacters = null, int? ChunkOverlap = null);
+    int? ConfigVersion = null, int? ChunkCharacters = null, int? ChunkOverlap = null, long? EmbeddingTokens = null, string? EmbeddingProvider = null,
+    string Billing = "none");
 
 public sealed record RagHistoryTurn(string Role, string Content);
 
@@ -74,12 +88,19 @@ public sealed record RagAllowedVersion(Guid VersionId, Guid DocumentId, string T
 /// </summary>
 public sealed record RagAnswerRequest(string Question, IReadOnlyList<RagHistoryTurn> History, IReadOnlyList<RagAllowedVersion> AllowedVersions,
     int TopK, int MaxContextTokens, int MaxOutputTokens, int ConfigVersion = 0, string? GenerationModel = null, decimal? Temperature = null,
-    string? TokenParameter = null, decimal? MinScore = null, string? PromptVersion = null);
+    string? TokenParameter = null, decimal? MinScore = null, string? PromptVersion = null, string? ReasoningEffort = null, int? TimeoutSeconds = null);
 
 public sealed record RagCitation(Guid DocumentId, Guid VersionId, string ChunkId, int? Page, string? Section, double Score, string? Snippet);
 
+/// <summary>
+/// The RAG service's answer. Cost fields: the question embedding (<see cref="EmbeddingTokens"/> of <see cref="EmbeddingProvider"/>), the
+/// generation (null provider = the model was not called), cached and reasoning tokens, and whether usage was reported. For a failure,
+/// <see cref="Billing"/> is "uncertain" when the provider may have charged it.
+/// </summary>
 public sealed record RagAnswerResult(bool Reached, string? Error, string? Answer, bool Grounded, IReadOnlyList<RagCitation> Citations,
-    int PromptTokens, int CompletionTokens, string? Model, int RetrievalMs, int GenerationMs, int? ConfigVersion = null);
+    int PromptTokens, int CompletionTokens, string? Model, int RetrievalMs, int GenerationMs, int? ConfigVersion = null,
+    long EmbeddingTokens = 0, string? EmbeddingModel = null, string? EmbeddingProvider = null, string? GenerationProvider = null,
+    int CachedPromptTokens = 0, int ReasoningTokens = 0, bool UsageReported = true, string Billing = "none", int ContextMs = 0);
 
 /// <summary>Internal client of the FastAPI RAG service (HMAC-signed requests over the private network).</summary>
 public interface IRagServiceClient
@@ -158,6 +179,39 @@ public interface IKnowledgeUnitOfWork : ITransactionalUnitOfWork
     /// charges nothing) if the reservation was already completed or already charged at its estimate.
     /// </summary>
     Task<bool> CompleteUsageAsync(Guid reservationId, long inputTokens, long outputTokens, DateTimeOffset now, CancellationToken cancellationToken);
+
+    // ---- AI cost control (2026-11-17): USD budgets, quotas and concurrency, enforced atomically in PostgreSQL ----
+
+    /// <summary>
+    /// One atomic admission for a chat question: under the ledger row locks (usage rows of the day, then the budget periods in a fixed
+    /// order) it checks the per-user concurrency and daily requests, the token quotas of <paramref name="limits"/>, the global concurrency of
+    /// billable requests and the daily / monthly USD budgets against everything committed (reserved + settled + uncertain), then reserves
+    /// the request (tokens, USD, ledger row RESERVED). A concurrent duplicate of the same client message id is refused by a unique index
+    /// (<see cref="PersistenceConflictException"/>). Refusals are counted on the day's budget period.
+    /// </summary>
+    Task<AiAdmission> TryAdmitAsync(AiAdmissionRequest request, RagOptions limits, CancellationToken cancellationToken);
+
+    /// <summary>Settles an admitted question exactly once (tokens to the daily ledger, cost to the budget periods, ledger row SETTLED / UNCERTAIN / RELEASED).</summary>
+    Task<bool> SettleChatAsync(Guid reservationId, long inputTokens, long outputTokens, AiChatSettlement settlement, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Reserves the maximum embedding cost of one ingestion attempt against the monthly ingestion budget (idempotent per job attempt).
+    /// Returns the ledger id, or the refusal.
+    /// </summary>
+    Task<AiAdmission> TryReserveIngestionAsync(Guid jobId, int attempt, Guid versionId, decimal reservedUsd, decimal monthlyBudgetUsd, int configVersion,
+        DateTimeOffset now, DateTimeOffset expiresAt, CancellationToken cancellationToken);
+
+    Task<bool> SettleIngestionAsync(Guid ledgerId, string outcome, bool uncertain, string? provider, string? model, long tokens, decimal costUsd, DateTimeOffset now,
+        CancellationToken cancellationToken);
+
+    /// <summary>RESERVED ledger rows past their lease (crashed or abandoned work) become UNCERTAIN at their reserved cost. Returns how many.</summary>
+    Task<int> ExpireAiReservationsAsync(DateTimeOffset now, int limit, CancellationToken cancellationToken);
+
+    /// <summary>Admin review of an UNCERTAIN row: settle it at the actual cost from the provider's billing (0 = it was not charged).</summary>
+    Task<bool> ReviewUncertainAsync(Guid ledgerId, decimal costUsd, Guid adminUserId, string note, DateTimeOffset now, CancellationToken cancellationToken);
+
+    /// <summary>The budget counters of the given periods (absent periods are returned empty).</summary>
+    Task<IReadOnlyList<AiBudgetPeriod>> GetBudgetPeriodsAsync(IReadOnlyCollection<(string Kind, DateOnly Start)> periods, CancellationToken cancellationToken);
 
     // ---- Admin RAG configuration
 

@@ -87,7 +87,13 @@ class NumberedSource:
 def select_sources(hits: List[SearchHit], titles: Dict[str, str], max_context_tokens: int) -> List[NumberedSource]:
     selected: List[NumberedSource] = []
     used = 0
+    seen = set()
     for hit in hits:
+        # Identical chunks (a document uploaded twice, repeated boilerplate) cost tokens once.
+        key = " ".join(hit.content.split())
+        if key in seen:
+            continue
+        seen.add(key)
         cost = estimate_tokens(hit.content) + 30
         if selected and used + cost > max_context_tokens:
             break

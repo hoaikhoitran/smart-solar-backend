@@ -27,10 +27,11 @@ public sealed class RagServiceClient(HttpClient http, RagOptions options, TimePr
 
     public async Task<RagIngestResult> IngestAsync(RagIngestRequest request, CancellationToken cancellationToken)
     {
-        var (ok, body, error) = await PostAsync("internal/v1/ingest", request, options.IngestTimeoutSeconds, cancellationToken);
-        if (!ok || body is not { } b) return new RagIngestResult(false, "FAILED", null, null, null, null, null, error);
+        var (ok, body, error, billing, _) = await PostAsync("internal/v1/ingest", request, options.IngestTimeoutSeconds, cancellationToken);
+        if (!ok || body is not { } b) return new RagIngestResult(false, "FAILED", null, null, null, null, null, error, Billing: billing);
         return new RagIngestResult(true, Str(b, "status") ?? "FAILED", Int(b, "pageCount"), Int(b, "chunkCount"), Int(b, "characters"), Str(b, "embeddingModel"),
-            Int(b, "embeddingDimension"), Str(b, "error"), Int(b, "configVersion"), Int(b, "chunkCharacters"), Int(b, "chunkOverlap"));
+            Int(b, "embeddingDimension"), Str(b, "error"), Int(b, "configVersion"), Int(b, "chunkCharacters"), Int(b, "chunkOverlap"), Long(b, "embeddingTokens"),
+            Str(b, "embeddingProvider"), Str(b, "billing") ?? "none");
     }
 
     public async Task<bool> DeleteVectorsAsync(Guid versionId, CancellationToken cancellationToken)
@@ -40,19 +41,37 @@ public sealed class RagServiceClient(HttpClient http, RagOptions options, TimePr
     {
         // The service is told how long we wait (one second less, for the transfer back), so it neither queues nor generates an answer
         // we will no longer read (an abandoned request would otherwise hold the generation slot until the provider timeout).
-        var timeoutSeconds = Math.Clamp(options.RequestTimeoutSeconds, 5, 120);
+        // The admin generation timeout of the active configuration, never longer than Rag:RequestTimeoutSeconds.
+        var timeoutSeconds = Math.Clamp(Math.Min(request.TimeoutSeconds ?? options.RequestTimeoutSeconds, options.RequestTimeoutSeconds), 5, 120);
         var payload = AnswerPayload(request);
         payload["deadlineSeconds"] = timeoutSeconds - 1;
-        var (ok, body, error) = await PostAsync("internal/v1/answer", payload, timeoutSeconds, cancellationToken);
-        if (!ok || body is not { } b) return new RagAnswerResult(false, error, null, false, [], 0, 0, null, 0, 0);
+        var (ok, body, error, billing, failure) = await PostAsync("internal/v1/answer", payload, timeoutSeconds, cancellationToken);
+        if (!ok || body is not { } b)
+        {
+            // A failed answer still reports what was spent before the failure (the question embedding) and whether the provider may have
+            // charged the failed call; without a body (our timeout, a transport error) the charge is uncertain.
+            var spent = failure is { } f && f.TryGetProperty("usage", out var fu) && fu.ValueKind == JsonValueKind.Object ? fu : default;
+            return new RagAnswerResult(false, error, null, false, [], 0, 0, null, 0, 0,
+                EmbeddingTokens: spent.ValueKind == JsonValueKind.Object ? Long(spent, "embeddingTokens") ?? 0 : 0,
+                EmbeddingProvider: spent.ValueKind == JsonValueKind.Object ? Str(spent, "embeddingProvider") : null, Billing: billing);
+        }
         var citations = b.TryGetProperty("citations", out var list) && list.ValueKind == JsonValueKind.Array
             ? list.EnumerateArray().Select(c => new RagCitation(Guid.Parse(Str(c, "documentId")!), Guid.Parse(Str(c, "versionId")!), Str(c, "chunkId") ?? "",
                 Int(c, "page"), Str(c, "section"), c.TryGetProperty("score", out var s) && s.ValueKind == JsonValueKind.Number ? s.GetDouble() : 0, Str(c, "snippet"))).ToList()
             : [];
-        var usage = b.TryGetProperty("usage", out var u) ? u : default;
+        var usage = b.TryGetProperty("usage", out var u) && u.ValueKind == JsonValueKind.Object ? u : default;
+        var hasUsage = usage.ValueKind == JsonValueKind.Object;
         return new RagAnswerResult(true, null, Str(b, "answer"), b.TryGetProperty("grounded", out var g) && g.ValueKind == JsonValueKind.True, citations,
-            usage.ValueKind == JsonValueKind.Object ? Int(usage, "promptTokens") ?? 0 : 0, usage.ValueKind == JsonValueKind.Object ? Int(usage, "completionTokens") ?? 0 : 0,
-            Str(b, "model"), Int(b, "retrievalMs") ?? 0, Int(b, "generationMs") ?? 0, Int(b, "configVersion"));
+            hasUsage ? Int(usage, "promptTokens") ?? 0 : 0, hasUsage ? Int(usage, "completionTokens") ?? 0 : 0,
+            Str(b, "model"), Int(b, "retrievalMs") ?? 0, Int(b, "generationMs") ?? 0, Int(b, "configVersion"),
+            EmbeddingTokens: hasUsage ? Long(usage, "embeddingTokens") ?? 0 : 0, EmbeddingModel: hasUsage ? Str(usage, "embeddingModel") : null,
+            EmbeddingProvider: hasUsage ? Str(usage, "embeddingProvider") : null,
+            // An older service reports no providers: a generation it ran is then costed as the configured (billed) model.
+            GenerationProvider: hasUsage && usage.TryGetProperty("generationProvider", out var gp) ? (gp.ValueKind == JsonValueKind.String ? gp.GetString() : null)
+                : (Int(usage, "completionTokens") ?? 0) > 0 ? RagProviders.OpenAi : null,
+            CachedPromptTokens: hasUsage ? Int(usage, "cachedPromptTokens") ?? 0 : 0, ReasoningTokens: hasUsage ? Int(usage, "reasoningTokens") ?? 0 : 0,
+            UsageReported: !hasUsage || !usage.TryGetProperty("usageReported", out var ur) || ur.ValueKind != JsonValueKind.False,
+            ContextMs: Int(b, "contextMs") ?? 0);
     }
 
     /// <summary>
@@ -63,12 +82,16 @@ public sealed class RagServiceClient(HttpClient http, RagOptions options, TimePr
     public static System.Text.Json.Nodes.JsonObject AnswerPayload(RagAnswerRequest request)
     {
         var node = JsonSerializer.SerializeToNode(request, Json)!.AsObject();
+        // Client-side only (the call's own deadline); the service forbids unknown fields.
+        node.Remove("timeoutSeconds");
         if (request.GenerationModel is null)
         {
             node.Remove("generationModel");
             node.Remove("temperature");
             node.Remove("tokenParameter");
         }
+        // Sent only when set, so an API talking to a RAG service without the field (older build) keeps working for models without it.
+        if (request.ReasoningEffort is null) node.Remove("reasoningEffort");
         return node;
     }
 
@@ -80,9 +103,14 @@ public sealed class RagServiceClient(HttpClient http, RagOptions options, TimePr
     /// result ("timeout" / "unavailable") for the caller to retry; cancellation by the caller (service
     /// shutdown, client disconnect) is propagated as <see cref="OperationCanceledException"/>.
     /// </summary>
-    private async Task<(bool Ok, JsonElement? Body, string Error)> PostAsync(string path, object payload, int timeoutSeconds, CancellationToken cancellationToken)
+    /// <returns>
+    /// <c>Billing</c>: "none" when the call certainly cost nothing (not configured, or the service said so), "uncertain" when it may have
+    /// reached a paid provider (our timeout, a transport error, a failure body without a billing statement). <c>Failure</c>: a 503 body.
+    /// </returns>
+    private async Task<(bool Ok, JsonElement? Body, string Error, string Billing, JsonElement? Failure)> PostAsync(string path, object payload, int timeoutSeconds,
+        CancellationToken cancellationToken)
     {
-        if (!options.Enabled || string.IsNullOrWhiteSpace(options.ServiceSharedSecret)) return (false, null, "RAG service not configured");
+        if (!options.Enabled || string.IsNullOrWhiteSpace(options.ServiceSharedSecret)) return (false, null, "RAG service not configured", "none", null);
         var json = JsonSerializer.Serialize(payload, Json);
         var timestamp = time.GetUtcNow().ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
         using var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
@@ -95,42 +123,46 @@ public sealed class RagServiceClient(HttpClient http, RagOptions options, TimePr
             using var response = await http.SendAsync(request, deadline.Token);
             if (!response.IsSuccessStatusCode)
             {
-                // The service's 503 says why ("busy": every generation slot taken; "deadline exceeded": it would not finish in time).
-                var reason = (int)response.StatusCode == 503 ? await DetailAsync(response, deadline.Token) : null;
-                logger.LogWarning("RAG service returned HTTP {Status} ({Reason}) for {Path}.", (int)response.StatusCode, reason ?? "-", path);
+                // The service's 503 says why ("busy": every generation slot taken; "deadline exceeded": it would not finish in time; "provider
+                // rate limited"), whether the provider may have charged the failed call, and what was spent before the failure.
+                var failure = (int)response.StatusCode == 503 ? await FailureAsync(response, deadline.Token) : null;
+                var reason = failure is { } f && Str(f, "detail") is { } d ? d : null;
+                // Busy and refused requests never reached a provider; a failure body without a billing statement (older service) may have.
+                var billing = failure is { } fb && Str(fb, "billing") is { } bs ? bs : reason == "busy" ? "none" : (int)response.StatusCode >= 500 ? "uncertain" : "none";
+                logger.LogWarning("RAG service returned HTTP {Status} ({Reason}, billing {Billing}) for {Path}.", (int)response.StatusCode, reason ?? "-", billing, path);
                 return reason switch
                 {
-                    "busy" => (false, null, "busy"),
-                    "deadline exceeded" => (false, null, "timeout"),
-                    _ => (false, null, $"RAG service returned HTTP {(int)response.StatusCode}"),
+                    "busy" => (false, null, "busy", "none", failure),
+                    "deadline exceeded" => (false, null, "timeout", billing, failure),
+                    "provider rate limited" => (false, null, "provider rate limited", billing, failure),
+                    _ => (false, null, $"RAG service returned HTTP {(int)response.StatusCode}", billing, failure),
                 };
             }
             using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token));
-            return (true, document.RootElement.Clone(), "");
+            return (true, document.RootElement.Clone(), "", "none", null);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            // Our deadline (or HttpClient.Timeout) fired, not the caller.
+            // Our deadline (or HttpClient.Timeout) fired, not the caller. The service may still have called (and paid) the provider.
             logger.LogWarning("RAG service call to {Path} timed out after {Seconds}s.", path, timeoutSeconds);
-            return (false, null, "timeout");
+            return (false, null, "timeout", "uncertain", null);
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException)
         {
             logger.LogWarning("RAG service call to {Path} failed ({ExceptionType}).", path, ex.GetType().Name);
-            return (false, null, "RAG service unavailable");
+            return (false, null, "RAG service unavailable", "uncertain", null);
         }
     }
 
-    /// <summary>FastAPI's <c>{"detail": "…"}</c>, read with a size cap; null when absent or not JSON.</summary>
-    private static async Task<string?> DetailAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    /// <summary>FastAPI's error body (<c>{"detail": "…", "billing": "…", "usage": {…}}</c>), read with a size cap; null when absent or not JSON.</summary>
+    private static async Task<JsonElement?> FailureAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         try
         {
             var text = await response.Content.ReadAsStringAsync(cancellationToken);
             if (text.Length > 4096) return null;
             using var document = JsonDocument.Parse(text);
-            return document.RootElement.ValueKind == JsonValueKind.Object && document.RootElement.TryGetProperty("detail", out var d) && d.ValueKind == JsonValueKind.String
-                ? d.GetString() : null;
+            return document.RootElement.ValueKind == JsonValueKind.Object ? document.RootElement.Clone() : null;
         }
         catch (JsonException)
         {
@@ -140,4 +172,5 @@ public sealed class RagServiceClient(HttpClient http, RagOptions options, TimePr
 
     private static string? Str(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
     private static int? Int(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var i) ? i : null;
+    private static long? Long(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var i) ? i : null;
 }

@@ -23,14 +23,8 @@ public sealed class RagConfigurationTests
         public Rig(InstallationWorkflowTestContext ctx, TimeSpan? cacheTtl = null, List<RagGenerationModelOptions>? models = null)
         {
             Ctx = ctx;
-            Options.GenerationModels = models ??
-            [
-                .. RagConfigurationRules.DefaultModels,
-                new RagGenerationModelOptions
-                {
-                    Id = "o4-mini", DisplayName = "o4 mini", SupportsTemperature = false, TokenParameter = RagTokenParameters.MaxCompletionTokens, MaxOutputTokensLimit = 1000,
-                },
-            ];
+            // The classic cloud models with synthetic prices (a billed model must be priced to be usable) plus the reasoning-style o4-mini.
+            Options.GenerationModels = models ?? RagTestModels.Classic();
             Rules = new RagConfigurationRules(Options);
             Cache = new RagConfigurationCache(cacheTtl ?? TimeSpan.Zero);
         }
@@ -396,7 +390,7 @@ public sealed class RagConfigurationTests
 
         var result = await rig.Config().ReindexStaleAsync(admin, None);
         Assert.True(result.Succeeded, result.Message);
-        Assert.Equal(new RagReindexStaleView(1, 2, 1, 1), result.Value);
+        Assert.Equal(new RagReindexStaleView(1, 2, 1, 1), Counts(result.Value));
         var queued = await ctx.Db.KnowledgeIngestionJobs.AsNoTracking().OrderByDescending(j => j.CreatedAt).ToListAsync();
         Assert.Equal(jobsBefore + 1, queued.Count);
         var newJob = queued.Single(j => j.VersionId == b.Versions![0].VersionId && j.Status == JobStatuses.Pending);
@@ -407,7 +401,7 @@ public sealed class RagConfigurationTests
         Assert.Equal(0, (await rig.Config().ReindexStaleAsync(admin, None)).Value!.Queued);
         // After they run everything is up to date and B stayed published throughout.
         await rig.Ingestion().RunDueAsync(10, None);
-        Assert.Equal(new RagReindexStaleView(1, 0, 0, 0), (await rig.Config().ReindexStaleAsync(admin, None)).Value);
+        Assert.Equal(new RagReindexStaleView(1, 0, 0, 0), Counts((await rig.Config().ReindexStaleAsync(admin, None)).Value));
         Assert.Contains(await new KnowledgeUnitOfWork(ctx.Db).GetRetrievableVersionsAsync(None), v => v.VersionId == b.Versions![0].VersionId);
         var validation = await rig.Config().SaveDraftAsync(admin, Input(chunk: 2000, overlap: 200), null, None);
         Assert.True(validation.Succeeded);
@@ -631,7 +625,7 @@ public sealed class RagConfigurationTests
         var rules = new RagConfigurationRules(new RagOptions { ConfigurationLimits = new RagConfigurationLimits { TopKMax = 50, ChunkCharactersMin = 1000 } });
         Assert.Equal(10, rules.Limits.TopKMax);
         Assert.Equal(1000, rules.Limits.ChunkCharactersMin);
-        Assert.Equal(["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"], rules.Models.Select(m => m.Id));
+        Assert.Equal(["gpt-6-luna", "gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"], rules.Models.Select(m => m.Id));
         Assert.Equal(["v1"], rules.PromptVersions);
     }
 
@@ -679,17 +673,17 @@ public sealed class RagConfigurationTests
         var versionId = published.Versions![0].VersionId;
 
         // Not configured: unchanged behaviour (only chunk settings decide).
-        Assert.Equal(new RagReindexStaleView(0, 0, 0, 0), (await rig.Config().ReindexStaleAsync(admin, None)).Value);
+        Assert.Equal(new RagReindexStaleView(0, 0, 0, 0), Counts((await rig.Config().ReindexStaleAsync(admin, None)).Value));
 
         rig.Options.EmbeddingModel = "qwen3-embedding:0.6b";
-        Assert.Equal(new RagReindexStaleView(0, 1, 1, 0), (await rig.Config().ReindexStaleAsync(admin, None)).Value);
+        Assert.Equal(new RagReindexStaleView(0, 1, 1, 0), Counts((await rig.Config().ReindexStaleAsync(admin, None)).Value));
         rig.Rag.Ingest = (r, _) => Task.FromResult(new RagIngestResult(true, "READY", 3, 12, 4000, "qwen3-embedding:0.6b", 1024, null,
             r.ConfigVersion, r.ChunkCharacters, r.ChunkOverlap));
         await rig.Ingestion().RunDueAsync(10, None);
 
         var version = await ctx.Db.KnowledgeDocumentVersions.AsNoTracking().SingleAsync(v => v.Id == versionId);
         Assert.Equal(("qwen3-embedding:0.6b", "PUBLISHED"), (version.EmbeddingModel, version.Status));
-        Assert.Equal(new RagReindexStaleView(0, 0, 0, 0), (await rig.Config().ReindexStaleAsync(admin, None)).Value);
+        Assert.Equal(new RagReindexStaleView(0, 0, 0, 0), Counts((await rig.Config().ReindexStaleAsync(admin, None)).Value));
     }
 
     [Fact]
@@ -709,7 +703,7 @@ public sealed class RagConfigurationTests
         }
 
         // appsettings.json alone: the built-in defaults (the same three cloud models as before).
-        Assert.Equal(["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"], new RagConfigurationRules(Bind([])).Models.Select(m => m.Id));
+        Assert.Equal(["gpt-6-luna", "gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"], new RagConfigurationRules(Bind([])).Models.Select(m => m.Id));
 
         // Rag__GenerationModels__0__* in the environment: exactly that list, without cloud models left over at other indexes.
         var local = Bind(new()
@@ -724,4 +718,7 @@ public sealed class RagConfigurationTests
         Assert.Equal("qwen3:1.7b", rules.Bootstrap(local).Values.GenerationModel);
         Assert.Empty(rules.Validate(rules.Bootstrap(local).Values));
     }
+
+    /// <summary>The counts of a reindex view (the cost estimate and remaining budget are asserted by the cost-control tests).</summary>
+    private static RagReindexStaleView Counts(RagReindexStaleView? view) => view! with { EstimatedCostUsd = 0, RemainingIngestionBudgetUsd = 0 };
 }

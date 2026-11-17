@@ -3980,6 +3980,248 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("SmartSolar.Modules.KnowledgeBase.AiBudgetPeriod", b =>
+                {
+                    b.Property<string>("PeriodKind")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("period_kind");
+
+                    b.Property<DateOnly>("PeriodStart")
+                        .HasColumnType("date")
+                        .HasColumnName("period_start");
+
+                    b.Property<int>("Blocked")
+                        .HasColumnType("integer")
+                        .HasColumnName("blocked");
+
+                    b.Property<int>("Requests")
+                        .HasColumnType("integer")
+                        .HasColumnName("requests");
+
+                    b.Property<decimal>("ReservedUsd")
+                        .HasPrecision(14, 8)
+                        .HasColumnType("numeric(14,8)")
+                        .HasColumnName("reserved_usd");
+
+                    b.Property<decimal>("SettledUsd")
+                        .HasPrecision(14, 8)
+                        .HasColumnType("numeric(14,8)")
+                        .HasColumnName("settled_usd");
+
+                    b.Property<decimal>("UncertainUsd")
+                        .HasPrecision(14, 8)
+                        .HasColumnType("numeric(14,8)")
+                        .HasColumnName("uncertain_usd");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("PeriodKind", "PeriodStart");
+
+                    b.ToTable("ai_budget_period", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_ai_budget_period_kind", "period_kind IN ('DAY', 'MONTH', 'INGEST_MONTH')");
+
+                            t.HasCheckConstraint("ck_ai_budget_period_non_negative", "reserved_usd >= 0 AND settled_usd >= 0 AND uncertain_usd >= 0 AND requests >= 0 AND blocked >= 0");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.KnowledgeBase.AiUsageLedgerEntry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<long>("CachedInputTokens")
+                        .HasColumnType("bigint")
+                        .HasColumnName("cached_input_tokens");
+
+                    b.Property<Guid?>("ChatMessageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("chat_message_id");
+
+                    b.Property<int?>("ConfigVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("config_version");
+
+                    b.Property<decimal>("CostUsd")
+                        .HasPrecision(14, 8)
+                        .HasColumnType("numeric(14,8)")
+                        .HasColumnName("cost_usd");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<decimal>("EmbeddingCostUsd")
+                        .HasPrecision(14, 8)
+                        .HasColumnType("numeric(14,8)")
+                        .HasColumnName("embedding_cost_usd");
+
+                    b.Property<string>("EmbeddingModel")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("embedding_model");
+
+                    b.Property<string>("EmbeddingProvider")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("embedding_provider");
+
+                    b.Property<long>("EmbeddingTokens")
+                        .HasColumnType("bigint")
+                        .HasColumnName("embedding_tokens");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<decimal>("GenerationCostUsd")
+                        .HasPrecision(14, 8)
+                        .HasColumnType("numeric(14,8)")
+                        .HasColumnName("generation_cost_usd");
+
+                    b.Property<string>("GenerationModel")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("generation_model");
+
+                    b.Property<string>("GenerationProvider")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("generation_provider");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<Guid?>("IngestionJobId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("ingestion_job_id");
+
+                    b.Property<long>("InputTokens")
+                        .HasColumnType("bigint")
+                        .HasColumnName("input_tokens");
+
+                    b.Property<int?>("LatencyMs")
+                        .HasColumnType("integer")
+                        .HasColumnName("latency_ms");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("operation");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("outcome");
+
+                    b.Property<long>("OutputTokens")
+                        .HasColumnType("bigint")
+                        .HasColumnName("output_tokens");
+
+                    b.Property<long>("ReasoningTokens")
+                        .HasColumnType("bigint")
+                        .HasColumnName("reasoning_tokens");
+
+                    b.Property<decimal>("ReservedUsd")
+                        .HasPrecision(14, 8)
+                        .HasColumnType("numeric(14,8)")
+                        .HasColumnName("reserved_usd");
+
+                    b.Property<string>("ReviewNote")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("review_note");
+
+                    b.Property<DateTimeOffset?>("ReviewedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("reviewed_at");
+
+                    b.Property<Guid?>("ReviewedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reviewed_by_user_id");
+
+                    b.Property<DateTimeOffset?>("SettledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("settled_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<bool>("UsageReported")
+                        .HasColumnType("boolean")
+                        .HasColumnName("usage_reported");
+
+                    b.Property<Guid?>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<string>("UserRole")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("user_role");
+
+                    b.Property<Guid?>("VersionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("version_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ChatMessageId")
+                        .HasDatabaseName("ix_ai_usage_ledger_chat_message_id");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("ix_ai_usage_ledger_created_at");
+
+                    b.HasIndex("IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_ai_usage_ledger_idempotency_key");
+
+                    b.HasIndex("IngestionJobId")
+                        .HasDatabaseName("ix_ai_usage_ledger_ingestion_job_id");
+
+                    b.HasIndex("ReviewedByUserId")
+                        .HasDatabaseName("ix_ai_usage_ledger_reviewed_by_user_id");
+
+                    b.HasIndex("VersionId")
+                        .HasDatabaseName("ix_ai_usage_ledger_version_id");
+
+                    b.HasIndex("Status", "ExpiresAt")
+                        .HasDatabaseName("ix_ai_usage_ledger_status_expires_at");
+
+                    b.HasIndex("UserId", "CreatedAt")
+                        .HasDatabaseName("ix_ai_usage_ledger_user_created_at");
+
+                    b.ToTable("ai_usage_ledger", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_ai_usage_ledger_lease", "expires_at > created_at");
+
+                            t.HasCheckConstraint("ck_ai_usage_ledger_non_negative", "embedding_tokens >= 0 AND input_tokens >= 0 AND cached_input_tokens >= 0 AND output_tokens >= 0 AND reasoning_tokens >= 0 AND embedding_cost_usd >= 0 AND generation_cost_usd >= 0 AND reserved_usd >= 0 AND cost_usd >= 0 AND cached_input_tokens <= input_tokens");
+
+                            t.HasCheckConstraint("ck_ai_usage_ledger_operation", "operation IN ('CHAT', 'INGESTION')");
+
+                            t.HasCheckConstraint("ck_ai_usage_ledger_outcome", "outcome IN ('PENDING', 'ANSWERED', 'INSUFFICIENT_CONTEXT', 'PROVIDER_ERROR', 'PROVIDER_RATE_LIMITED', 'TIMEOUT', 'BUSY', 'EXPIRED', 'INDEXED', 'INGEST_FAILED', 'REVIEWED')");
+
+                            t.HasCheckConstraint("ck_ai_usage_ledger_review", "(reviewed_at IS NULL) = (reviewed_by_user_id IS NULL)");
+
+                            t.HasCheckConstraint("ck_ai_usage_ledger_settled", "(status = 'RESERVED') = (settled_at IS NULL)");
+
+                            t.HasCheckConstraint("ck_ai_usage_ledger_status", "status IN ('RESERVED', 'SETTLED', 'UNCERTAIN', 'RELEASED')");
+                        });
+                });
+
             modelBuilder.Entity("SmartSolar.Modules.KnowledgeBase.ChatCitation", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4574,11 +4816,36 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("created_by_user_id");
 
+                    b.Property<decimal>("DailyBudgetUsd")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(10, 2)
+                        .HasColumnType("numeric(10,2)")
+                        .HasDefaultValue(1.00m)
+                        .HasColumnName("daily_budget_usd");
+
+                    b.Property<bool>("GenerationEnabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("generation_enabled");
+
                     b.Property<string>("GenerationModel")
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)")
                         .HasColumnName("generation_model");
+
+                    b.Property<int>("GenerationTimeoutSeconds")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(30)
+                        .HasColumnName("generation_timeout_seconds");
+
+                    b.Property<int>("GlobalConcurrency")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(3)
+                        .HasColumnName("global_concurrency");
 
                     b.Property<int>("MaxContextTokens")
                         .HasColumnType("integer")
@@ -4592,10 +4859,30 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("max_output_tokens");
 
+                    b.Property<int>("MaxQuestionCharacters")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1000)
+                        .HasColumnName("max_question_characters");
+
                     b.Property<decimal>("MinScore")
                         .HasPrecision(4, 3)
                         .HasColumnType("numeric(4,3)")
                         .HasColumnName("min_score");
+
+                    b.Property<decimal>("MonthlyBudgetUsd")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(10, 2)
+                        .HasColumnType("numeric(10,2)")
+                        .HasDefaultValue(4.00m)
+                        .HasColumnName("monthly_budget_usd");
+
+                    b.Property<decimal>("MonthlyIngestionBudgetUsd")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(10, 2)
+                        .HasColumnType("numeric(10,2)")
+                        .HasDefaultValue(0.50m)
+                        .HasColumnName("monthly_ingestion_budget_usd");
 
                     b.Property<string>("Notes")
                         .HasMaxLength(500)
@@ -4607,6 +4894,11 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
                         .HasColumnName("prompt_version");
+
+                    b.Property<string>("ReasoningEffort")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("reasoning_effort");
 
                     b.Property<int>("Revision")
                         .IsConcurrencyToken()
@@ -4631,6 +4923,18 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");
+
+                    b.Property<int>("UserConcurrency")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("user_concurrency");
+
+                    b.Property<int>("UserRequestsPerDay")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(30)
+                        .HasColumnName("user_requests_per_day");
 
                     b.Property<int>("Version")
                         .HasColumnType("integer")
@@ -4660,6 +4964,8 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         {
                             t.HasCheckConstraint("ck_rag_configuration_activated", "(status = 'DRAFT') = (activated_at IS NULL) AND (activated_at IS NULL) = (activated_by_user_id IS NULL)");
 
+                            t.HasCheckConstraint("ck_rag_configuration_budgets", "daily_budget_usd >= 0 AND daily_budget_usd <= 10 AND monthly_budget_usd >= 0 AND monthly_budget_usd <= 100 AND monthly_ingestion_budget_usd >= 0 AND monthly_ingestion_budget_usd <= 10 AND daily_budget_usd <= monthly_budget_usd");
+
                             t.HasCheckConstraint("ck_rag_configuration_chunking", "chunk_characters BETWEEN 400 AND 8000 AND chunk_overlap >= 0 AND chunk_overlap * 2 <= chunk_characters AND chunk_overlap < chunk_characters");
 
                             t.HasCheckConstraint("ck_rag_configuration_max_context_tokens", "max_context_tokens BETWEEN 500 AND 6000");
@@ -4671,6 +4977,10 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                             t.HasCheckConstraint("ck_rag_configuration_min_score", "min_score >= 0 AND min_score <= 1");
 
                             t.HasCheckConstraint("ck_rag_configuration_model", "length(generation_model) > 0 AND length(prompt_version) > 0");
+
+                            t.HasCheckConstraint("ck_rag_configuration_quotas", "user_requests_per_day BETWEEN 1 AND 200 AND user_concurrency BETWEEN 1 AND 2 AND global_concurrency BETWEEN 1 AND 10 AND max_question_characters BETWEEN 100 AND 2000 AND generation_timeout_seconds BETWEEN 5 AND 60");
+
+                            t.HasCheckConstraint("ck_rag_configuration_reasoning_effort", "reasoning_effort IS NULL OR reasoning_effort IN ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')");
 
                             t.HasCheckConstraint("ck_rag_configuration_status", "status IN ('DRAFT', 'ACTIVE', 'SUPERSEDED')");
 
@@ -4727,6 +5037,11 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<string>("ClientMessageId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("client_message_id");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
@@ -4738,6 +5053,13 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.Property<long>("ReservedTokens")
                         .HasColumnType("bigint")
                         .HasColumnName("reserved_tokens");
+
+                    b.Property<decimal>("ReservedUsd")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(14, 8)
+                        .HasColumnType("numeric(14,8)")
+                        .HasDefaultValue(0m)
+                        .HasColumnName("reserved_usd");
 
                     b.Property<DateOnly>("UsageDate")
                         .HasColumnType("date")
@@ -4755,11 +5077,17 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.HasIndex("UserId", "UsageDate", "ExpiresAt")
                         .HasDatabaseName("ix_rag_usage_reservation_user_date_expires");
 
+                    b.HasIndex(new[] { "UserId", "ClientMessageId" }, "ux_rag_usage_reservation_client_message")
+                        .IsUnique()
+                        .HasFilter("client_message_id IS NOT NULL");
+
                     b.ToTable("rag_usage_reservation", null, t =>
                         {
                             t.HasCheckConstraint("ck_rag_usage_reservation_lease", "expires_at > created_at");
 
                             t.HasCheckConstraint("ck_rag_usage_reservation_tokens", "reserved_tokens > 0");
+
+                            t.HasCheckConstraint("ck_rag_usage_reservation_usd", "reserved_usd >= 0");
                         });
                 });
 
@@ -8469,6 +8797,39 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_iot_telemetry_reading_device");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.KnowledgeBase.AiUsageLedgerEntry", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.KnowledgeBase.ChatMessage", null)
+                        .WithMany()
+                        .HasForeignKey("ChatMessageId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_ai_usage_ledger_chat_message");
+
+                    b.HasOne("SmartSolar.Modules.KnowledgeBase.KnowledgeIngestionJob", null)
+                        .WithMany()
+                        .HasForeignKey("IngestionJobId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_ai_usage_ledger_ingestion_job");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("ReviewedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_ai_usage_ledger_reviewed_by");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_ai_usage_ledger_user");
+
+                    b.HasOne("SmartSolar.Modules.KnowledgeBase.KnowledgeDocumentVersion", null)
+                        .WithMany()
+                        .HasForeignKey("VersionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_ai_usage_ledger_version");
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.KnowledgeBase.ChatCitation", b =>

@@ -46,7 +46,21 @@ public sealed record SolarAdvisorRequest(decimal? RoofAreaM2, decimal? BudgetVnd
 /// <c>expectedRevision</c> is required when a draft already exists.
 /// </summary>
 public sealed record SaveRagConfigurationDraftRequest(string? GenerationModel, JsonElement Temperature, int? MaxOutputTokens, int? ChunkCharacters, int? ChunkOverlap,
-    int? TopK, decimal? MinScore, int? MaxContextTokens, int? MaxHistoryMessages, string? PromptVersion, string? Notes, int? ExpectedRevision);
+    int? TopK, decimal? MinScore, int? MaxContextTokens, int? MaxHistoryMessages, string? PromptVersion, string? Notes, int? ExpectedRevision,
+    JsonElement ReasoningEffort = default, bool? GenerationEnabled = null, int? UserRequestsPerDay = null, int? UserConcurrency = null, int? GlobalConcurrency = null,
+    int? MaxQuestionCharacters = null, int? GenerationTimeoutSeconds = null, decimal? DailyBudgetUsd = null, decimal? MonthlyBudgetUsd = null,
+    decimal? MonthlyIngestionBudgetUsd = null);
+
+/// <summary>
+/// Cost controls only (<c>PUT /api/admin/rag-budget</c>). Absent fields keep the active value. <c>expectedActiveVersion</c> is the version
+/// returned by <c>GET /api/admin/rag-budget</c> (0 while bootstrap values apply).
+/// </summary>
+public sealed record UpdateRagBudgetRequest(int? ExpectedActiveVersion, decimal? DailyBudgetUsd, decimal? MonthlyBudgetUsd, decimal? MonthlyIngestionBudgetUsd,
+    int? UserRequestsPerDay, int? UserConcurrency, int? GlobalConcurrency, int? MaxQuestionCharacters, int? GenerationTimeoutSeconds, bool? GenerationEnabled,
+    string? Notes);
+
+/// <summary>Admin review of an UNCERTAIN charge: the actual cost from the provider's billing (0 = not charged) and a note.</summary>
+public sealed record ReviewAiUsageRequest(decimal? CostUsd, string? Note);
 
 public sealed record ActivateRagConfigurationRequest(int ExpectedRevision);
 

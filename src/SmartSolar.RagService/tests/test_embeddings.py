@@ -226,10 +226,18 @@ def test_reindexing_after_a_model_change_replaces_the_version_and_restores_retri
     query = new.embed(["bảo hành"])[0]
     assert store.search(query, [ids[0]], 5, new.model) == []   # not retrievable until reindexed
 
+    old_chunks = store.count(ids[0], old.model)
     assert ingest(settings, LocalStorage(str(tmp_path)), new, store, request).status == "READY"   # admin reindex
     hits = store.search(query, [ids[0]], 5, new.model)
     assert hits and all(h.version_id == ids[0] for h in hits)
-    assert store.search(query, [ids[0]], 5, old.model) == []   # old-model chunks were replaced
+    # The old model's chunks stay untouched (they keep serving questions until the query embedder is switched): a reindex
+    # replaces only the chunks of the model it writes, and each model only ever retrieves its own chunks.
+    assert old_chunks > 0 and store.count(ids[0], old.model) == old_chunks
+    assert store.count(ids[0], new.model) > 0
+    # A second reindex with the new model replaces its own chunks, never duplicates them.
+    new_chunks = store.count(ids[0], new.model)
+    assert ingest(settings, LocalStorage(str(tmp_path)), new, store, request).status == "READY"
+    assert (store.count(ids[0], new.model), store.count(ids[0], old.model)) == (new_chunks, old_chunks)
 
 
 # ---------------------------------------------------------------- opt-in live smoke test (paid)
