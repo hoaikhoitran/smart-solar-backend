@@ -90,6 +90,11 @@ public abstract class OperationResultControllerBase : ControllerBase
         if (code is "FILE_OBJECT_MISSING" or "INSTALLATION_EVIDENCE_OBJECT_MISSING") return StatusCodes.Status410Gone;
         if (code is "PAYMENT_PROVIDER_ERROR") return StatusCodes.Status502BadGateway;
         if (code is "RAG_QUOTA_EXCEEDED" or "RAG_TOO_MANY_CONCURRENT_REQUESTS" or "PAYMENT_TOO_MANY_ATTEMPTS") return StatusCodes.Status429TooManyRequests;
+        // AI cost control: budget, global concurrency and an in-flight duplicate are "try again later" (details.retryAfterSeconds); the admin
+        // switch is a temporary unavailability of paid generation.
+        if (code is "AI_BUDGET_EXCEEDED" or "AI_GLOBAL_CONCURRENCY_LIMIT" or "AI_REQUEST_IN_PROGRESS" or "AI_CONCURRENCY_LIMIT" or "AI_USER_QUOTA_EXCEEDED")
+            return StatusCodes.Status429TooManyRequests;
+        if (code is "AI_GENERATION_DISABLED") return StatusCodes.Status503ServiceUnavailable;
         return StatusCodes.Status409Conflict;
     }
 }

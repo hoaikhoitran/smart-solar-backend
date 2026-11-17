@@ -21,25 +21,10 @@ public sealed class RagConfigurationEndpointsTests
     {
         // A configured registry replaces the built-in one entirely (appsettings.json ships none), so the shipped three are listed
         // explicitly, followed by a reasoning-style model.
-        var settings = new Dictionary<string, string?>
-        {
-            ["Rag:ServiceSharedSecret"] = Secret,
-            ["Rag:ServiceBaseUrl"] = ServiceUrl,
-            ["Rag:GenerationModels:3:Id"] = "o4-mini",
-            ["Rag:GenerationModels:3:DisplayName"] = "o4 mini",
-            ["Rag:GenerationModels:3:SupportsTemperature"] = "false",
-            ["Rag:GenerationModels:3:TokenParameter"] = "max_completion_tokens",
-            ["Rag:GenerationModels:3:MaxOutputTokensLimit"] = "1000",
-            ["Rag:ConfigurationCacheSeconds"] = "15",
-        };
-        foreach (var (model, index) in RagConfigurationRules.DefaultModels.Select((m, i) => (m, i)))
-        {
-            settings[$"Rag:GenerationModels:{index}:Id"] = model.Id;
-            settings[$"Rag:GenerationModels:{index}:DisplayName"] = model.DisplayName;
-            settings[$"Rag:GenerationModels:{index}:SupportsTemperature"] = model.SupportsTemperature ? "true" : "false";
-            settings[$"Rag:GenerationModels:{index}:TokenParameter"] = model.TokenParameter;
-            settings[$"Rag:GenerationModels:{index}:MaxOutputTokensLimit"] = model.MaxOutputTokensLimit.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        }
+        var settings = RagTestModels.AsSettings(RagTestModels.Classic());
+        settings["Rag:ServiceSharedSecret"] = Secret;
+        settings["Rag:ServiceBaseUrl"] = ServiceUrl;
+        settings["Rag:ConfigurationCacheSeconds"] = "15";
         return Enabled(storage ?? new FakeStorageObjectVerifier(), rag, settings);
     }
 

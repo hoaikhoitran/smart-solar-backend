@@ -149,6 +149,7 @@ def test_request_values_are_used_and_echoed(world, settings):
     body = answer.json()
     assert body["grounded"] is True
     assert body["configVersion"] == 7
+    assert body["parameters"].pop("reasoningEffort") is None
     assert body["parameters"] == {"generationModel": "gpt-4.1", "temperature": 0.3, "tokenParameter": "max_completion_tokens", "maxOutputTokens": 500,
                                   "maxContextTokens": 2000, "topK": 4, "minScore": 0.01}
 

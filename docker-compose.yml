@@ -101,6 +101,16 @@ services:
       RAG_LLM_API_KEY: ${RAG_LLM_API_KEY:-}
       RAG_WORKERS: ${RAG_WORKERS:-1}
       RAG_INGEST_DEADLINE_SECONDS: ${RAG_INGEST_DEADLINE_SECONDS:-270}
+      # Embedding-model transition (guides/cloud-rag-migration.md): while the chunks are re-indexed with RAG_EMBEDDING_MODEL, questions
+      # keep being embedded with the previous model. Leave all four empty once every version is re-indexed.
+      RAG_QUERY_EMBEDDING_PROVIDER: ${RAG_QUERY_EMBEDDING_PROVIDER:-}
+      RAG_QUERY_EMBEDDING_MODEL: ${RAG_QUERY_EMBEDDING_MODEL:-}
+      RAG_QUERY_EMBEDDING_BASE_URL: ${RAG_QUERY_EMBEDDING_BASE_URL:-}
+      RAG_QUERY_EMBEDDING_API_KEY: ${RAG_QUERY_EMBEDDING_API_KEY:-}
+      RAG_MAX_CONTEXT_TOKENS: ${RAG_MAX_CONTEXT_TOKENS:-}
+      RAG_MAX_OUTPUT_TOKENS: ${RAG_MAX_OUTPUT_TOKENS:-}
+      RAG_MAX_CONCURRENT_GENERATIONS: ${RAG_MAX_CONCURRENT_GENERATIONS:-}
+      RAG_PROVIDER_TIMEOUT_SECONDS: ${RAG_PROVIDER_TIMEOUT_SECONDS:-}
 
     expose:
       - "8000"

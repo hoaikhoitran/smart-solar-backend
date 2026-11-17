@@ -231,15 +231,22 @@ public sealed class RagUsageReservationConfiguration : IEntityTypeConfiguration<
         {
             t.HasCheckConstraint("ck_rag_usage_reservation_tokens", "reserved_tokens > 0");
             t.HasCheckConstraint("ck_rag_usage_reservation_lease", "expires_at > created_at");
+            t.HasCheckConstraint("ck_rag_usage_reservation_usd", "reserved_usd >= 0");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.UserId).HasColumnName("user_id").IsRequired();
         builder.Property(x => x.UsageDate).HasColumnName("usage_date").IsRequired();
         builder.Property(x => x.ReservedTokens).HasColumnName("reserved_tokens").IsRequired();
+        // Defaults keep the previous API build working (it inserts neither column) during a rolling deployment.
+        builder.Property(x => x.ReservedUsd).HasColumnName("reserved_usd").HasPrecision(14, 8).IsRequired().HasDefaultValue(0m);
+        builder.Property(x => x.ClientMessageId).HasColumnName("client_message_id").HasMaxLength(64);
         builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.ExpiresAt).HasColumnName("expires_at").IsRequired();
         builder.HasIndex(x => new { x.UserId, x.UsageDate, x.ExpiresAt }).HasDatabaseName("ix_rag_usage_reservation_user_date_expires");
+        // A question being answered cannot be admitted a second time (double click, retry, two replicas).
+        builder.HasIndex(x => new { x.UserId, x.ClientMessageId }, "ux_rag_usage_reservation_client_message").IsUnique()
+            .HasFilter("client_message_id IS NOT NULL");
         builder.HasIndex(x => x.UsageDate).HasDatabaseName("ix_rag_usage_reservation_date");
         builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
     }
@@ -274,6 +281,18 @@ public sealed class RagConfigurationConfiguration : IEntityTypeConfiguration<Rag
             t.HasCheckConstraint("ck_rag_configuration_max_context_tokens", $"max_context_tokens BETWEEN {h.MaxContextTokensMin} AND {h.MaxContextTokensMax}");
             t.HasCheckConstraint("ck_rag_configuration_max_history_messages",
                 $"max_history_messages BETWEEN {h.MaxHistoryMessagesMin} AND {h.MaxHistoryMessagesMax}");
+            // Cost controls: the hard ceilings (configured limits and the admin UI can only stay below them).
+            t.HasCheckConstraint("ck_rag_configuration_reasoning_effort",
+                $"reasoning_effort IS NULL OR reasoning_effort IN ({string.Join(", ", RagReasoningEfforts.All.Select(e => $"'{e}'"))})");
+            t.HasCheckConstraint("ck_rag_configuration_quotas",
+                $"user_requests_per_day BETWEEN {h.UserRequestsPerDayMin} AND {h.UserRequestsPerDayMax} "
+                + $"AND user_concurrency BETWEEN {h.UserConcurrencyMin} AND {h.UserConcurrencyMax} "
+                + $"AND global_concurrency BETWEEN {h.GlobalConcurrencyMin} AND {h.GlobalConcurrencyMax} "
+                + $"AND max_question_characters BETWEEN {h.MaxQuestionCharactersMin} AND {h.MaxQuestionCharactersMax} "
+                + $"AND generation_timeout_seconds BETWEEN {h.GenerationTimeoutSecondsMin} AND {h.GenerationTimeoutSecondsMax}");
+            t.HasCheckConstraint("ck_rag_configuration_budgets",
+                $"daily_budget_usd >= 0 AND daily_budget_usd <= {D(h.DailyBudgetUsdMax)} AND monthly_budget_usd >= 0 AND monthly_budget_usd <= {D(h.MonthlyBudgetUsdMax)} "
+                + $"AND monthly_ingestion_budget_usd >= 0 AND monthly_ingestion_budget_usd <= {D(h.MonthlyIngestionBudgetUsdMax)} AND daily_budget_usd <= monthly_budget_usd");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -289,6 +308,27 @@ public sealed class RagConfigurationConfiguration : IEntityTypeConfiguration<Rag
         builder.Property(x => x.MaxContextTokens).HasColumnName("max_context_tokens").IsRequired();
         builder.Property(x => x.MaxHistoryMessages).HasColumnName("max_history_messages").IsRequired();
         builder.Property(x => x.PromptVersion).HasColumnName("prompt_version").HasMaxLength(20).IsRequired();
+        // Defaults = the initial policy, so existing rows and the previous API build (which inserts none of these) stay valid. The sentinel is
+        // the default itself: EF otherwise treats the CLR default (false / 0) as "not set" and the database default would silently replace an
+        // explicit false (generation switched off) or a 0 USD budget.
+        builder.Property(x => x.ReasoningEffort).HasColumnName("reasoning_effort").HasMaxLength(10);
+        builder.Property(x => x.GenerationEnabled).HasColumnName("generation_enabled").IsRequired().HasDefaultValue(true).HasSentinel(true);
+        builder.Property(x => x.UserRequestsPerDay).HasColumnName("user_requests_per_day").IsRequired()
+            .HasDefaultValue(RagCostDefaults.UserRequestsPerDay).HasSentinel(RagCostDefaults.UserRequestsPerDay);
+        builder.Property(x => x.UserConcurrency).HasColumnName("user_concurrency").IsRequired()
+            .HasDefaultValue(RagCostDefaults.UserConcurrency).HasSentinel(RagCostDefaults.UserConcurrency);
+        builder.Property(x => x.GlobalConcurrency).HasColumnName("global_concurrency").IsRequired()
+            .HasDefaultValue(RagCostDefaults.GlobalConcurrency).HasSentinel(RagCostDefaults.GlobalConcurrency);
+        builder.Property(x => x.MaxQuestionCharacters).HasColumnName("max_question_characters").IsRequired()
+            .HasDefaultValue(RagCostDefaults.MaxQuestionCharacters).HasSentinel(RagCostDefaults.MaxQuestionCharacters);
+        builder.Property(x => x.GenerationTimeoutSeconds).HasColumnName("generation_timeout_seconds").IsRequired()
+            .HasDefaultValue(RagCostDefaults.GenerationTimeoutSeconds).HasSentinel(RagCostDefaults.GenerationTimeoutSeconds);
+        builder.Property(x => x.DailyBudgetUsd).HasColumnName("daily_budget_usd").HasPrecision(10, 2).IsRequired()
+            .HasDefaultValue(RagCostDefaults.DailyBudgetUsd).HasSentinel(RagCostDefaults.DailyBudgetUsd);
+        builder.Property(x => x.MonthlyBudgetUsd).HasColumnName("monthly_budget_usd").HasPrecision(10, 2).IsRequired()
+            .HasDefaultValue(RagCostDefaults.MonthlyBudgetUsd).HasSentinel(RagCostDefaults.MonthlyBudgetUsd);
+        builder.Property(x => x.MonthlyIngestionBudgetUsd).HasColumnName("monthly_ingestion_budget_usd").HasPrecision(10, 2).IsRequired()
+            .HasDefaultValue(RagCostDefaults.MonthlyIngestionBudgetUsd).HasSentinel(RagCostDefaults.MonthlyIngestionBudgetUsd);
         builder.Property(x => x.Notes).HasColumnName("notes").HasMaxLength(500);
         builder.Property(x => x.BasedOnVersion).HasColumnName("based_on_version");
         builder.Property(x => x.CreatedByUserId).HasColumnName("created_by_user_id").IsRequired();
@@ -329,5 +369,101 @@ public sealed class KnowledgeDocumentAudienceChangeConfiguration : IEntityTypeCo
         builder.HasIndex(x => new { x.DocumentId, x.CreatedAt }).HasDatabaseName("ix_knowledge_document_audience_change_document_created_at");
         builder.HasOne<KnowledgeDocument>().WithMany().HasForeignKey(x => x.DocumentId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.ActorUserId).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+
+/// <summary>Append-mostly AI cost ledger (one row per chat question or ingestion attempt). No prompt, answer or key is stored.</summary>
+public sealed class AiUsageLedgerConfiguration : IEntityTypeConfiguration<AiUsageLedgerEntry>
+{
+    public void Configure(EntityTypeBuilder<AiUsageLedgerEntry> builder)
+    {
+        static string In(IEnumerable<string> values) => "(" + string.Join(", ", values.Select(v => $"'{v}'")) + ")";
+        builder.ToTable("ai_usage_ledger", t =>
+        {
+            t.HasCheckConstraint("ck_ai_usage_ledger_operation", $"operation IN {In(AiUsageOperations.All)}");
+            t.HasCheckConstraint("ck_ai_usage_ledger_status", $"status IN {In(AiUsageStatuses.All)}");
+            t.HasCheckConstraint("ck_ai_usage_ledger_outcome", $"outcome IN {In(AiUsageOutcomes.All)}");
+            t.HasCheckConstraint("ck_ai_usage_ledger_non_negative",
+                "embedding_tokens >= 0 AND input_tokens >= 0 AND cached_input_tokens >= 0 AND output_tokens >= 0 AND reasoning_tokens >= 0 "
+                + "AND embedding_cost_usd >= 0 AND generation_cost_usd >= 0 AND reserved_usd >= 0 AND cost_usd >= 0 AND cached_input_tokens <= input_tokens");
+            t.HasCheckConstraint("ck_ai_usage_ledger_settled",
+                $"(status = '{AiUsageStatuses.Reserved}') = (settled_at IS NULL)");
+            t.HasCheckConstraint("ck_ai_usage_ledger_lease", "expires_at > created_at");
+            t.HasCheckConstraint("ck_ai_usage_ledger_review", "(reviewed_at IS NULL) = (reviewed_by_user_id IS NULL)");
+        });
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(120).IsRequired();
+        builder.Property(x => x.Operation).HasColumnName("operation").HasMaxLength(20).IsRequired();
+        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(20).IsRequired();
+        builder.Property(x => x.Outcome).HasColumnName("outcome").HasMaxLength(30).IsRequired();
+        builder.Property(x => x.UserId).HasColumnName("user_id");
+        builder.Property(x => x.UserRole).HasColumnName("user_role").HasMaxLength(30);
+        builder.Property(x => x.ChatMessageId).HasColumnName("chat_message_id");
+        builder.Property(x => x.IngestionJobId).HasColumnName("ingestion_job_id");
+        builder.Property(x => x.VersionId).HasColumnName("version_id");
+        builder.Property(x => x.ConfigVersion).HasColumnName("config_version");
+        builder.Property(x => x.EmbeddingProvider).HasColumnName("embedding_provider").HasMaxLength(30);
+        builder.Property(x => x.EmbeddingModel).HasColumnName("embedding_model").HasMaxLength(100);
+        builder.Property(x => x.EmbeddingTokens).HasColumnName("embedding_tokens").IsRequired();
+        builder.Property(x => x.EmbeddingCostUsd).HasColumnName("embedding_cost_usd").HasPrecision(14, 8).IsRequired();
+        builder.Property(x => x.GenerationProvider).HasColumnName("generation_provider").HasMaxLength(30);
+        builder.Property(x => x.GenerationModel).HasColumnName("generation_model").HasMaxLength(100);
+        builder.Property(x => x.InputTokens).HasColumnName("input_tokens").IsRequired();
+        builder.Property(x => x.CachedInputTokens).HasColumnName("cached_input_tokens").IsRequired();
+        builder.Property(x => x.OutputTokens).HasColumnName("output_tokens").IsRequired();
+        builder.Property(x => x.ReasoningTokens).HasColumnName("reasoning_tokens").IsRequired();
+        builder.Property(x => x.GenerationCostUsd).HasColumnName("generation_cost_usd").HasPrecision(14, 8).IsRequired();
+        builder.Property(x => x.UsageReported).HasColumnName("usage_reported").IsRequired();
+        builder.Property(x => x.ReservedUsd).HasColumnName("reserved_usd").HasPrecision(14, 8).IsRequired();
+        builder.Property(x => x.CostUsd).HasColumnName("cost_usd").HasPrecision(14, 8).IsRequired();
+        builder.Property(x => x.LatencyMs).HasColumnName("latency_ms");
+        builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.ExpiresAt).HasColumnName("expires_at").IsRequired();
+        builder.Property(x => x.SettledAt).HasColumnName("settled_at");
+        builder.Property(x => x.ReviewedByUserId).HasColumnName("reviewed_by_user_id");
+        builder.Property(x => x.ReviewedAt).HasColumnName("reviewed_at");
+        builder.Property(x => x.ReviewNote).HasColumnName("review_note").HasMaxLength(500);
+        builder.HasIndex(x => x.IdempotencyKey).IsUnique().HasDatabaseName("ux_ai_usage_ledger_idempotency_key");
+        builder.HasIndex(x => x.CreatedAt).HasDatabaseName("ix_ai_usage_ledger_created_at");
+        builder.HasIndex(x => new { x.Status, x.ExpiresAt }).HasDatabaseName("ix_ai_usage_ledger_status_expires_at");
+        builder.HasIndex(x => new { x.UserId, x.CreatedAt }).HasDatabaseName("ix_ai_usage_ledger_user_created_at");
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict).HasConstraintName("fk_ai_usage_ledger_user");
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.ReviewedByUserId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_ai_usage_ledger_reviewed_by");
+        builder.HasOne<ChatMessage>().WithMany().HasForeignKey(x => x.ChatMessageId).OnDelete(DeleteBehavior.Restrict).HasConstraintName("fk_ai_usage_ledger_chat_message");
+        builder.HasOne<KnowledgeIngestionJob>().WithMany().HasForeignKey(x => x.IngestionJobId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_ai_usage_ledger_ingestion_job");
+        builder.HasOne<KnowledgeDocumentVersion>().WithMany().HasForeignKey(x => x.VersionId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_ai_usage_ledger_version");
+        builder.HasIndex(x => x.ChatMessageId).HasDatabaseName("ix_ai_usage_ledger_chat_message_id");
+        builder.HasIndex(x => x.IngestionJobId).HasDatabaseName("ix_ai_usage_ledger_ingestion_job_id");
+        builder.HasIndex(x => x.VersionId).HasDatabaseName("ix_ai_usage_ledger_version_id");
+        builder.HasIndex(x => x.ReviewedByUserId).HasDatabaseName("ix_ai_usage_ledger_reviewed_by_user_id");
+    }
+}
+
+/// <summary>Spending counters per UTC period; locked FOR UPDATE in (kind, start) order by every reservation and settlement.</summary>
+public sealed class AiBudgetPeriodConfiguration : IEntityTypeConfiguration<AiBudgetPeriod>
+{
+    public void Configure(EntityTypeBuilder<AiBudgetPeriod> builder)
+    {
+        builder.ToTable("ai_budget_period", t =>
+        {
+            t.HasCheckConstraint("ck_ai_budget_period_kind", $"period_kind IN ({string.Join(", ", AiBudgetPeriodKinds.All.Select(k => $"'{k}'"))})");
+            t.HasCheckConstraint("ck_ai_budget_period_non_negative",
+                "reserved_usd >= 0 AND settled_usd >= 0 AND uncertain_usd >= 0 AND requests >= 0 AND blocked >= 0");
+        });
+        builder.HasKey(x => new { x.PeriodKind, x.PeriodStart });
+        builder.Property(x => x.PeriodKind).HasColumnName("period_kind").HasMaxLength(20);
+        builder.Property(x => x.PeriodStart).HasColumnName("period_start");
+        builder.Property(x => x.ReservedUsd).HasColumnName("reserved_usd").HasPrecision(14, 8).IsRequired();
+        builder.Property(x => x.SettledUsd).HasColumnName("settled_usd").HasPrecision(14, 8).IsRequired();
+        builder.Property(x => x.UncertainUsd).HasColumnName("uncertain_usd").HasPrecision(14, 8).IsRequired();
+        builder.Property(x => x.Requests).HasColumnName("requests").IsRequired();
+        builder.Property(x => x.Blocked).HasColumnName("blocked").IsRequired();
+        builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
+        builder.Ignore(x => x.CommittedUsd);
     }
 }

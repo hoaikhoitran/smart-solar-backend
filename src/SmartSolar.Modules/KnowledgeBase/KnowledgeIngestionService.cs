@@ -21,6 +21,10 @@ namespace SmartSolar.Modules.KnowledgeBase;
 /// (the RAG service only replaces chunks on success, so the old chunks stay usable). The outcome is recorded in
 /// <see cref="KnowledgeDocumentVersion.LastIngestStatus"/> / <see cref="KnowledgeDocumentVersion.LastIngestError"/>; a READY outcome
 /// also refreshes the indexed_* settings and chunk metadata. REGISTERED/FAILED versions keep the classic lifecycle.</item>
+/// <item>Cost control (2026-11-17): before the RAG service is called, the attempt reserves its maximum embedding cost (every extractable
+/// character of the document, bounded by Rag:MaxDocumentCharacters) against the monthly ingestion budget of the effective configuration;
+/// an exhausted budget fails the attempt with AI_BUDGET_EXCEEDED (retried with backoff) instead of calling the provider. The reported
+/// embedding tokens settle the reservation; a run that may have been charged without a report (timeout, crash) stays UNCERTAIN.</item>
 /// </list>
 /// </summary>
 public sealed class KnowledgeIngestionService(IKnowledgeUnitOfWork unitOfWork, IFileStore fileStore, IRagServiceClient rag, RagOptions options,
@@ -124,9 +128,41 @@ public sealed class KnowledgeIngestionService(IKnowledgeUnitOfWork unitOfWork, I
             (configVersion, chunkCharacters, chunkOverlap) = (effective.Version, effective.Values.ChunkCharacters, effective.Values.ChunkOverlap);
         }
 
+        // ---- reserve the maximum embedding cost of this attempt (idempotent per job attempt) before any provider call
+        var effectiveNow = await configuration.GetAsync(cancellationToken);
+        var rules = new RagConfigurationRules(options);
+        var embeddingModel = rules.FindEmbeddingModel(options.EmbeddingModel);
+        var embeddingPrice = embeddingModel is { Provider: RagProviders.Ollama } ? 0m
+            : embeddingModel?.InputUsdPerMillion ?? rules.EmbeddingModels.Where(m => m.Provider == RagProviders.OpenAi).Select(m => m.InputUsdPerMillion ?? 0).DefaultIfEmpty(0).Max();
+        // A DOCX/PDF can hold more text than its compressed size: 4 characters per stored byte, never above the service's extraction limit.
+        var maxCharacters = Math.Min(options.MaxDocumentCharacters, Math.Max(1, (file.VerifiedSizeBytes ?? file.DeclaredSizeBytes) * 4));
+        var reservation = await unitOfWork.TryReserveIngestionAsync(jobId, job.Attempts, version.Id, AiCostCalculator.MaxIngestion(embeddingPrice, maxCharacters),
+            effectiveNow.Values.MonthlyIngestionBudgetUsd, configVersion, time.GetUtcNow(), lease, cancellationToken);
+        if (!reservation.Admitted)
+        {
+            const string budget = "AI_BUDGET_EXCEEDED: the monthly ingestion budget would be exceeded; the provider was not called.";
+            logger.LogWarning("Ingestion of knowledge version {VersionId} deferred: {Limit}.", version.Id, reservation.Limit);
+            await RecordAsync(jobId, lease, ok: false, budget, terminal: false, v =>
+            {
+                v.LastIngestStatus = "FAILED";
+                v.LastIngestError = Truncate(budget);
+                if (HoldsLiveChunks(v)) return;
+                BackToRegistered(v);
+                v.FailureReason = Truncate(budget);
+            }, cancellationToken);
+            return;
+        }
+
         // No transaction is open here: the call can take minutes.
         var result = await rag.IngestAsync(new RagIngestRequest(version.Id, version.DocumentId, file.Bucket, file.ObjectKey, file.ObjectVersionId,
             file.VerifiedContentType!, file.VerifiedChecksumSha256, document.Title, version.VersionNumber, configVersion, chunkCharacters, chunkOverlap), cancellationToken);
+        // Settle exactly once: only a billed provider costs money; no report from a run that may have embedded is an uncertain charge.
+        var billedProvider = result.EmbeddingProvider is null ? embeddingPrice > 0 : result.EmbeddingProvider == RagProviders.OpenAi;
+        var uncertain = !result.Reached ? result.Billing != "none" || result.Error == "timeout" : result.Billing == "uncertain" || (billedProvider && result.EmbeddingTokens is null && result.Status == "READY");
+        var tokens = result.EmbeddingTokens ?? 0;
+        await unitOfWork.SettleIngestionAsync(reservation.ReservationId!.Value, result.Reached && result.Status == "READY" ? AiUsageOutcomes.Indexed : AiUsageOutcomes.IngestFailed,
+            uncertain, result.EmbeddingProvider, result.EmbeddingModel ?? options.EmbeddingModel, tokens,
+            billedProvider ? AiCostCalculator.Embedding(embeddingPrice, tokens) : 0m, time.GetUtcNow(), CancellationToken.None);
 
         if (!result.Reached || result.Status == "FAILED")
         {

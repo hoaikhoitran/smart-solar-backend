@@ -26,9 +26,16 @@ def test_history_is_bounded_and_roles_are_normalised():
 
 
 def test_context_budget_limits_sources():
-    hits = [hit("a" * 3000) for _ in range(5)]
+    hits = [hit(str(i) + "a" * 3000) for i in range(5)]
     assert len(select_sources(hits, {}, 2500)) == 2
     assert len(select_sources(hits, {}, 10)) == 1
+
+
+def test_identical_chunks_are_sent_once():
+    hits = [hit("Bảo hành 12 năm."), hit("Bảo hành  12 năm. "), hit("Bảo hành tấm pin 25 năm.")]
+    sources = select_sources(hits, {}, 2500)
+    assert [s.hit.content for s in sources] == ["Bảo hành 12 năm.", "Bảo hành tấm pin 25 năm."]
+    assert [s.number for s in sources] == [1, 2]
 
 
 def test_v2_asks_for_complete_answers_and_keeps_every_grounding_rule():

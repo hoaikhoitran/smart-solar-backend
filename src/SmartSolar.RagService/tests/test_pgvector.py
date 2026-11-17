@@ -205,3 +205,64 @@ def test_local_1024_migration_keeps_the_openai_chunks_and_the_rollback_restores_
     restored = PgVectorStore(database, 1536)
     assert restored.ready()
     assert [h.version_id for h in restored.search(openai.embed(["tấm pin bảo hành"])[0], [v1, v2], 5, openai.model)] == [v1, v1]
+
+
+# The unique-key change of the API migration 20261117131913_CloudRagCostControl (same statement as the migration's guarded DO block).
+_VERSION_MODEL_KEY = """
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ux_knowledge_chunk_version_index' AND conrelid = 'knowledge_chunk'::regclass) THEN
+        ALTER TABLE knowledge_chunk DROP CONSTRAINT ux_knowledge_chunk_version_index;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ux_knowledge_chunk_version_model_index' AND conrelid = 'knowledge_chunk'::regclass) THEN
+        ALTER TABLE knowledge_chunk ADD CONSTRAINT ux_knowledge_chunk_version_model_index UNIQUE (version_id, embedding_model, chunk_index);
+    END IF;
+END $$;
+"""
+
+
+def _models(database, version):
+    import psycopg
+
+    with psycopg.connect(database) as conn:
+        return dict(conn.execute("SELECT embedding_model, count(*) FROM knowledge_chunk WHERE version_id = %s GROUP BY 1",
+                                 (version,)).fetchall())
+
+
+def test_a_reindex_writes_the_new_model_next_to_the_old_one_and_falls_back_on_the_old_schema(database):
+    import psycopg
+
+    old, new = HashingEmbedder(1536, "old-embedder"), HashingEmbedder(1536, "new-embedder")
+    version, document = str(uuid.uuid4()), str(uuid.uuid4())
+    with psycopg.connect(database, autocommit=True) as conn:
+        conn.execute("INSERT INTO knowledge_document (id) VALUES (%s)", (document,))
+        conn.execute("INSERT INTO knowledge_document_version (id) VALUES (%s)", (version,))
+    texts = ["bảo hành tấm pin 12 năm", "inverter bảo hành 5 năm"]
+
+    def model_chunks(embedder):
+        return [StoredChunk(f"{version.replace('-', '')}:{embedder.model[:8]}:{i}", version, document, i, 1, None, t, "0" * 64, v, embedder.model)
+                for i, (t, v) in enumerate(zip(texts, embedder.embed(texts)))]
+
+    store = PgVectorStore(database)
+    # Old schema (unique version + index): the store falls back to replacing the version's chunks; nothing fails, nothing is mixed.
+    store.replace_version(version, model_chunks(old))
+    store.replace_version(version, model_chunks(new))
+    assert _models(database, version) == {"new-embedder": 2}
+
+    # Migrated schema: both models' chunks coexist, a rerun of either is idempotent and each search sees only its own model.
+    with psycopg.connect(database, autocommit=True) as conn:
+        conn.execute(_VERSION_MODEL_KEY)
+        conn.execute(_VERSION_MODEL_KEY)  # the guard makes it re-runnable
+    store.replace_version(version, model_chunks(old))
+    store.replace_version(version, model_chunks(old))
+    store.replace_version(version, model_chunks(new))
+    assert _models(database, version) == {"old-embedder": 2, "new-embedder": 2}
+    query_old, query_new = old.embed(["tấm pin"])[0], new.embed(["tấm pin"])[0]
+    assert {h.chunk_id.split(":")[1] for h in store.search(query_old, [version], 10, old.model)} == {"old-embe"}
+    assert {h.chunk_id.split(":")[1] for h in store.search(query_new, [version], 10, new.model)} == {"new-embe"}
+    # The same model and index twice is still refused by the database.
+    with pytest.raises(psycopg.errors.UniqueViolation), psycopg.connect(database) as conn:
+        conn.execute("INSERT INTO knowledge_chunk (chunk_id, version_id, document_id, chunk_index, content, content_sha256, embedding, embedding_model)"
+                     " SELECT chunk_id || 'x', version_id, document_id, chunk_index, content, content_sha256, embedding, embedding_model"
+                     " FROM knowledge_chunk WHERE version_id = %s LIMIT 1", (version,))
+    assert store.delete_version(version) == 4

@@ -46,6 +46,8 @@ public static class KnowledgeBaseModuleExtensions
         services.AddScoped<SmartSolar.Modules.KnowledgeBase.Advisor.ISolarAdvisorDataSource, SolarAdvisorDataSource>();
         services.AddScoped<SmartSolar.Modules.KnowledgeBase.Advisor.SolarAdvisorService>();
         services.AddScoped<SmartSolar.Modules.KnowledgeBase.ChatService>();
+        services.AddScoped<SmartSolar.Modules.KnowledgeBase.IAiUsageQueries, AiUsageQueries>();
+        services.AddScoped<SmartSolar.Modules.KnowledgeBase.AiUsageDashboardService>();
         if (rag.IngestionWorkerEnabled)
             services.AddHostedService<Background.KnowledgeIngestionWorker>();
 

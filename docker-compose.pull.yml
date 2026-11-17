@@ -112,11 +112,12 @@ services:
       - no-new-privileges:true
 
   # Internal RAG service (FastAPI). No published port: only the API reaches it, on the
-  # compose network, and every call is HMAC-signed. Started with `--profile rag`.
+  # compose network, and every call is HMAC-signed. Started with `--profile rag-cloud` (OpenAI providers, no local model server)
+  # or `--profile rag` (also starts the local Ollama server and its one-shot model pull).
   # It deliberately does not read .env wholesale (least privilege): only RAG_* values.
   rag-service:
     image: ${RAG_IMAGE:-hoaikhoitran/smartsolar-rag-service}:${RAG_IMAGE_TAG:-latest}
-    profiles: ["rag"]
+    profiles: ["rag", "rag-cloud"]
     restart: unless-stopped
     environment:
       RAG_ENV: ${RAG_ENV:-development}
@@ -144,6 +145,12 @@ services:
       RAG_LLM_API_KEY: ${RAG_LLM_API_KEY:-}
       RAG_WORKERS: ${RAG_WORKERS:-1}
       RAG_INGEST_DEADLINE_SECONDS: ${RAG_INGEST_DEADLINE_SECONDS:-270}
+      # Embedding-model transition (guides/cloud-rag-migration.md): while the chunks are re-indexed with RAG_EMBEDDING_MODEL, questions
+      # keep being embedded with the previous model. Leave all four empty once every version is re-indexed.
+      RAG_QUERY_EMBEDDING_PROVIDER: ${RAG_QUERY_EMBEDDING_PROVIDER:-}
+      RAG_QUERY_EMBEDDING_MODEL: ${RAG_QUERY_EMBEDDING_MODEL:-}
+      RAG_QUERY_EMBEDDING_BASE_URL: ${RAG_QUERY_EMBEDDING_BASE_URL:-}
+      RAG_QUERY_EMBEDDING_API_KEY: ${RAG_QUERY_EMBEDDING_API_KEY:-}
       # Local inference (RAG_*_PROVIDER=ollama, RAG_*_BASE_URL=http://ollama:11434); see guides/rag-local-ollama.md.
       RAG_LLM_CONTEXT_TOKENS: ${RAG_LLM_CONTEXT_TOKENS:-}
       RAG_OLLAMA_KEEP_ALIVE: ${RAG_OLLAMA_KEEP_ALIVE:-}
@@ -160,10 +167,12 @@ services:
     expose:
       - "8000"
 
-    # Starts only after the local models are pulled (ollama-models exits 0; with cloud providers it pulls nothing).
+    # With --profile rag: starts only after the local models are pulled (ollama-models exits 0; with cloud providers it pulls
+    # nothing). With --profile rag-cloud the Ollama services are not part of the project and this dependency is skipped.
     depends_on:
       ollama-models:
         condition: service_completed_successfully
+        required: false
 
     # default: reached by the API; rag-llm: the only network the local model server is on.
     networks:

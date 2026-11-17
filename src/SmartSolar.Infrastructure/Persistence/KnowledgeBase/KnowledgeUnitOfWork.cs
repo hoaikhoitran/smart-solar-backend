@@ -3,7 +3,7 @@ using SmartSolar.Modules.KnowledgeBase;
 
 namespace SmartSolar.Infrastructure.Persistence.KnowledgeBase;
 
-public sealed class KnowledgeUnitOfWork(AppDbContext db) : TransactionalUnitOfWork(db), IKnowledgeUnitOfWork
+public sealed partial class KnowledgeUnitOfWork(AppDbContext db) : TransactionalUnitOfWork(db), IKnowledgeUnitOfWork
 {
     public Task<KnowledgeDocument?> FindDocumentAsync(Guid documentId, bool track, CancellationToken cancellationToken)
         => (track ? Db.KnowledgeDocuments : Db.KnowledgeDocuments.AsNoTracking()).FirstOrDefaultAsync(d => d.Id == documentId, cancellationToken);

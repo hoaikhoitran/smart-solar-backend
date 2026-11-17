@@ -82,14 +82,18 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
     public const string Notice = "Câu trả lời được tạo tự động từ tài liệu đã công bố và có thể chưa đầy đủ; không thay thế tư vấn kỹ thuật hoặc điều khoản hợp đồng.";
 
     public async Task<OperationResult<ChatAnswerView>> AskAsync(Guid userId, Guid? sessionId, string question, string? clientMessageId, CancellationToken cancellationToken,
-        KnowledgeAudience audience = KnowledgeAudience.Customer, Advisor.SolarAdvisorInput? advisorInput = null)
+        KnowledgeAudience audience = KnowledgeAudience.Customer, Advisor.SolarAdvisorInput? advisorInput = null, string? userRole = null)
     {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var config = await configuration.GetAsync(cancellationToken);
+        var c = config.Values;
+        // The admin limit, never above the deployment's own ceiling (Rag:MaxQuestionCharacters).
+        var maxQuestion = Math.Min(options.MaxQuestionCharacters, c.MaxQuestionCharacters);
         question = question?.Trim() ?? "";
-        if (question.Length == 0 || question.Length > options.MaxQuestionCharacters)
-            return OperationResult<ChatAnswerView>.Fail(KnowledgeErrorCodes.MessageTooLong, $"Questions must be 1–{options.MaxQuestionCharacters} characters.");
+        if (question.Length == 0 || question.Length > maxQuestion)
+            return OperationResult<ChatAnswerView>.Fail(KnowledgeErrorCodes.MessageTooLong, $"Questions must be 1–{maxQuestion} characters.", new { maxCharacters = maxQuestion });
         if (clientMessageId is { Length: > 64 }) return OperationResult<ChatAnswerView>.Fail(CommonErrorCodes.ValidationFailed, "clientMessageId must be at most 64 characters.");
 
-        var clock = System.Diagnostics.Stopwatch.StartNew();
         ChatSession? session = null;
         if (sessionId is null && clientMessageId is not null
             && await unitOfWork.FindUserMessageByClientIdAsync(userId, clientMessageId, cancellationToken) is { } retriedFirst
@@ -110,63 +114,89 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
                 return OperationResult<ChatAnswerView>.Ok(await AnswerViewAsync(id, existing, reply, cancellationToken, await VisibleDocumentsAsync(audience, cancellationToken), audience));
         }
 
-        var config = await configuration.GetAsync(cancellationToken);
-        var c = config.Values;
+        // ---- route before admission (reads only): the deterministic advisor never needs a paid call
+        List<RagHistoryTurn> history = [];
+        if (session is not null)
+        {
+            // The same rule as the session view: an answer the customer may not read is never fed back to the model either.
+            var previous = await unitOfWork.GetMessagesAsync(session.Id, c.MaxHistoryMessages, cancellationToken);
+            var previousCitations = await unitOfWork.GetCitationsAsync(previous.Select(m => m.Id).ToList(), cancellationToken);
+            var visible = await VisibleDocumentsAsync(audience, cancellationToken);
+            history = previous.Where(m => m.Status != ChatMessageStatuses.Failed && !View(m, previousCitations, visible, audience).Withheld)
+                .Select(m => new RagHistoryTurn(m.Role, m.Content)).ToList();
+        }
+        Advisor.SolarAdvisorInput? advice = null;
+        if (advisor is not null)
+        {
+            var extracted = Advisor.SolarAdvisorTextExtractor.Extract(question);
+            Advisor.SolarAdvisorInput? earlier = null;
+            foreach (var turn in history.Where(h => h.Role == ChatRoles.User))
+                earlier = Advisor.SolarAdvisorTextExtractor.Extract(turn.Content).Over(earlier);
+            var followUp = (extracted.TiltDegree is not null || extracted.AzimuthDegree is not null) && earlier?.HasSizingInput == true;
+            if (advisorInput is not null || Advisor.SolarAdvisorTextExtractor.IsAdvisorQuestion(question, extracted) || followUp)
+                advice = (advisorInput ?? new Advisor.SolarAdvisorInput()).Over(extracted.Over(earlier));
+        }
+        var allowed = advice is null ? await AllowedAsync(audience, cancellationToken) : [];
+        // A paid call happens only on the knowledge path with something the caller may read.
+        var billable = advice is null && allowed.Count > 0;
+        if (billable && !c.GenerationEnabled)
+            return OperationResult<ChatAnswerView>.Fail(AiCostErrorCodes.GenerationDisabled,
+                "The AI assistant is switched off by the administrator. Product and configuration advice remain available.");
+
+        // ---- one atomic admission: quotas, concurrency, idempotency and the USD budget, before any provider call
         var now = time.GetUtcNow();
         var date = DateOnly.FromDateTime(now.UtcDateTime);
-        var reserved = (long)c.MaxContextTokens + c.MaxOutputTokens + question.Length / 3 + 500;
+        // Only an ACTIVE configuration with a usable registry model names the model; otherwise the RAG service's environment default runs
+        // and is estimated at the most expensive usable billed price.
+        var sendModel = !config.Bootstrap && config.Model is not null;
+        var generationPrice = GenerationPrice(sendModel ? config.Model : null);
+        var embeddingPrice = EmbeddingPrice(options.EmbeddingModel);
+        var reservedUsd = billable ? AiCostCalculator.MaxChat(generationPrice, embeddingPrice, question.Length, c.MaxContextTokens, c.MaxOutputTokens) : 0m;
+        var reservedTokens = billable ? (long)c.MaxContextTokens + c.MaxOutputTokens + question.Length / 3 + 500 : 1;
+        var timeoutSeconds = Math.Clamp(Math.Min(c.GenerationTimeoutSeconds, options.RequestTimeoutSeconds), 5, 120);
         // The lease outlives the longest possible call, so only a crashed or abandoned request lets it expire.
-        var lease = TimeSpan.FromSeconds(Math.Clamp(options.RequestTimeoutSeconds, 5, 120) + 60);
-        var reservation = await unitOfWork.TryReserveUsageAsync(userId, date, reserved, options, now, now + lease, cancellationToken);
-        if (reservation.Limit == "CONCURRENCY") return OperationResult<ChatAnswerView>.Fail(KnowledgeErrorCodes.TooManyConcurrent, "Please wait for your previous question to be answered.");
-        if (!reservation.Reserved) return OperationResult<ChatAnswerView>.Fail(KnowledgeErrorCodes.QuotaExceeded, "The daily chat allowance has been reached. Please try again tomorrow.");
-
-        long input = 0, output = 0;
+        var lease = TimeSpan.FromSeconds(timeoutSeconds + 60);
+        AiAdmission admission;
         try
         {
-            List<RagHistoryTurn> history = [];
-            if (session is not null)
-            {
-                // The same rule as the session view: an answer the customer may not read is never fed back to the model either.
-                var previous = await unitOfWork.GetMessagesAsync(session.Id, c.MaxHistoryMessages, cancellationToken);
-                var previousCitations = await unitOfWork.GetCitationsAsync(previous.Select(m => m.Id).ToList(), cancellationToken);
-                var visible = await VisibleDocumentsAsync(audience, cancellationToken);
-                history = previous.Where(m => m.Status != ChatMessageStatuses.Failed && !View(m, previousCitations, visible, audience).Withheld)
-                    .Select(m => new RagHistoryTurn(m.Role, m.Content)).ToList();
-            }
-            // ---- configuration advice: deterministic tools, no model call
-            if (advisor is not null)
-            {
-                var extracted = Advisor.SolarAdvisorTextExtractor.Extract(question);
-                Advisor.SolarAdvisorInput? earlier = null;
-                foreach (var turn in history.Where(h => h.Role == ChatRoles.User))
-                    earlier = Advisor.SolarAdvisorTextExtractor.Extract(turn.Content).Over(earlier);
-                var followUp = (extracted.TiltDegree is not null || extracted.AzimuthDegree is not null) && earlier?.HasSizingInput == true;
-                if (advisorInput is not null || Advisor.SolarAdvisorTextExtractor.IsAdvisorQuestion(question, extracted) || followUp)
-                {
-                    var merged = (advisorInput ?? new Advisor.SolarAdvisorInput()).Over(extracted.Over(earlier));
-                    Advisor.SolarAdvisorView advice;
-                    try
-                    {
-                        advice = await advisor.AdviseAsync(userId, merged, cancellationToken);
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        logger.LogWarning(ex, "Solar advisor failed (the knowledge chat is unaffected).");
-                        return OperationResult<ChatAnswerView>.Fail(KnowledgeErrorCodes.AdvisorUnavailable,
-                            "The configuration advisor is temporarily unavailable. Please try again later; other questions still work.");
-                    }
-                    var advisorMs = clock.ElapsedMilliseconds;
-                    var stored = await PersistAsync(userId, session, question, clientMessageId, Advisor.SolarAdvisorRenderer.Render(advice), true, [],
-                        new Dictionary<Guid, RagAllowedVersion>(), new RagAnswerResult(true, null, null, true, [], 0, 0, "solar-advisor", 0, 0), audience, cancellationToken);
-                    logger.LogInformation("Chat advisor answer: status={Status} advisor={AdvisorMs}ms (provider={ProviderMs}ms) total={TotalMs}ms; no model call.",
-                        advice.Status, advisorMs, advice.ProviderMs, clock.ElapsedMilliseconds);
-                    return stored.Succeeded ? OperationResult<ChatAnswerView>.Ok(stored.Value! with { Advisor = advice }) : stored;
-                }
-            }
+            admission = await unitOfWork.TryAdmitAsync(new AiAdmissionRequest(userId, userRole, date, reservedTokens, reservedUsd, billable, clientMessageId,
+                config.Version, c.UserRequestsPerDay, c.UserConcurrency, c.GlobalConcurrency, c.DailyBudgetUsd, c.MonthlyBudgetUsd, now, now + lease),
+                options, cancellationToken);
+        }
+        catch (PersistenceConflictException)
+        {
+            // The same client message is being answered right now (double submit, retry, another replica): never a second paid call.
+            return OperationResult<ChatAnswerView>.Fail(AiCostErrorCodes.RequestInProgress,
+                "This question is already being answered. Retry with the same clientMessageId in a few seconds to get the answer.", new { retryAfterSeconds = 3 });
+        }
+        if (!admission.Admitted) return Refused(admission);
+        var prepareMs = clock.ElapsedMilliseconds;
 
-            var allowed = await AllowedAsync(audience, cancellationToken);
-            var prepareMs = clock.ElapsedMilliseconds;
+        long input = 0, output = 0;
+        var settlement = Settlement(AiUsageOutcomes.Expired, uncertain: true, null, null, now);   // replaced below; kept if this method throws
+        try
+        {
+            if (advice is not null)
+            {
+                Advisor.SolarAdvisorView view;
+                try
+                {
+                    view = await advisor!.AdviseAsync(userId, advice, cancellationToken);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogWarning(ex, "Solar advisor failed (the knowledge chat is unaffected).");
+                    settlement = Settlement(AiUsageOutcomes.ProviderError, false, null, null, time.GetUtcNow());
+                    return OperationResult<ChatAnswerView>.Fail(KnowledgeErrorCodes.AdvisorUnavailable,
+                        "The configuration advisor is temporarily unavailable. Please try again later; other questions still work.");
+                }
+                var stored = await PersistAsync(userId, session, question, clientMessageId, Advisor.SolarAdvisorRenderer.Render(view), true, [],
+                    new Dictionary<Guid, RagAllowedVersion>(), new RagAnswerResult(true, null, null, true, [], 0, 0, "solar-advisor", 0, 0), audience, cancellationToken);
+                settlement = Settlement(AiUsageOutcomes.Answered, false, null, stored.Value?.Answer.MessageId, time.GetUtcNow());
+                logger.LogInformation("Chat advisor answer: status={Status} advisor={AdvisorMs}ms (provider={ProviderMs}ms) total={TotalMs}ms; no model call.",
+                    view.Status, clock.ElapsedMilliseconds - prepareMs, view.ProviderMs, clock.ElapsedMilliseconds);
+                return stored.Succeeded ? OperationResult<ChatAnswerView>.Ok(stored.Value! with { Advisor = view }) : stored;
+            }
 
             RagAnswerResult result;
             if (allowed.Count == 0)
@@ -176,31 +206,37 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
             else
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(options.RequestTimeoutSeconds, 5, 120)));
+                timeout.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
                 try
                 {
-                    // Bootstrap (no ACTIVE admin configuration): model, temperature and token parameter are left to the RAG service's own
-                    // environment defaults (RAG_LLM_MODEL / RAG_LLM_TEMPERATURE); only an ACTIVE configuration overrides them. An ACTIVE
-                    // model that is no longer in the registry is not sent either (the provider no longer serves it): the defaults apply
-                    // until an Admin activates a configuration with a registered model.
-                    var bootstrap = config.Bootstrap || !config.ModelRegistered;
+                    // Bootstrap with no usable model, or an ACTIVE model that left the registry (or lost its price): the RAG service's environment
+                    // default is used and costed at the most expensive usable price (see GenerationPrice) until an Admin activates a usable model.
+                    var send = sendModel;
                     if (!config.Bootstrap && !config.ModelRegistered)
-                        logger.LogWarning("Active RAG configuration {Version} names generation model {Model}, which is not in Rag:GenerationModels; the RAG service default model is used.",
+                        logger.LogWarning("Active RAG configuration {Version} names generation model {Model}, which is not a usable registry model; the RAG service default model is used.",
                             config.Version, c.GenerationModel);
                     result = await rag.AnswerAsync(new RagAnswerRequest(question, history, allowed, Math.Clamp(c.TopK, 1, Math.Max(1, options.MaxTopK)),
-                        c.MaxContextTokens, c.MaxOutputTokens, config.Version, bootstrap ? null : c.GenerationModel, bootstrap ? null : c.Temperature,
-                        bootstrap ? null : config.TokenParameter, c.MinScore, c.PromptVersion),
+                        c.MaxContextTokens, c.MaxOutputTokens, config.Version, send ? c.GenerationModel : null, send ? c.Temperature : null,
+                        send ? config.TokenParameter : null, c.MinScore, c.PromptVersion, send ? c.ReasoningEffort : null, timeoutSeconds),
                         timeout.Token);
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
-                    result = new RagAnswerResult(false, "timeout", null, false, [], 0, 0, null, 0, 0);
+                    result = new RagAnswerResult(false, "timeout", null, false, [], 0, 0, null, 0, 0, Billing: "uncertain");
                 }
             }
             var ragMs = clock.ElapsedMilliseconds - prepareMs;
             if (!result.Reached)
             {
-                logger.LogWarning("RAG answer unavailable: {Error} (prepare={PrepareMs}ms, rag={RagMs}ms).", result.Error, prepareMs, ragMs);
+                logger.LogWarning("RAG answer unavailable: {Error} (billing {Billing}, prepare={PrepareMs}ms, rag={RagMs}ms).", result.Error, result.Billing, prepareMs, ragMs);
+                var outcome = result.Error switch
+                {
+                    "timeout" => AiUsageOutcomes.Timeout,
+                    "busy" => AiUsageOutcomes.Busy,
+                    "provider rate limited" => AiUsageOutcomes.ProviderRateLimited,
+                    _ => AiUsageOutcomes.ProviderError,
+                };
+                settlement = Costed(result, outcome, uncertain: result.Billing == "uncertain", null, config, (int)clock.ElapsedMilliseconds);
                 return result.Error switch
                 {
                     "timeout" => OperationResult<ChatAnswerView>.Fail(KnowledgeErrorCodes.Timeout,
@@ -218,18 +254,82 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
             var grounded = result.Grounded && !string.IsNullOrWhiteSpace(result.Answer) && citations.Count > 0 && citations.Count == result.Citations.Count;
             var answerText = grounded ? result.Answer!.Trim() : InsufficientAnswer;
 
+            var persistStarted = clock.ElapsedMilliseconds;
             var persisted = await PersistAsync(userId, session, question, clientMessageId, answerText, grounded, grounded ? citations : [], stillAllowed, result, audience, cancellationToken);
-            // Where the time went (no question text): API preparation (session, history, quota, allowed documents), the RAG call (of which
-            // the service's retrieval and generation), and storing the exchange.
-            logger.LogInformation("Chat answer timings: prepare={PrepareMs}ms rag={RagMs}ms (retrieval={RetrievalMs}ms generation={GenerationMs}ms) persist={PersistMs}ms total={TotalMs}ms grounded={Grounded}.",
-                prepareMs, ragMs, result.RetrievalMs, result.GenerationMs, clock.ElapsedMilliseconds - prepareMs - ragMs, clock.ElapsedMilliseconds, grounded);
+            settlement = Costed(result, grounded ? AiUsageOutcomes.Answered : AiUsageOutcomes.InsufficientContext, uncertain: false, persisted.Value?.Answer.MessageId,
+                config, (int)clock.ElapsedMilliseconds);
+            // Where the time went (no question text): API preparation (configuration, session, history, routing, admission), the RAG call
+            // (its retrieval, context construction and generation), and storing the exchange.
+            logger.LogInformation("Chat answer timings: prepare={PrepareMs}ms rag={RagMs}ms (retrieval={RetrievalMs}ms context={ContextMs}ms generation={GenerationMs}ms) persist={PersistMs}ms total={TotalMs}ms grounded={Grounded} costUsd={CostUsd} configVersion={Version}.",
+                prepareMs, ragMs, result.RetrievalMs, result.ContextMs, result.GenerationMs, clock.ElapsedMilliseconds - persistStarted, clock.ElapsedMilliseconds, grounded,
+                settlement.CostUsd, config.Version);
             return persisted;
         }
         finally
         {
-            // Actual provider usage replaces the estimate (zero when the model was never called).
-            await unitOfWork.CompleteUsageAsync(reservation.ReservationId!.Value, input, output, time.GetUtcNow(), CancellationToken.None);
+            // Actual provider usage replaces the estimate; the USD reservation is settled exactly once (uncertain charges stay counted).
+            await unitOfWork.SettleChatAsync(admission.ReservationId!.Value, input, output, settlement with { LatencyMs = (int)clock.ElapsedMilliseconds },
+                CancellationToken.None);
         }
+    }
+
+    // ------------------------------------------------------------------ cost accounting
+
+    private static OperationResult<ChatAnswerView> Refused(AiAdmission admission)
+    {
+        var retry = new { retryAfterSeconds = (int)Math.Ceiling((admission.RetryAfter ?? TimeSpan.FromSeconds(5)).TotalSeconds) };
+        return admission.Limit switch
+        {
+            // The previous codes are kept for the per-user limits (clients already handle them).
+            AiCostErrorCodes.Concurrency => OperationResult<ChatAnswerView>.Fail(KnowledgeErrorCodes.TooManyConcurrent, "Please wait for your previous question to be answered.", retry),
+            AiCostErrorCodes.UserQuotaExceeded or AiCostErrorCodes.GlobalTokenQuota => OperationResult<ChatAnswerView>.Fail(KnowledgeErrorCodes.QuotaExceeded,
+                "The daily chat allowance has been reached. Please try again tomorrow.", retry),
+            AiCostErrorCodes.RequestInProgress => OperationResult<ChatAnswerView>.Fail(AiCostErrorCodes.RequestInProgress,
+                "This question is already being answered. Retry with the same clientMessageId in a few seconds to get the answer.", retry),
+            AiCostErrorCodes.GlobalBusy => OperationResult<ChatAnswerView>.Fail(AiCostErrorCodes.GlobalBusy,
+                "The assistant is answering many questions right now. Please try again in a few seconds.", retry),
+            _ => OperationResult<ChatAnswerView>.Fail(AiCostErrorCodes.BudgetExceeded,
+                "The AI assistant has reached its spending limit for now. Product and configuration advice remain available.", retry),
+        };
+    }
+
+    /// <summary>
+    /// Price of the generation model for the estimate: the requested registry model; without one (the RAG service default is used) the most
+    /// expensive usable billed model, so the reservation is never too small.
+    /// </summary>
+    private AiPrice GenerationPrice(RagGenerationModelOptions? model)
+    {
+        var priced = model ?? Rules.Models.Where(m => m.Usable && m.Billed).OrderByDescending(m => m.UnitCost).FirstOrDefault();
+        return priced is { Billed: true }
+            ? new AiPrice(priced.InputUsdPerMillion ?? 0, priced.CachedInputUsdPerMillion ?? priced.InputUsdPerMillion ?? 0, priced.OutputUsdPerMillion ?? 0)
+            : AiPrice.Free;
+    }
+
+    /// <summary>Embedding price of a model; an unknown model is assumed billed at the highest known embedding price.</summary>
+    private decimal EmbeddingPrice(string? model)
+        => Rules.FindEmbeddingModel(model) is { } known ? (known.Provider == RagProviders.OpenAi ? known.InputUsdPerMillion ?? 0 : 0)
+            : Rules.EmbeddingModels.Where(m => m.Provider == RagProviders.OpenAi).Select(m => m.InputUsdPerMillion ?? 0).DefaultIfEmpty(0).Max();
+
+    private RagConfigurationRules Rules => _rules ??= new RagConfigurationRules(options);
+    private RagConfigurationRules? _rules;
+
+    private static AiChatSettlement Settlement(string outcome, bool uncertain, Guid? messageId, Guid? answerMessageId, DateTimeOffset now)
+        => new(outcome, uncertain, answerMessageId ?? messageId, null, null, 0, 0, null, null, 0, 0, 0, 0, 0, true, 0, now);
+
+    /// <summary>The settlement of a RAG call from what the service reported; only billed providers cost money.</summary>
+    private AiChatSettlement Costed(RagAnswerResult r, string outcome, bool uncertain, Guid? messageId, EffectiveRagConfiguration config, int latencyMs)
+    {
+        var embeddingModel = r.EmbeddingModel ?? options.EmbeddingModel;
+        var embeddingBilled = r.EmbeddingProvider is null ? r.EmbeddingTokens > 0 : r.EmbeddingProvider == RagProviders.OpenAi;
+        var embeddingCost = embeddingBilled ? AiCostCalculator.Embedding(EmbeddingPrice(embeddingModel), r.EmbeddingTokens) : 0m;
+        var generationBilled = r.GenerationProvider == RagProviders.OpenAi;
+        var model = generationBilled ? Rules.FindModel(r.Model) ?? Rules.Models.FirstOrDefault(m => r.Model is not null && r.Model.StartsWith(m.Id, StringComparison.Ordinal)) : null;
+        var generationCost = generationBilled
+            ? AiCostCalculator.Generation(model is { Billed: true } ? GenerationPrice(model) : GenerationPrice(null), r.PromptTokens, r.CachedPromptTokens, r.CompletionTokens)
+            : 0m;
+        return new AiChatSettlement(outcome, uncertain, messageId, r.EmbeddingProvider, embeddingModel, r.EmbeddingTokens, embeddingCost,
+            r.GenerationProvider, r.Model, r.PromptTokens, r.CachedPromptTokens, r.CompletionTokens, r.ReasoningTokens, generationCost, r.UsageReported, latencyMs,
+            time.GetUtcNow());
     }
 
     public async Task<IReadOnlyList<ChatSessionView>> ListSessionsAsync(Guid userId, CancellationToken cancellationToken)

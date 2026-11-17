@@ -13,7 +13,7 @@ from typing import Callable, List, Optional, Tuple
 
 from .chunking import chunk_sections
 from .config import SUPPORTED_CONTENT_TYPES, Settings
-from .embeddings import Embedder, ProviderError
+from .embeddings import Embedder, ProviderError, embed_counted
 from .extraction import READY, UNSUPPORTED_CONTENT, extract
 from .storage import ObjectStorage, ObjectTooLarge, StorageError
 from .vectorstore import EmbeddingDimensionError, StoredChunk, VectorStore
@@ -33,6 +33,11 @@ class IngestOutcome:
     config_version: Optional[int] = None
     chunk_characters: Optional[int] = None
     chunk_overlap: Optional[int] = None
+    # Billable embedding tokens spent by this run (also when it failed after embedding) and whether a failed provider call may
+    # still have been charged ("uncertain").
+    embedding_tokens: int = 0
+    embedding_provider: Optional[str] = None
+    billing: str = "none"
 
 
 def chunk_settings(settings: Settings, request: dict) -> Tuple[int, int]:
@@ -50,6 +55,7 @@ def ingest(settings: Settings, storage: ObjectStorage, embedder: Embedder, store
     size, overlap = chunk_settings(settings, request)
     config_version = request.get("configVersion")
     outcome = _ingest(settings, storage, embedder, store, request, clock, size, overlap)
+    outcome.embedding_provider = getattr(embedder, "provider", None)
     outcome.config_version = None if config_version is None else int(config_version)
     outcome.chunk_characters, outcome.chunk_overlap = size, overlap
     return outcome
@@ -89,20 +95,25 @@ def _ingest(settings: Settings, storage: ObjectStorage, embedder: Embedder, stor
     if len(chunks) > settings.max_chunks:
         return IngestOutcome(UNSUPPORTED_CONTENT, error=f"more than {settings.max_chunks} chunks")
     vectors: List[List[float]] = []
+    tokens = 0
     batch = max(1, settings.embedding_batch_size)
     try:
         for start in range(0, len(chunks), batch):
             if clock() > deadline:
-                return IngestOutcome(FAILED, error="ingest deadline exceeded")
-            vectors.extend(embedder.embed([c.text for c in chunks[start:start + batch]]))
+                return IngestOutcome(FAILED, error="ingest deadline exceeded", embedding_tokens=tokens)
+            result = embed_counted(embedder, [c.text for c in chunks[start:start + batch]])
+            vectors.extend(result.vectors)
+            tokens += result.tokens
     except ProviderError as exc:
-        return IngestOutcome(FAILED, error=str(exc))
+        return IngestOutcome(FAILED, error=str(exc), embedding_tokens=tokens, billing=exc.billing)
     if clock() > deadline:
-        return IngestOutcome(FAILED, error="ingest deadline exceeded")
+        return IngestOutcome(FAILED, error="ingest deadline exceeded", embedding_tokens=tokens)
+    model_tag = hashlib.sha256(embedder.model.encode("utf-8")).hexdigest()[:8]
 
     stored = [
         StoredChunk(
-            chunk_id=f"{version_id.replace('-', '')}:{c.index}",
+            # The model tag keeps the chunks of different embedding models apart (they coexist during a model migration).
+            chunk_id=f"{version_id.replace('-', '')}:{model_tag}:{c.index}",
             version_id=version_id,
             document_id=document_id,
             chunk_index=c.index,
@@ -118,7 +129,8 @@ def _ingest(settings: Settings, storage: ObjectStorage, embedder: Embedder, stor
     try:
         store.replace_version(version_id, stored)
     except EmbeddingDimensionError as exc:
-        return IngestOutcome(FAILED, error=f"embedding does not fit the vector schema ({exc})")
+        return IngestOutcome(FAILED, error=f"embedding does not fit the vector schema ({exc})", embedding_tokens=tokens)
     except Exception as exc:  # noqa: BLE001 - database outage is transient
-        return IngestOutcome(FAILED, error=f"vector store unavailable ({type(exc).__name__})")
-    return IngestOutcome(READY, extraction.page_count, len(stored), extraction.characters, embedder.model, embedder.dimension)
+        return IngestOutcome(FAILED, error=f"vector store unavailable ({type(exc).__name__})", embedding_tokens=tokens)
+    return IngestOutcome(READY, extraction.page_count, len(stored), extraction.characters, embedder.model, embedder.dimension,
+                         embedding_tokens=tokens)

@@ -248,7 +248,9 @@ def test_ingest_store_retrieve_and_answer_with_citations(tmp_path):
     assert answer["model"] == CHAT_MODEL
     assert answer["citations"] and all(c["versionId"] == version and c["documentId"] == document for c in answer["citations"])
     assert "[1]" in answer["answer"]
-    assert answer["usage"] == {"promptTokens": 321, "completionTokens": 12}
+    assert {k: answer["usage"][k] for k in ("promptTokens", "completionTokens")} == {"promptTokens": 321, "completionTokens": 12}
+    # Local inference is not billed: the ledger sees the providers and zero billable embedding tokens.
+    assert (answer["usage"]["embeddingProvider"], answer["usage"]["generationProvider"], answer["usage"]["embeddingTokens"]) == ("ollama", "ollama", 0)
 
 
 def test_no_matching_source_gives_the_insufficient_answer_without_calling_the_model(tmp_path):

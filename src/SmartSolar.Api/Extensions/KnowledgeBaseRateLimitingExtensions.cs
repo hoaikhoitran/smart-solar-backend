@@ -13,7 +13,8 @@ public static partial class RateLimitingExtensions
 
     public static readonly IReadOnlyList<RateLimitPolicyDefinition> KnowledgeBasePolicies =
     [
-        new(RagChatPolicy, "RateLimiting:RagChat", 10, 1, Distributed: true),
+        // 5 questions per user per minute across all replicas (Redis); the PostgreSQL admission adds the daily quota, concurrency and USD budget.
+        new(RagChatPolicy, "RateLimiting:RagChat", 5, 1, Distributed: true),
         new(RagHistoryPolicy, "RateLimiting:RagHistory", 60, 1),
         new(RagAdminReadPolicy, "RateLimiting:RagAdminRead", 60, 1),
         new(RagAdminRegisterPolicy, "RateLimiting:RagAdminRegister", 10, 1, Distributed: true),

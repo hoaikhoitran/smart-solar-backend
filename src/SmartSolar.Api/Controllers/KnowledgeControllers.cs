@@ -115,8 +115,14 @@ public sealed class AdminRagConfigurationController(RagConfigurationService serv
         decimal? temperature = null;
         if (request.Temperature.ValueKind == System.Text.Json.JsonValueKind.Number && request.Temperature.TryGetDecimal(out var t)) temperature = t;
         else if (specified && request.Temperature.ValueKind != System.Text.Json.JsonValueKind.Null) return Invalid("temperature", "Must be a number or null.");
+        var effortSpecified = request.ReasoningEffort.ValueKind != System.Text.Json.JsonValueKind.Undefined;
+        if (effortSpecified && request.ReasoningEffort.ValueKind is not (System.Text.Json.JsonValueKind.String or System.Text.Json.JsonValueKind.Null))
+            return Invalid("reasoningEffort", "Must be a string or null.");
         var input = new RagConfigurationInput(request.GenerationModel, specified, temperature, request.MaxOutputTokens, request.ChunkCharacters, request.ChunkOverlap,
-            request.TopK, request.MinScore, request.MaxContextTokens, request.MaxHistoryMessages, request.PromptVersion, request.Notes);
+            request.TopK, request.MinScore, request.MaxContextTokens, request.MaxHistoryMessages, request.PromptVersion, request.Notes, effortSpecified,
+            request.ReasoningEffort.ValueKind == System.Text.Json.JsonValueKind.String ? request.ReasoningEffort.GetString() : null, request.GenerationEnabled,
+            request.UserRequestsPerDay, request.UserConcurrency, request.GlobalConcurrency, request.MaxQuestionCharacters, request.GenerationTimeoutSeconds,
+            request.DailyBudgetUsd, request.MonthlyBudgetUsd, request.MonthlyIngestionBudgetUsd);
         return Respond(await service.SaveDraftAsync(admin, input, request.ExpectedRevision, cancellationToken));
     }
 
@@ -166,7 +172,7 @@ public sealed class ChatController(ChatService chat) : OperationResultController
         if (request.ClientMessageId is { Length: > 64 }) return Invalid("clientMessageId", "At most 64 characters.");
         if (request.Advisor?.Problem() is { } problem) return Invalid(problem.Field, problem.Message);
         return Respond(await chat.AskAsync(user, request.SessionId, request.Message, request.ClientMessageId, cancellationToken, Audience(),
-            request.Advisor?.ToInput()));
+            request.Advisor?.ToInput(), HighestRole()));
     }
 
     /// <summary>
@@ -197,9 +203,96 @@ public sealed class ChatController(ChatService chat) : OperationResultController
     public async Task<IActionResult> GetSession(Guid sessionId, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await chat.GetSessionAsync(user, sessionId, cancellationToken, Audience())) : UnauthorizedFailure();
 
+    /// <summary>The caller's highest role, recorded on the cost ledger (role breakdown of the Admin dashboard).</summary>
+    private string? HighestRole()
+        => new[] { RoleCodes.Admin, RoleCodes.Manager, RoleCodes.Sales, RoleCodes.Technician, RoleCodes.Customer }.FirstOrDefault(IsInRole);
+
     /// <summary>Staff roles read every published document; anyone else (customers, or a token without a staff role) only customer-visible ones.</summary>
     private KnowledgeAudience Audience()
         => IsInRole(RoleCodes.Admin) || IsInRole(RoleCodes.Manager) || IsInRole(RoleCodes.Sales) || IsInRole(RoleCodes.Technician)
             ? KnowledgeAudience.Staff
             : KnowledgeAudience.Customer;
+}
+
+/// <summary>
+/// Admin AI cost dashboard over the cost ledger (server-side aggregation, UTC date ranges of at most 92 days). No prompt, answer or provider
+/// secret is ever returned. Admin only (Customer, Technician, Sales and Manager get 403).
+/// </summary>
+[ApiController]
+[Route("api/admin/rag-usage")]
+[Authorize(Roles = RoleCodes.Admin)]
+[RequireFeature(FeatureOptions.KnowledgeBase)]
+public sealed class AdminRagUsageController(AiUsageDashboardService dashboard) : OperationResultControllerBase
+{
+    [HttpGet("summary")]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminReadPolicy)]
+    public async Task<IActionResult> Summary([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken cancellationToken)
+        => Respond(await dashboard.SummaryAsync(from, to, cancellationToken));
+
+    [HttpGet("timeseries")]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminReadPolicy)]
+    public async Task<IActionResult> Timeseries([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken cancellationToken)
+        => Respond(await dashboard.TimeseriesAsync(from, to, cancellationToken));
+
+    [HttpGet("by-model")]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminReadPolicy)]
+    public async Task<IActionResult> ByModel([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken cancellationToken)
+        => Respond(await dashboard.BreakdownAsync("model", from, to, cancellationToken));
+
+    [HttpGet("by-operation")]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminReadPolicy)]
+    public async Task<IActionResult> ByOperation([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken cancellationToken)
+        => Respond(await dashboard.BreakdownAsync("operation", from, to, cancellationToken));
+
+    [HttpGet("by-role")]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminReadPolicy)]
+    public async Task<IActionResult> ByRole([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken cancellationToken)
+        => Respond(await dashboard.BreakdownAsync("role", from, to, cancellationToken));
+
+    [HttpGet("top-users")]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminReadPolicy)]
+    public async Task<IActionResult> TopUsers([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] int limit = 10, CancellationToken cancellationToken = default)
+        => Respond(await dashboard.TopUsersAsync(from, to, limit, cancellationToken));
+
+    [HttpGet("requests")]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminReadPolicy)]
+    public async Task<IActionResult> Requests([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] string? operation, [FromQuery] string? status,
+        [FromQuery] string? outcome, [FromQuery] Guid? userId, [FromQuery] int page = 1, [FromQuery] int pageSize = 20, CancellationToken cancellationToken = default)
+        => Respond(await dashboard.RequestsAsync(from, to, operation?.Trim().ToUpperInvariant(), status?.Trim().ToUpperInvariant(), outcome?.Trim().ToUpperInvariant(),
+            userId, page, pageSize, cancellationToken));
+
+    /// <summary>Settles an UNCERTAIN charge at the cost confirmed by the provider's billing (audited: who, when, note).</summary>
+    [HttpPost("{ledgerId:guid}/review")]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminConfigPolicy)]
+    public async Task<IActionResult> Review(Guid ledgerId, [FromBody] ReviewAiUsageRequest request, CancellationToken cancellationToken)
+        => CurrentUserId() is { } admin ? Respond(await dashboard.ReviewAsync(admin, ledgerId, request.CostUsd, request.Note, cancellationToken)) : UnauthorizedFailure();
+}
+
+/// <summary>
+/// AI budget administration: GET shows the active cost controls, the hard ceilings, current spending and alerts; PUT changes the cost
+/// controls as a new, audited, rollback-able configuration version (values above the ceilings are refused). Admin only.
+/// </summary>
+[ApiController]
+[Route("api/admin/rag-budget")]
+[Authorize(Roles = RoleCodes.Admin)]
+[RequireFeature(FeatureOptions.KnowledgeBase)]
+public sealed class AdminRagBudgetController(AiUsageDashboardService dashboard, RagConfigurationService configuration) : OperationResultControllerBase
+{
+    [HttpGet]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminReadPolicy)]
+    public async Task<IActionResult> Get(CancellationToken cancellationToken)
+        => Respond(Modules.Common.Results.OperationResult<AiBudgetView>.Ok(await dashboard.BudgetAsync(cancellationToken)));
+
+    [HttpPut]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminConfigPolicy)]
+    public async Task<IActionResult> Update([FromBody] UpdateRagBudgetRequest request, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } admin) return UnauthorizedFailure();
+        if (request.ExpectedActiveVersion is not { } expected || expected < 0) return Invalid("expectedActiveVersion", "Required: the activeVersion read from GET /api/admin/rag-budget.");
+        var input = new RagConfigurationInput(null, false, null, null, null, null, null, null, null, null, null, null, GenerationEnabled: request.GenerationEnabled,
+            UserRequestsPerDay: request.UserRequestsPerDay, UserConcurrency: request.UserConcurrency, GlobalConcurrency: request.GlobalConcurrency,
+            MaxQuestionCharacters: request.MaxQuestionCharacters, GenerationTimeoutSeconds: request.GenerationTimeoutSeconds, DailyBudgetUsd: request.DailyBudgetUsd,
+            MonthlyBudgetUsd: request.MonthlyBudgetUsd, MonthlyIngestionBudgetUsd: request.MonthlyIngestionBudgetUsd);
+        return Respond(await configuration.SetCostControlsAsync(admin, input, expected, request.Notes, cancellationToken));
+    }
 }

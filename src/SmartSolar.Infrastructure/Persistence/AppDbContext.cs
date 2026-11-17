@@ -142,6 +142,8 @@ public sealed class AppDbContext : DbContext
     public DbSet<SmartSolar.Modules.KnowledgeBase.RagUsageDaily> RagUsageDaily => Set<SmartSolar.Modules.KnowledgeBase.RagUsageDaily>();
 
     public DbSet<SmartSolar.Modules.KnowledgeBase.RagUsageReservation> RagUsageReservations => Set<SmartSolar.Modules.KnowledgeBase.RagUsageReservation>();
+    public DbSet<SmartSolar.Modules.KnowledgeBase.AiUsageLedgerEntry> AiUsageLedger => Set<SmartSolar.Modules.KnowledgeBase.AiUsageLedgerEntry>();
+    public DbSet<SmartSolar.Modules.KnowledgeBase.AiBudgetPeriod> AiBudgetPeriods => Set<SmartSolar.Modules.KnowledgeBase.AiBudgetPeriod>();
 
     // Flow 3 — After-Sales Services
     public DbSet<SmartSolar.Modules.AfterSales.WarrantyOption> WarrantyOptions => Set<SmartSolar.Modules.AfterSales.WarrantyOption>();

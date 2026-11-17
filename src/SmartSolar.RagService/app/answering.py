@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from .config import Settings
-from .embeddings import Embedder, ProviderTimeout
+from .embeddings import Embedder, ProviderError, ProviderTimeout, embed_counted
 from .llm import ChatModel, GenerationOptions
 from .prompting import INSUFFICIENT, build_messages, select_sources
 from .vectorstore import VectorStore
@@ -37,6 +37,16 @@ class AnswerOutcome:
     generation_ms: int = 0
     # The provider's own breakdown of generation_ms (see Completion.timings); None for providers that report none.
     timings: Optional[Dict[str, int]] = None
+    # Cost accounting (the API charges billable providers): the question's embedding, and the generation (None = not called:
+    # no usable evidence, so no generation was paid for).
+    embedding_tokens: int = 0
+    embedding_model: Optional[str] = None
+    embedding_provider: Optional[str] = None
+    generation_provider: Optional[str] = None
+    cached_prompt_tokens: int = 0
+    reasoning_tokens: int = 0
+    usage_reported: bool = True
+    context_ms: int = 0
 
 
 # Below this much time before the caller's deadline a generation is not started: it could not finish in time.
@@ -44,7 +54,18 @@ MIN_GENERATION_SECONDS = 2.0
 
 
 class DeadlineExceeded(Exception):
-    """The caller's deadline passed (or is about to) before the model was called."""
+    """The caller's deadline passed (or is about to) before the model was called (or the call was cut at it: ``billing`` uncertain)."""
+
+    billing = "none"
+    embedding_tokens = 0
+    embedding_provider: Optional[str] = None
+
+
+def _charged(exc: Exception, tokens: int, provider: Optional[str]) -> Exception:
+    """Attaches the question's embedding cost to a failure raised after the embedding was paid for."""
+    setattr(exc, "embedding_tokens", tokens)
+    setattr(exc, "embedding_provider", provider)
+    return exc
 
 
 def answer_question(
@@ -62,6 +83,7 @@ def answer_question(
     prompt_version: str = "v1",
     generation: Optional[GenerationOptions] = None,
     deadline: Optional[float] = None,
+    query_embedder: Optional[Embedder] = None,
 ) -> AnswerOutcome:
     """``deadline`` (``time.monotonic()`` value) is when the caller stops waiting: no generation starts after it, and the model call
     is cut at it, so an answer nobody will read never holds the generation slot (DeadlineExceeded)."""
@@ -69,27 +91,40 @@ def answer_question(
     started = time.monotonic()
     titles = {str(v["versionId"]): str(v.get("title") or "") for v in allowed}
     documents = {str(v["versionId"]): str(v["documentId"]) for v in allowed}
-    query = embedder.embed([question])[0]
-    hits = store.search(query, list(titles.keys()), min(top_k, settings.max_top_k), embedder.model)
+    # Questions are embedded with the query embedder (the old model while a reindex to a new model is in progress), and only that
+    # model's chunks are searched: models never mix, and a half-reindexed new model is never served.
+    query_side = query_embedder or embedder
+    provider = getattr(query_side, "provider", None)
+    embedded = embed_counted(query_side, [question])
+    query, embedding_tokens = embedded.vectors[0], embedded.tokens
+    hits = store.search(query, list(titles.keys()), min(top_k, settings.max_top_k), query_side.model)
     # Defence in depth: never trust the store to have applied the filter.
     hits = [h for h in hits if h.version_id in titles and h.score >= threshold]
     retrieval_ms = int((time.monotonic() - started) * 1000)
+    usage = dict(embedding_tokens=embedding_tokens, embedding_model=query_side.model, embedding_provider=provider)
     if not hits:
-        return AnswerOutcome(None, False, retrieval_ms=retrieval_ms)
+        # No usable evidence: the model is not called (nothing to ground an answer on, nothing paid for generation).
+        return AnswerOutcome(None, False, retrieval_ms=retrieval_ms, **usage)
 
+    started = time.monotonic()
     sources = select_sources(hits, titles, min(max_context_tokens, settings.max_context_tokens))
     messages = build_messages(question, history, sources, prompt_version=prompt_version)
+    context_ms = int((time.monotonic() - started) * 1000)
     started = time.monotonic()
     remaining = None if deadline is None else deadline - time.monotonic()
     if remaining is not None and remaining < MIN_GENERATION_SECONDS:
-        raise DeadlineExceeded(f"{max(0.0, remaining):.1f}s left before the caller's deadline; generation not started")
+        raise _charged(DeadlineExceeded(f"{max(0.0, remaining):.1f}s left before the caller's deadline; generation not started"), embedding_tokens, provider)
     try:
         completion = model.complete(messages, min(max_output_tokens, settings.max_output_tokens), generation, timeout_seconds=remaining)
     except ProviderTimeout as exc:
         if deadline is None:
-            raise
-        # Cut at the caller's deadline: a timeout for the caller, not a provider outage.
-        raise DeadlineExceeded("the model did not finish before the caller's deadline") from exc
+            raise _charged(exc, embedding_tokens, provider)
+        # Cut at the caller's deadline: a timeout for the caller, not a provider outage. The provider may have billed it.
+        cut = DeadlineExceeded("the model did not finish before the caller's deadline")
+        cut.billing = "uncertain"
+        raise _charged(cut, embedding_tokens, provider) from exc
+    except ProviderError as exc:
+        raise _charged(exc, embedding_tokens, provider)
     generation_ms = int((time.monotonic() - started) * 1000)
 
     text = completion.text.strip()
@@ -125,4 +160,10 @@ def answer_question(
         retrieval_ms=retrieval_ms,
         generation_ms=generation_ms,
         timings=completion.timings,
+        generation_provider=getattr(completion, "provider", None) or getattr(model, "provider", None),
+        cached_prompt_tokens=getattr(completion, "cached_prompt_tokens", 0),
+        reasoning_tokens=getattr(completion, "reasoning_tokens", 0),
+        usage_reported=getattr(completion, "usage_reported", True),
+        context_ms=context_ms,
+        **usage,
     )
