@@ -7,7 +7,19 @@ public sealed class SurveyRequest
 {
     public Guid Id { get; set; }
 
-    public Guid PreSurveyId { get; set; }
+    /// <summary>The submitted pre-survey (Option A, <see cref="SurveyRequestSources.PreSurvey"/>); null for a direct booking (Option B).</summary>
+    public Guid? PreSurveyId { get; set; }
+
+    /// <summary>The surveyed site. For a pre-survey request it is the pre-survey's property (copied at submission).</summary>
+    public Guid PropertySiteId { get; set; }
+
+    /// <summary>How the request started: one of <see cref="SurveyRequestSources"/>.</summary>
+    public string Source { get; set; } = SurveyRequestSources.PreSurvey;
+
+    /// <summary>On-site contact for the visit when it differs from the account holder (direct booking); null = the account's name / phone.</summary>
+    public string? ContactName { get; set; }
+
+    public string? ContactPhone { get; set; }
 
     public Guid? AssignedSaleId { get; set; }
 
@@ -32,9 +44,23 @@ public sealed class SurveyRequest
 
     public string? ClosureNote { get; set; }
 
-    public PreSurvey PreSurvey { get; set; } = null!;
+    public PreSurvey? PreSurvey { get; set; }
+
+    public PropertySite PropertySite { get; set; } = null!;
 
     public UserAccount? AssignedSale { get; set; }
+}
+
+/// <summary>How a survey request started. Both converge on the same scheduling, on-site survey and quotation workflow.</summary>
+public static class SurveyRequestSources
+{
+    /// <summary>Option A: the customer's submitted pre-survey (surface data, optional simulation).</summary>
+    public const string PreSurvey = "PRE_SURVEY";
+
+    /// <summary>Option B: booked directly for a property site, without a pre-survey, surface assessment or simulation.</summary>
+    public const string DirectBooking = "DIRECT_BOOKING";
+
+    public static readonly IReadOnlyList<string> All = [PreSurvey, DirectBooking];
 }
 
 /// <summary>Why a survey request ended without an installation.</summary>

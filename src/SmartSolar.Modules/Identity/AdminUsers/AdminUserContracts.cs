@@ -96,6 +96,7 @@ public static class EmailDeliveryStates
 {
     public const string Queued = "QUEUED";
     public const string Disabled = "EMAIL_DELIVERY_DISABLED";
+    /// <summary>Kept for API compatibility; no longer produced since links go through the outbox (a failed publish is retried, so it is QUEUED).</summary>
     public const string PublishFailed = "PUBLISH_FAILED";
 }
 

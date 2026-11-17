@@ -297,10 +297,13 @@ public sealed class PreSurveyTestContext : IAsyncDisposable
         SurveyRequestStatus status = SurveyRequestStatus.Pending,
         Guid? assignedSaleId = null,
         DateTimeOffset? submittedAt = null,
-        DateTimeOffset? assignedAt = null) => new()
+        DateTimeOffset? assignedAt = null,
+        Guid? propertySiteId = null) => new()
     {
         Id = Guid.NewGuid(),
         PreSurveyId = preSurveyId,
+        PropertySiteId = propertySiteId ?? throw new ArgumentNullException(nameof(propertySiteId), "A survey request always names its property site."),
+        Source = SurveyRequestSources.PreSurvey,
         AssignedSaleId = assignedSaleId,
         Status = status,
         SubmittedAt = submittedAt ?? DateTimeOffset.UtcNow,
@@ -339,7 +342,8 @@ public sealed class PreSurveyTestContext : IAsyncDisposable
         Guid? assignedSaleId = null,
         DateTimeOffset? submittedAt = null,
         DateTimeOffset? assignedAt = null)
-        => SeedAsync(NewSurveyRequest(preSurveyId, status, assignedSaleId, submittedAt, assignedAt));
+        => SeedAsync(NewSurveyRequest(preSurveyId, status, assignedSaleId, submittedAt, assignedAt,
+            Db.PreSurveys.AsNoTracking().Where(p => p.Id == preSurveyId).Select(p => p.PropertyId).Single()));
 
     /// <summary>Seeds the full Customer → PropertySite → submitted PreSurvey chain that a survey request hangs off.</summary>
     public async Task<Modules.PreSurvey.Entities.PreSurvey> SeedSubmittedPreSurveyAsync(

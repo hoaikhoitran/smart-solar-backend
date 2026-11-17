@@ -16,6 +16,12 @@ public sealed class PaymentAttemptConfiguration : IEntityTypeConfiguration<Payme
             t.HasCheckConstraint("ck_payment_attempt_amount", "amount > 0 AND currency = 'VND'");
             t.HasCheckConstraint("ck_payment_attempt_order_code", "order_code > 0 AND order_code < 9007199254740991");
             t.HasCheckConstraint("ck_payment_attempt_paid_fields", $"status <> '{PaymentStatuses.Paid}' OR (paid_at IS NOT NULL AND amount_paid = amount)");
+            // A cash payment is PAID only with who recorded it, the receipt reference and the evidence file (when = paid_at, amount = amount_paid).
+            t.HasCheckConstraint("ck_payment_attempt_cash_confirmation",
+                $"provider <> '{PaymentProviders.Cash}' OR status <> '{PaymentStatuses.Paid}' OR (confirmed_by_user_id IS NOT NULL AND provider_reference IS NOT NULL AND evidence_file_id IS NOT NULL)");
+            // Cash confirmation fields belong to CASH attempts only.
+            t.HasCheckConstraint("ck_payment_attempt_cash_fields_only_for_cash",
+                $"provider = '{PaymentProviders.Cash}' OR (confirmed_by_user_id IS NULL AND evidence_file_id IS NULL AND confirmation_note IS NULL)");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -38,6 +44,9 @@ public sealed class PaymentAttemptConfiguration : IEntityTypeConfiguration<Payme
         builder.Property(x => x.PaidAt).HasColumnName("paid_at");
         builder.Property(x => x.FailureReason).HasColumnName("failure_reason").HasMaxLength(300);
         builder.Property(x => x.LastReconciledAt).HasColumnName("last_reconciled_at");
+        builder.Property(x => x.ConfirmedByUserId).HasColumnName("confirmed_by_user_id");
+        builder.Property(x => x.EvidenceFileId).HasColumnName("evidence_file_id");
+        builder.Property(x => x.ConfirmationNote).HasColumnName("confirmation_note").HasMaxLength(500);
         builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
         builder.Property(x => x.Revision).HasColumnName("revision").IsConcurrencyToken().IsRequired();
@@ -51,6 +60,10 @@ public sealed class PaymentAttemptConfiguration : IEntityTypeConfiguration<Payme
         builder.HasIndex(x => new { x.ContractId, x.CreatedAt }).HasDatabaseName("ix_payment_attempt_contract_created_at");
         builder.HasOne<CustomerContract>().WithMany().HasForeignKey(x => x.ContractId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.CustomerUserId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.ConfirmedByUserId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_payment_attempt_confirmed_by");
+        builder.HasOne<SmartSolar.Modules.Files.StoredFile>().WithMany().HasForeignKey(x => x.EvidenceFileId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_payment_attempt_evidence_file");
     }
 }
 

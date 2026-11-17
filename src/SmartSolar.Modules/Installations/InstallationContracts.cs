@@ -16,8 +16,37 @@ public sealed record AssetCatalogProduct(Guid ProductId, string ProductType, int
 /// <summary>A SOLAR_PANEL or INVERTER product and its quantity in the contract's accepted quotation.</summary>
 public sealed record ContractedEquipment(Guid ProductId, string ProductType, string Name, decimal Quantity);
 
+/// <summary>
+/// A SIGNED or PAID contract as the installation schedule sees it. <see cref="SurveyTechnicianUserId"/> = the technician of the request's
+/// latest COMPLETED on-site survey report (the technician responsible for agreeing the installation date); null when there is none.
+/// </summary>
+public sealed record ScheduleContractInfo(Guid ContractId, string ContractNumber, string Status, Guid SurveyRequestId, Guid CustomerUserId, Guid PropertySiteId,
+    Guid? SurveyTechnicianUserId, string PropertyName, string CustomerName);
+
 public interface IInstallationUnitOfWork : ITransactionalUnitOfWork, IInAppNotificationWriter
 {
+    // ---- Installation schedule proposals (technician-agreed dates) ----
+    Task<ScheduleContractInfo?> GetScheduleContractAsync(Guid contractId, CancellationToken cancellationToken);
+
+    /// <summary>SIGNED / PAID contracts whose latest completed on-site survey was done by the technician.</summary>
+    Task<IReadOnlyList<ScheduleContractInfo>> ListScheduleContractsForTechnicianAsync(Guid technicianUserId, CancellationToken cancellationToken);
+    Task<InstallationProject?> FindProjectByContractAsync(Guid contractId, CancellationToken cancellationToken);
+    Task<InstallationScheduleProposal?> GetLiveProposalAsync(Guid contractId, bool track, CancellationToken cancellationToken);
+    Task<InstallationScheduleProposal?> FindProposalAsync(Guid proposalId, bool track, CancellationToken cancellationToken);
+
+    /// <summary>Proposals filtered by contract, technician, customer and status (each null = any); newest first.</summary>
+    Task<IReadOnlyList<InstallationScheduleProposal>> ListProposalsAsync(Guid? contractId, Guid? technicianUserId, Guid? customerUserId, string? status,
+        CancellationToken cancellationToken);
+
+    /// <summary>PLANNED proposals whose contract is PAID (to be confirmed).</summary>
+    Task<IReadOnlyList<Guid>> ListContractsWithPlannedProposalAndPaidAsync(int limit, CancellationToken cancellationToken);
+
+    /// <summary>PLANNED proposals whose start has passed while the contract is not PAID yet.</summary>
+    Task<IReadOnlyList<Guid>> ListExpiredPlannedProposalIdsAsync(DateTimeOffset nowUtc, int limit, CancellationToken cancellationToken);
+
+    /// <summary>Row lock on the contract (PostgreSQL only): serialises every schedule write and confirmation of one contract.</summary>
+    Task LockContractAsync(Guid contractId, CancellationToken cancellationToken);
+
     Task<PaidContractSource?> GetContractAsync(Guid contractId, CancellationToken cancellationToken);
 
     /// <summary>PAID contracts without any installation project (a cancelled project still counts: one project per contract).</summary>

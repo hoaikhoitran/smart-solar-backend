@@ -1,64 +1,20 @@
 using MassTransit;
-using Microsoft.Extensions.Logging;
 using MimeKit;
 using SmartSolar.Infrastructure.Email;
 using SmartSolar.Modules.Identity.Events;
-using SmartSolar.Modules.Identity.PasswordRecovery;
 
 namespace SmartSolar.Infrastructure.Messaging.RabbitMQ.Consumers;
 
 /// <summary>
-/// Delivers the password reset email. Exceptions are allowed to escape so
-/// MassTransit retries the message and, once retries are exhausted, moves it
-/// to the error queue. With an outbox id (<see cref="PasswordResetRequestedEvent.DispatchId"/>) a redelivered message whose
-/// email was already sent is skipped, a message whose token was replaced by a newer request is dropped (its link is dead),
-/// and the outcome is recorded (SENT, or the exception type of the failed attempt). Delivery stays at-least-once: if SMTP
-/// accepts the email but recording SENT fails, a retry can send it a second time.
+/// Delivers the password reset email through <see cref="AuthLinkEmailDelivery"/> (outbox-aware: dedupe, hand-back to the outbox on SMTP
+/// failure, SENT on success).
 /// </summary>
-public sealed class PasswordResetRequestedConsumer
+public sealed class PasswordResetRequestedConsumer(PasswordResetEmailService passwordResetEmailService, AuthLinkEmailDelivery delivery)
     : IConsumer<PasswordResetRequestedEvent>
 {
-    private readonly PasswordResetEmailService _passwordResetEmailService;
-    private readonly IPasswordResetDispatchStore _dispatches;
-    private readonly TimeProvider _time;
-    private readonly ILogger<PasswordResetRequestedConsumer> _logger;
-
-    public PasswordResetRequestedConsumer(PasswordResetEmailService passwordResetEmailService, IPasswordResetDispatchStore dispatches, TimeProvider time,
-        ILogger<PasswordResetRequestedConsumer> logger)
-    {
-        _passwordResetEmailService = passwordResetEmailService;
-        _dispatches = dispatches;
-        _time = time;
-        _logger = logger;
-    }
-
-    public async Task Consume(ConsumeContext<PasswordResetRequestedEvent> context)
-    {
-        var message = context.Message;
-        if (message.DispatchId is not { } dispatchId)
-        {
-            await _passwordResetEmailService.SendPasswordResetEmailAsync(message, context.CancellationToken);
-            return;
-        }
-
-        var status = await _dispatches.GetStatusAsync(dispatchId, context.CancellationToken);
-        if (status is null or PasswordResetDispatchStatuses.Sent or PasswordResetDispatchStatuses.Expired)
-        {
-            _logger.LogInformation("Password reset email for user {UserId} skipped: dispatch is {Status}.", message.UserId, status ?? "superseded");
-            return;
-        }
-
-        try
-        {
-            await _passwordResetEmailService.SendPasswordResetEmailAsync(message, context.CancellationToken);
-        }
-        catch (Exception ex)
-        {
-            await _dispatches.RecordSendFailureAsync(dispatchId, ex.GetType().Name, CancellationToken.None);
-            throw;
-        }
-        await _dispatches.MarkSentAsync(dispatchId, _time.GetUtcNow(), CancellationToken.None);
-    }
+    public Task Consume(ConsumeContext<PasswordResetRequestedEvent> context)
+        => delivery.DeliverAsync(context.Message.DispatchId, context.Message.UserId, context.Message.ResetUrl,
+            token => passwordResetEmailService.SendPasswordResetEmailAsync(context.Message, token), context.CancellationToken);
 }
 
 /// <summary>

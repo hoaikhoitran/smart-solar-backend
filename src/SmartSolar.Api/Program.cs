@@ -106,21 +106,28 @@ await app.SeedSystemRolesAsync();
 app.LogEmailDeliveryReadiness();
 
 // Configure the HTTP request pipeline.
+// First: the client IP and scheme from a trusted reverse proxy (only ForwardedHeaders:KnownProxies / KnownNetworks) must be applied
+// before anything reads them (HTTPS redirection, HSTS, rate-limit partitions, logs). Spoofed headers from other sources are ignored.
+app.UseForwardedHeaders();
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 // Before anything touches the database: an older schema answers 503 SCHEMA_NOT_READY instead of failing per query.
 app.UseMiddleware<SmartSolar.Api.Middlewares.SchemaReadinessMiddleware>();
 app.UseEnvelopedStatusCodes();
 
-if (app.Environment.IsDevelopment())
+// Swagger is an explicit switch (Swagger:Enabled); it defaults to on only in Development, never implied by the environment in production.
+if (app.Configuration.GetValue("Swagger:Enabled", app.Environment.IsDevelopment()))
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+if (!app.Environment.IsDevelopment())
+{
+    // Sent only on HTTPS requests (the scheme forwarded by the trusted TLS proxy).
+    app.UseHsts();
+}
 
-// Must run before rate limiting so the client IP partition is the real client.
-app.UseForwardedHeaders();
+app.UseHttpsRedirection();
 app.UseCors("Frontend");
 
 // Authentication must run before authorization so [Authorize] sees the principal.

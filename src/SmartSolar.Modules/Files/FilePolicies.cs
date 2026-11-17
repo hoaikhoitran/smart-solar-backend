@@ -101,6 +101,7 @@ public static partial class FilePolicies
         [FilePurposes.ServiceEvidence] = new(FilePurposes.ServiceEvidence, "after-sales/", [Jpeg, Png, Webp], 15 * Mb, true),
         [FilePurposes.ProductImage] = new(FilePurposes.ProductImage, "products/", [Jpeg, Png, Webp], 10 * Mb, true),
         [FilePurposes.PackageImage] = new(FilePurposes.PackageImage, "packages/", [Jpeg, Png, Webp], 10 * Mb, true),
+        [FilePurposes.PaymentEvidence] = new(FilePurposes.PaymentEvidence, "payments/cash/", [Pdf, Jpeg, Png, Webp], 15 * Mb, true),
     };
 
     /// <summary>
@@ -113,13 +114,15 @@ public static partial class FilePolicies
         [FilePurposes.InstallationEvidence] = [RoleCodes.Technician],
         [FilePurposes.ServiceEvidence] = [RoleCodes.Technician, RoleCodes.Customer],
         [FilePurposes.QuotationDocument] = [RoleCodes.Sales],
-        [FilePurposes.ContractDocument] = [RoleCodes.Sales],
+        // Manager/Admin prepare and publish contracts since 2026-11-17 (Sales is consult-only).
+        [FilePurposes.ContractDocument] = [RoleCodes.Manager, RoleCodes.Admin],
         [FilePurposes.SignedContract] = [RoleCodes.Customer],
         [FilePurposes.ProjectDocument] = [RoleCodes.Manager, RoleCodes.Admin],
         [FilePurposes.KnowledgeDocument] = [RoleCodes.Admin],
         // The roles that manage the catalog (AdminProductsController) and the package catalog (AdminAfterSalesController).
         [FilePurposes.ProductImage] = [RoleCodes.Admin, RoleCodes.Manager],
         [FilePurposes.PackageImage] = [RoleCodes.Admin],
+        [FilePurposes.PaymentEvidence] = [RoleCodes.Manager, RoleCodes.Admin],
     };
 
     /// <summary>Declared content type, file name extension and size against the purpose; null when they are acceptable.</summary>

@@ -1,16 +1,20 @@
 using Microsoft.Extensions.Logging;
 using SmartSolar.Modules.Common.Email;
 using SmartSolar.Modules.Common.Messaging;
+using SmartSolar.Modules.Identity.Enums;
 using SmartSolar.Modules.Identity.Events;
 
 namespace SmartSolar.Modules.Identity.PasswordRecovery;
 
 /// <summary>
-/// Durable record of one password-reset email to deliver (a transactional outbox row). It is written in the same transaction as the
-/// reset token, so a request the API accepted can no longer be lost when the broker is down: the event is published right after the
-/// commit and, if that fails, retried by <c>PasswordResetDispatchWorker</c> until the token expires. <see cref="Status"/> separates
-/// "accepted" (PENDING), "handed to the broker" (PUBLISHED) and "the SMTP server accepted the email" (SENT).
-/// <see cref="ResetUrl"/> carries the raw token: it is kept only while the row is PENDING and cleared on publish or expiry; never logged.
+/// Durable record of one one-time-link email to deliver (a transactional outbox row; table <c>password_reset_dispatch</c>). Despite the
+/// historical name it carries every link email of the identity module: password reset, email verification and account setup — the kind
+/// is the <see cref="Entities.AuthActionToken.Type"/> of <see cref="ActionTokenId"/>, so no extra column is needed. It is written in the
+/// same transaction as the token, so a request the API accepted is not lost when the broker or the SMTP server is down: the event is
+/// published right after the commit; a failed publish, and a failed SMTP send (the consumer hands the row back), are retried by
+/// <c>PasswordResetDispatchWorker</c> with backoff until the token expires. <see cref="Status"/> separates "accepted" (PENDING),
+/// "handed to the broker" (PUBLISHED) and "the SMTP server accepted the email" (SENT). <see cref="ResetUrl"/> carries the raw token: it is
+/// kept only while the row is PENDING and cleared on publish, send or expiry; never logged.
 /// </summary>
 public sealed class PasswordResetDispatch
 {
@@ -43,6 +47,23 @@ public sealed class PasswordResetDispatch
     public DateTimeOffset? SentAt { get; set; }
 }
 
+/// <summary>A claimed row and the kind of link it carries.</summary>
+public sealed record ClaimedDispatch(PasswordResetDispatch Row, AuthActionTokenType Kind);
+
+public static class AuthLinkDispatches
+{
+    /// <summary>
+    /// A new PENDING row due at once (<see cref="DateTimeOffset.UnixEpoch"/>: whatever clock the dispatcher uses, it is due), to be saved
+    /// in the same transaction as its token.
+    /// </summary>
+    public static PasswordResetDispatch Pending(Guid userId, Guid actionTokenId, string email, string fullName, string url, DateTimeOffset now, DateTimeOffset expiresAt)
+        => new()
+        {
+            Id = Guid.NewGuid(), UserId = userId, ActionTokenId = actionTokenId, Email = email, FullName = fullName, ResetUrl = url,
+            Status = PasswordResetDispatchStatuses.Pending, NextAttemptAt = DateTimeOffset.UnixEpoch, CreatedAt = now, ExpiresAt = expiresAt,
+        };
+}
+
 public static class PasswordResetDispatchStatuses
 {
     public const string Pending = "PENDING";
@@ -58,7 +79,13 @@ public interface IPasswordResetDispatchStore
     /// Atomically claims a due PENDING row (conditional update: only one caller, on any instance, wins) and pushes its
     /// <see cref="PasswordResetDispatch.NextAttemptAt"/> by <paramref name="lease"/>. Null when another caller holds it or it is not due.
     /// </summary>
-    Task<PasswordResetDispatch?> TryClaimAsync(Guid id, DateTimeOffset now, TimeSpan lease, CancellationToken cancellationToken);
+    Task<ClaimedDispatch?> TryClaimAsync(Guid id, DateTimeOffset now, TimeSpan lease, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The SMTP send of a PUBLISHED row failed: put it back to PENDING with its URL (from the message) and the next attempt after the
+    /// publish backoff, so the worker re-publishes it until the token expires. False when the row is gone, SENT or EXPIRED.
+    /// </summary>
+    Task<bool> ReturnForRetryAsync(Guid id, string url, DateTimeOffset now, string error, CancellationToken cancellationToken);
 
     /// <summary>Due, unexpired PENDING rows (oldest first).</summary>
     Task<IReadOnlyList<Guid>> ListDueAsync(DateTimeOffset now, int limit, CancellationToken cancellationToken);
@@ -94,17 +121,29 @@ public sealed class PasswordResetDispatcher(IPasswordResetDispatchStore store, I
     {
         if (!delivery.CanDeliver) return false;
         var now = time.GetUtcNow();
-        var row = await store.TryClaimAsync(dispatchId, now, Lease, cancellationToken);
-        if (row?.ResetUrl is null) return false;
+        var claimed = await store.TryClaimAsync(dispatchId, now, Lease, cancellationToken);
+        if (claimed?.Row.ResetUrl is not { } url) return false;
+        var row = claimed.Row;
         try
         {
-            await publisher.PublishAsync(new PasswordResetRequestedEvent(row.UserId, row.Email, row.FullName, row.ResetUrl, row.Id), cancellationToken);
+            switch (claimed.Kind)
+            {
+                case AuthActionTokenType.EmailVerification:
+                    await publisher.PublishAsync(new EmailVerificationRequestedEvent(row.UserId, row.Email, row.FullName, url, row.Id), cancellationToken);
+                    break;
+                case AuthActionTokenType.AccountSetup:
+                    await publisher.PublishAsync(new AccountSetupRequestedEvent(row.UserId, row.Email, row.FullName, url, row.Id), cancellationToken);
+                    break;
+                default:
+                    await publisher.PublishAsync(new PasswordResetRequestedEvent(row.UserId, row.Email, row.FullName, url, row.Id), cancellationToken);
+                    break;
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             // The URL carries the raw token: only the user and the exception type are logged.
-            logger.LogWarning("Password reset email for user {UserId} could not be published ({Error}); attempt {Attempt} will be retried.",
-                row.UserId, ex.GetType().Name, row.PublishAttempts);
+            logger.LogWarning("{Kind} email for user {UserId} could not be published ({Error}); attempt {Attempt} will be retried.",
+                claimed.Kind, row.UserId, ex.GetType().Name, row.PublishAttempts);
             await store.RecordPublishFailureAsync(row.Id, now + Backoff(row.PublishAttempts), ex.GetType().Name, CancellationToken.None);
             return false;
         }
@@ -117,7 +156,7 @@ public sealed class PasswordResetDispatcher(IPasswordResetDispatchStore store, I
     {
         var now = time.GetUtcNow();
         var expired = await store.ExpireAsync(now, cancellationToken);
-        if (expired > 0) logger.LogWarning("{Count} password reset email(s) expired before they could be published.", expired);
+        if (expired > 0) logger.LogWarning("{Count} one-time link email(s) expired before they could be delivered.", expired);
         var published = 0;
         if (!delivery.CanDeliver) return (0, expired);
         foreach (var id in await store.ListDueAsync(now, limit, cancellationToken))

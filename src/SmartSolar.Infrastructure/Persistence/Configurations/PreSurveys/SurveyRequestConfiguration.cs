@@ -24,6 +24,11 @@ public sealed class SurveyRequestConfiguration
                 $"status <> '{nameof(SurveyRequestStatus.Closed)}' OR (closed_at IS NOT NULL AND closed_by_user_id IS NOT NULL AND closure_reason_code IS NOT NULL)");
             t.HasCheckConstraint("ck_survey_request_closure_reason",
                 $"(closed_at IS NULL) = (closure_reason_code IS NULL) AND (closure_reason_code IS NULL OR closure_reason_code IN ({string.Join(", ", SurveyRequestClosureReasons.All.Select(r => $"'{r}'"))}))");
+            // Option A always has its pre-survey; Option B (direct booking) never has one (no placeholder pre-survey is created).
+            t.HasCheckConstraint("ck_survey_request_source",
+                $"source IN ({string.Join(", ", SurveyRequestSources.All.Select(r => $"'{r}'"))})");
+            t.HasCheckConstraint("ck_survey_request_source_pre_survey",
+                $"(source = '{SurveyRequestSources.PreSurvey}') = (pre_survey_id IS NOT NULL)");
         });
 
         builder.HasKey(x => x.Id);
@@ -33,10 +38,21 @@ public sealed class SurveyRequestConfiguration
 
         builder.Property(x => x.PreSurveyId)
             .HasColumnName("pre_survey_id")
-            .IsRequired();
+            .IsRequired(false);
 
         builder.HasIndex(x => x.PreSurveyId)
             .IsUnique();
+
+        builder.Property(x => x.PropertySiteId).HasColumnName("property_site_id").IsRequired();
+        builder.Property(x => x.Source).HasColumnName("source").HasMaxLength(20).IsRequired().HasDefaultValue(SurveyRequestSources.PreSurvey);
+        builder.Property(x => x.ContactName).HasColumnName("contact_name").HasMaxLength(200);
+        builder.Property(x => x.ContactPhone).HasColumnName("contact_phone").HasMaxLength(30);
+        builder.HasIndex(x => x.PropertySiteId, "ix_survey_request_property_site");
+        // At most one open (Pending / Scheduled) direct booking per site: a double submit cannot create two survey jobs for one site.
+        builder.HasIndex(x => x.PropertySiteId, "ux_survey_request_one_open_direct_booking").IsUnique()
+            .HasFilter($"source = '{SurveyRequestSources.DirectBooking}' AND status IN ('{nameof(SurveyRequestStatus.Pending)}', '{nameof(SurveyRequestStatus.Scheduled)}')");
+        builder.HasOne(x => x.PropertySite).WithMany().HasForeignKey(x => x.PropertySiteId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_survey_request_property_site");
 
         builder.Property(x => x.AssignedSaleId)
             .HasColumnName("assigned_sale_id")
@@ -78,6 +94,7 @@ public sealed class SurveyRequestConfiguration
             .WithOne(x => x.SurveyRequest)
             .HasForeignKey<SurveyRequest>(
                 x => x.PreSurveyId)
+            .IsRequired(false)
             .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasOne(x => x.AssignedSale)

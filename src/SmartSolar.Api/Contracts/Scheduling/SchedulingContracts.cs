@@ -6,6 +6,9 @@ namespace SmartSolar.Api.Contracts.Scheduling;
 /// <summary>startsAt: ISO 8601 with an explicit offset, e.g. "2026-10-20T08:00:00+07:00". End time is computed by the server.</summary>
 public sealed record BookSurveyAppointmentRequest(string? StartsAt, string? Note);
 
+/// <summary>Option B: book an on-site survey directly for an own property site (no pre-survey).</summary>
+public sealed record DirectSurveyBookingRequest(Guid? PropertySiteId, string? StartsAt, string? ContactName, string? ContactPhone, string? Note);
+
 public sealed record CancelSurveyAppointmentRequest(string? Reason);
 
 /// <summary>Staff assignment: reason is required (at most 500 characters); expectedRevision guards against acting on a stale view.</summary>

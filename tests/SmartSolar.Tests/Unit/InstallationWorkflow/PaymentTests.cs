@@ -168,7 +168,7 @@ public sealed class PaymentTests
         await using var _ = ctx;
         var first = (await ctx.Payments().CreateOrGetAttemptAsync(customer, contract.ContractId, CancellationToken.None)).Value!;
         ctx.PayOs.Links[first.OrderCode] = ("EXPIRED", 0, null);
-        ctx.Clock.Now = first.ExpiresAt.AddMinutes(1);
+        ctx.Clock.Now = first.ExpiresAt!.Value.AddMinutes(1);
 
         var second = (await ctx.Payments().CreateOrGetAttemptAsync(customer, contract.ContractId, CancellationToken.None)).Value!;
         Assert.NotEqual(first.PaymentAttemptId, second.PaymentAttemptId);

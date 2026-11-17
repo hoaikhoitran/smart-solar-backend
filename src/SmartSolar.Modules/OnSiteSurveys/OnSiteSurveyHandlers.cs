@@ -40,6 +40,7 @@ public sealed record OnSiteSurveyView(
     Guid ReportId, Guid SurveyRequestId, Guid AppointmentId, Guid TechnicianUserId, string Status, int Version, int Revision,
     DateTimeOffset? StartedAt, DateTimeOffset? CompletedAt, OnSiteSurveyData Data, IReadOnlyList<ObstacleView> Obstacles,
     IReadOnlyList<AttachmentView> Attachments, IReadOnlyList<AmendmentView> Amendments, DateTimeOffset UpdatedAt,
+    [property: Obsolete("Always null since 2026-11-17: completing a survey no longer generates a quotation (the technician builds a cart).")]
     string? AutomaticQuotationOutcome = null);
 
 public sealed class OnSiteSurveyOptions
@@ -58,7 +59,7 @@ public sealed class OnSiteSurveyOptions
 /// Technician on-site survey lifecycle: DRAFT → IN_PROGRESS → COMPLETED, then amendments only.
 /// Only the confirmed technician of the active Flow 1 appointment (ACCEPTED or ASSIGNED) may act.
 /// Completion locks the report, moves the appointment to COMPLETED and the survey request to Completed in the same transaction and
-/// makes it available to Sales for quotation (no approval step).
+/// makes it available to the same technician for the cart quotation (no approval step, no automatic quotation since 2026-11-17).
 /// </summary>
 public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, FileService files, OnSiteSurveyOptions options,
     SmartSolar.Modules.SystemSettings.ISchedulingPolicyProvider policies, TimeProvider time,
@@ -176,12 +177,8 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
         if (error is not null) return error.As<OnSiteSurveyView>();
 
         var existing = await unitOfWork.FindReportBySurveyRequestAsync(context!.SurveyRequestId, false, cancellationToken);
-        if (existing is { Status: OnSiteSurveyStatuses.Completed })
-        {
-            // Repeating the completion retries the automatic quotation (idempotent) without touching the survey.
-            var again = await ViewAsync(existing, cancellationToken);
-            return OperationResult<OnSiteSurveyView>.Ok(again with { AutomaticQuotationOutcome = await GenerateQuotationAsync(existing.SurveyRequestId, command.TechnicianUserId, cancellationToken) });
-        }
+        // Repeating the completion returns the completed report unchanged.
+        if (existing is { Status: OnSiteSurveyStatuses.Completed }) return OperationResult<OnSiteSurveyView>.Ok(await ViewAsync(existing, cancellationToken));
 
         var completed = await MutateAsync(context, command.ExpectedRevision, allowCreate: false, async (report, now, token) =>
         {
@@ -206,30 +203,8 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
                 return OperationResult<bool>.Fail(CommonErrorCodes.InvalidState, "The survey request is not in the Scheduled state.");
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
-        if (!completed.Succeeded) return completed;
-
-        // The survey is committed first; the quotation is generated in its own transaction (idempotent, retryable by
-        // completing again or through the Sales "generate" endpoint), so a pricing problem never undoes the survey.
-        return OperationResult<OnSiteSurveyView>.Ok(completed.Value! with
-        {
-            AutomaticQuotationOutcome = await GenerateQuotationAsync(completed.Value!.SurveyRequestId, command.TechnicianUserId, cancellationToken),
-        });
-    }
-
-    /// <summary>Runs the automatic quotation when it is wired (production); returns its outcome, or null when not wired.</summary>
-    private async Task<string?> GenerateQuotationAsync(Guid surveyRequestId, Guid actorUserId, CancellationToken cancellationToken)
-    {
-        if (quotations is null) return null;
-        try
-        {
-            return (await quotations.GenerateStandardQuotationAsync(surveyRequestId, actorUserId, cancellationToken)).Outcome;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // The survey stays completed; Sales can retry the generation. Nothing partial is stored (one transaction).
-            logger?.LogError(ex, "Automatic quotation for survey request {SurveyRequestId} failed.", surveyRequestId);
-            return Quotations.AutomaticQuotationOutcomes.Failed;
-        }
+        // Since 2026-11-17 no quotation is generated here: the technician builds it as a cart (POST /api/technician/survey-requests/{id}/quotation).
+        return completed;
     }
 
     /// <summary>Correction after completion: changed fields are applied, the previous values are recorded and Version is incremented.</summary>
@@ -303,8 +278,8 @@ public sealed class OnSiteSurveyHandlers(IOnSiteSurveyUnitOfWork unitOfWork, Fil
         }, cancellationToken);
         if (!amended.Succeeded) return amended;
 
-        // Quotations based on the previous version stop being issuable/acceptable by themselves (version checks) and show up in the
-        // Sales review queue; the SURVEY_AMENDED event is their audit record. It is idempotent and not critical: a failure is logged.
+        // Quotations based on the previous version stop being acceptable by themselves (version checks); the SURVEY_AMENDED event is their
+        // audit record. It is idempotent and not critical: a failure is logged.
         if (quotations is not null)
         {
             try

@@ -8,4 +8,5 @@ public sealed record AccountSetupRequestedEvent(
     Guid UserId,
     string Email,
     string FullName,
-    string SetupUrl);
+    string SetupUrl,
+    Guid? DispatchId = null);

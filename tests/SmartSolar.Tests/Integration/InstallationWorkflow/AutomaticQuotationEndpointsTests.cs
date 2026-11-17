@@ -32,18 +32,30 @@ public sealed class AutomaticQuotationEndpointsTests
         Assert.Equal(HttpStatusCode.Forbidden, (await customer.GetAsync("/api/quotations/pending-review")).StatusCode);
     }
 
+    /// <summary>2026-11-17: generation, the review queue and every Sales quotation write are retired (410) for every staff role.</summary>
     [Fact]
-    public async Task Sales_gets_404_for_a_request_it_does_not_own_and_an_empty_review_queue()
+    public async Task Generation_the_review_queue_and_sales_quotation_writes_are_retired()
     {
         using var factory = Enabled(new FakeStorageObjectVerifier(), new FakeRagServiceClient());
-        var sales = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Sales);
-
-        await AssertFailureAsync(await sales.PostAsync(Generate(Guid.NewGuid()), null), HttpStatusCode.NotFound, QuotationErrorCodes.NotFound);
-        var queue = await sales.GetAsync("/api/quotations/pending-review");
-        Assert.Equal(HttpStatusCode.OK, queue.StatusCode);
-        Assert.Equal(0, (await BodyOf(queue)).GetProperty("data").GetArrayLength());
-        await AssertFailureAsync(await sales.PostAsJsonAsync($"/api/quotations/{Guid.NewGuid()}/confirm-survey-version", new { revision = 1, reason = "checked" }),
-            HttpStatusCode.NotFound, QuotationErrorCodes.NotFound);
+        var id = Guid.NewGuid();
+        foreach (var role in new[] { RoleCodes.Sales, RoleCodes.Manager, RoleCodes.Admin })
+        {
+            var staff = CatalogEndpointsTests.ClientFor(factory, role);
+            await AssertFailureAsync(await staff.PostAsync(Generate(id), null), HttpStatusCode.Gone, "ENDPOINT_RETIRED");
+            await AssertFailureAsync(await staff.GetAsync("/api/quotations/pending-review"), HttpStatusCode.Gone, "ENDPOINT_RETIRED");
+            await AssertFailureAsync(await staff.PostAsJsonAsync($"/api/survey-requests/{id}/quotations", new { laborCost = 1m }), HttpStatusCode.Gone, "ENDPOINT_RETIRED");
+            await AssertFailureAsync(await staff.PutAsJsonAsync($"/api/quotations/{id}", new { revision = 1 }), HttpStatusCode.Gone, "ENDPOINT_RETIRED");
+            await AssertFailureAsync(await staff.PostAsJsonAsync($"/api/quotations/{id}/lines", new { revision = 1 }), HttpStatusCode.Gone, "ENDPOINT_RETIRED");
+            await AssertFailureAsync(await staff.PutAsJsonAsync($"/api/quotations/{id}/lines/{id}", new { revision = 1 }), HttpStatusCode.Gone, "ENDPOINT_RETIRED");
+            await AssertFailureAsync(await staff.DeleteAsync($"/api/quotations/{id}/lines/{id}?revision=1"), HttpStatusCode.Gone, "ENDPOINT_RETIRED");
+            await AssertFailureAsync(await staff.PostAsJsonAsync($"/api/quotations/{id}/issue", new { revision = 1 }), HttpStatusCode.Gone, "ENDPOINT_RETIRED");
+            await AssertFailureAsync(await staff.PostAsJsonAsync($"/api/quotations/{id}/confirm-survey-version", new { revision = 1, reason = "checked" }),
+                HttpStatusCode.Gone, "ENDPOINT_RETIRED");
+            await AssertFailureAsync(await staff.PostAsync($"/api/quotations/{id}/revisions", null), HttpStatusCode.Gone, "ENDPOINT_RETIRED");
+            await AssertFailureAsync(await staff.PutAsJsonAsync($"/api/quotations/{id}/document", new { fileId = id }), HttpStatusCode.Gone, "ENDPOINT_RETIRED");
+            // Reading stays: unknown quotation → 404.
+            await AssertFailureAsync(await staff.GetAsync($"/api/quotations/{id}"), HttpStatusCode.NotFound, QuotationErrorCodes.NotFound);
+        }
     }
 
     [Fact]

@@ -8,4 +8,5 @@ public sealed record EmailVerificationRequestedEvent(
     Guid UserId,
     string Email,
     string FullName,
-    string VerificationUrl);
+    string VerificationUrl,
+    Guid? DispatchId = null);

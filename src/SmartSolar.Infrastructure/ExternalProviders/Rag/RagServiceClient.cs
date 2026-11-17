@@ -38,7 +38,12 @@ public sealed class RagServiceClient(HttpClient http, RagOptions options, TimePr
 
     public async Task<RagAnswerResult> AnswerAsync(RagAnswerRequest request, CancellationToken cancellationToken)
     {
-        var (ok, body, error) = await PostAsync("internal/v1/answer", AnswerPayload(request), options.RequestTimeoutSeconds, cancellationToken);
+        // The service is told how long we wait (one second less, for the transfer back), so it neither queues nor generates an answer
+        // we will no longer read (an abandoned request would otherwise hold the generation slot until the provider timeout).
+        var timeoutSeconds = Math.Clamp(options.RequestTimeoutSeconds, 5, 120);
+        var payload = AnswerPayload(request);
+        payload["deadlineSeconds"] = timeoutSeconds - 1;
+        var (ok, body, error) = await PostAsync("internal/v1/answer", payload, timeoutSeconds, cancellationToken);
         if (!ok || body is not { } b) return new RagAnswerResult(false, error, null, false, [], 0, 0, null, 0, 0);
         var citations = b.TryGetProperty("citations", out var list) && list.ValueKind == JsonValueKind.Array
             ? list.EnumerateArray().Select(c => new RagCitation(Guid.Parse(Str(c, "documentId")!), Guid.Parse(Str(c, "versionId")!), Str(c, "chunkId") ?? "",
@@ -90,8 +95,15 @@ public sealed class RagServiceClient(HttpClient http, RagOptions options, TimePr
             using var response = await http.SendAsync(request, deadline.Token);
             if (!response.IsSuccessStatusCode)
             {
-                logger.LogWarning("RAG service returned HTTP {Status} for {Path}.", (int)response.StatusCode, path);
-                return (false, null, $"RAG service returned HTTP {(int)response.StatusCode}");
+                // The service's 503 says why ("busy": every generation slot taken; "deadline exceeded": it would not finish in time).
+                var reason = (int)response.StatusCode == 503 ? await DetailAsync(response, deadline.Token) : null;
+                logger.LogWarning("RAG service returned HTTP {Status} ({Reason}) for {Path}.", (int)response.StatusCode, reason ?? "-", path);
+                return reason switch
+                {
+                    "busy" => (false, null, "busy"),
+                    "deadline exceeded" => (false, null, "timeout"),
+                    _ => (false, null, $"RAG service returned HTTP {(int)response.StatusCode}"),
+                };
             }
             using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token));
             return (true, document.RootElement.Clone(), "");
@@ -106,6 +118,23 @@ public sealed class RagServiceClient(HttpClient http, RagOptions options, TimePr
         {
             logger.LogWarning("RAG service call to {Path} failed ({ExceptionType}).", path, ex.GetType().Name);
             return (false, null, "RAG service unavailable");
+        }
+    }
+
+    /// <summary>FastAPI's <c>{"detail": "…"}</c>, read with a size cap; null when absent or not JSON.</summary>
+    private static async Task<string?> DetailAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var text = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (text.Length > 4096) return null;
+            using var document = JsonDocument.Parse(text);
+            return document.RootElement.ValueKind == JsonValueKind.Object && document.RootElement.TryGetProperty("detail", out var d) && d.ValueKind == JsonValueKind.String
+                ? d.GetString() : null;
+        }
+        catch (JsonException)
+        {
+            return null;
         }
     }
 

@@ -55,9 +55,11 @@ public sealed class UpdatePreSurveyHandler
 
         // Tilt and azimuth are the surface orientation: changing them makes existing
         // simulations stale. The revision check below guarantees these values are current.
+        // Without a saved surface the simulation lays panels out on the declared usable area, so changing it is a geometry change too.
         var geometryChanged =
             preSurvey.TiltDegree != command.TiltDegree ||
-            preSurvey.AzimuthDegree != command.AzimuthDegree;
+            preSurvey.AzimuthDegree != command.AzimuthDegree ||
+            (preSurvey.SurfaceLengthM is null && preSurvey.UsableAreaM2 != command.UsableAreaM2);
 
         preSurvey.TotalAreaM2 = command.TotalAreaM2;
         preSurvey.UsableAreaM2 = command.UsableAreaM2;

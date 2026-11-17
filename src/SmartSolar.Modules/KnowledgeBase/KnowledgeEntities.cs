@@ -247,6 +247,12 @@ public static class KnowledgeErrorCodes
     public const string QuotaExceeded = "RAG_QUOTA_EXCEEDED";
     public const string TooManyConcurrent = "RAG_TOO_MANY_CONCURRENT_REQUESTS";
     public const string ServiceUnavailable = "RAG_SERVICE_UNAVAILABLE";
+    /// <summary>The configuration advisor (catalog / site / PVGIS tools) failed; the knowledge chat itself is not affected.</summary>
+    public const string AdvisorUnavailable = "RAG_ADVISOR_UNAVAILABLE";
+    /// <summary>The answer was not ready within <c>Rag:RequestTimeoutSeconds</c> (504). Nothing is stored; the quota reservation is released.</summary>
+    public const string Timeout = "RAG_TIMEOUT";
+    /// <summary>Every generation slot of the RAG service is busy (503); retry after a short wait. Nothing is stored.</summary>
+    public const string Busy = "RAG_BUSY";
     public const string JobNotFound = "RAG_JOB_NOT_FOUND";
 }
 

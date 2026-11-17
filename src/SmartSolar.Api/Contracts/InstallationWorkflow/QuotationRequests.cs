@@ -26,3 +26,11 @@ public sealed record PricingApprovalDecisionRequest(int Revision, bool? Approve,
 
 /// <summary>Sales closure: reasonCode NOT_FEASIBLE, CUSTOMER_DECLINED, NO_RESPONSE or OTHER (note required for OTHER).</summary>
 public sealed record CloseSurveyRequestRequest(string? ReasonCode, string? Note);
+
+/// <summary>Technician cart: optional notes for the customer (no price, discount or tax input exists).</summary>
+public sealed record TechnicianCartCreateRequest(string? Notes);
+
+/// <summary>Technician cart line: a catalog product and its quantity; the price always comes from the catalog.</summary>
+public sealed record CartLineRequest(int? Revision, Guid? ProductId, decimal Quantity);
+
+public sealed record CartLineQuantityRequest(int? Revision, decimal Quantity);

@@ -175,4 +175,60 @@ public sealed class KnowledgeBaseEndpointsTests
         // Limits are per user, not global.
         Assert.Equal(HttpStatusCode.OK, (await CatalogEndpointsTests.ClientFor(factory, RoleCodes.Customer).PostAsJsonAsync("/api/chat/messages", new { message = "4" })).StatusCode);
     }
+
+    [Fact]
+    public async Task Every_signed_in_role_can_use_the_chatbot_with_its_own_sessions_and_the_right_audience()
+    {
+        var storage = new FakeStorageObjectVerifier();
+        var rag = new FakeRagServiceClient();
+        using var factory = Enabled(storage, rag);
+        var adminId = Guid.NewGuid();
+        var admin = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Admin, adminId);
+        var (_, customerVersion) = await PublishAsync(factory, admin, storage, adminId, "Bảo hành", KnowledgeAudiences.Customer);
+        var (_, internalVersion) = await PublishAsync(factory, admin, storage, adminId, "Giá nội bộ", KnowledgeAudiences.Internal);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, (await factory.CreateClient().PostAsJsonAsync("/api/chat/messages", new { message = "Xin chào" })).StatusCode);
+        var invalid = factory.CreateClient();
+        invalid.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "not-a-jwt");
+        Assert.Equal(HttpStatusCode.Unauthorized, (await invalid.GetAsync("/api/chat/sessions")).StatusCode);
+
+        foreach (var role in new[] { RoleCodes.Customer, RoleCodes.Sales, RoleCodes.Technician, RoleCodes.Manager, RoleCodes.Admin })
+        {
+            var client = role == RoleCodes.Admin ? admin : CatalogEndpointsTests.ClientFor(factory, role);
+            var answer = await DataOf(await client.PostAsJsonAsync("/api/chat/messages", new { message = $"Câu hỏi của {role}" }));
+            var sessionId = answer.GetProperty("sessionId").GetGuid();
+            // Customers retrieve CUSTOMER documents only; staff roles retrieve every published document.
+            var allowed = rag.LastAnswerRequest!.AllowedVersions.Select(v => v.VersionId).Order().ToList();
+            Assert.Equal(role == RoleCodes.Customer ? [customerVersion] : new[] { customerVersion, internalVersion }.Order().ToList(), allowed);
+            // Each user sees only their own session.
+            var sessions = await DataOf(await client.GetAsync("/api/chat/sessions"));
+            Assert.Equal([sessionId], sessions.EnumerateArray().Select(x => x.GetProperty("sessionId").GetGuid()));
+            Assert.Equal(2, (await DataOf(await client.GetAsync($"/api/chat/sessions/{sessionId}"))).GetProperty("messages").GetArrayLength());
+        }
+        // Knowledge administration stays Admin-only.
+        foreach (var role in new[] { RoleCodes.Customer, RoleCodes.Sales, RoleCodes.Technician, RoleCodes.Manager })
+            Assert.Equal(HttpStatusCode.Forbidden, (await CatalogEndpointsTests.ClientFor(factory, role).GetAsync("/api/admin/rag-configuration")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Rag_failures_reach_the_client_as_distinct_codes()
+    {
+        var storage = new FakeStorageObjectVerifier();
+        var rag = new FakeRagServiceClient();
+        using var factory = Enabled(storage, rag);
+        var adminId = Guid.NewGuid();
+        var admin = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Admin, adminId);
+        await PublishAsync(factory, admin, storage, adminId, "Bảo hành", KnowledgeAudiences.Customer);
+        var customer = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Customer);
+
+        foreach (var (error, status, code) in new[] { ("timeout", HttpStatusCode.GatewayTimeout, KnowledgeErrorCodes.Timeout),
+                     ("busy", HttpStatusCode.ServiceUnavailable, KnowledgeErrorCodes.Busy),
+                     ("unavailable", HttpStatusCode.ServiceUnavailable, KnowledgeErrorCodes.ServiceUnavailable) })
+        {
+            rag.Answer = _ => new RagAnswerResult(false, error, null, false, [], 0, 0, null, 0, 0);
+            await AssertFailureAsync(await customer.PostAsJsonAsync("/api/chat/messages", new { message = "Tấm pin bảo hành bao lâu?" }), status, code);
+        }
+        rag.Answer = null;
+        Assert.Equal(HttpStatusCode.OK, (await customer.PostAsJsonAsync("/api/chat/messages", new { message = "Tấm pin bảo hành bao lâu?" })).StatusCode);
+    }
 }

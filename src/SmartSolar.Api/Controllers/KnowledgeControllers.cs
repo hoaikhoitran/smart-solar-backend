@@ -164,7 +164,25 @@ public sealed class ChatController(ChatService chat) : OperationResultController
         if (CurrentUserId() is not { } user) return UnauthorizedFailure();
         if (string.IsNullOrWhiteSpace(request.Message)) return Invalid("message", "Message is required.");
         if (request.ClientMessageId is { Length: > 64 }) return Invalid("clientMessageId", "At most 64 characters.");
-        return Respond(await chat.AskAsync(user, request.SessionId, request.Message, request.ClientMessageId, cancellationToken, Audience()));
+        if (request.Advisor?.Problem() is { } problem) return Invalid(problem.Field, problem.Message);
+        return Respond(await chat.AskAsync(user, request.SessionId, request.Message, request.ClientMessageId, cancellationToken, Audience(),
+            request.Advisor?.ToInput()));
+    }
+
+    /// <summary>
+    /// Structured configuration advice without a chat message (same deterministic advisor, nothing stored). Every signed-in role may use it;
+    /// it reads only ACTIVE catalog data, the caller's own site and PVGIS, and never writes.
+    /// </summary>
+    [HttpPost("advisor")]
+    [EnableRateLimiting(RateLimitingExtensions.RagChatPolicy)]
+    [RequestSizeLimit(16 * 1024)]
+    public async Task<IActionResult> Advise([FromBody] SolarAdvisorRequest request, [FromServices] SmartSolar.Modules.KnowledgeBase.Advisor.SolarAdvisorService advisor,
+        CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (request.Problem() is { } problem) return Invalid(problem.Field.Replace("advisor.", ""), problem.Message);
+        return Respond(Modules.Common.Results.OperationResult<SmartSolar.Modules.KnowledgeBase.Advisor.SolarAdvisorView>.Ok(
+            await advisor.AdviseAsync(user, request.ToInput(), cancellationToken)));
     }
 
     [HttpGet("sessions")]

@@ -1,5 +1,6 @@
 using SmartSolar.Modules.Common.Notifications;
 using SmartSolar.Modules.Common.Persistence;
+using SmartSolar.Modules.Common.Results;
 
 namespace SmartSolar.Modules.Quotations;
 
@@ -87,4 +88,14 @@ public interface IQuotationUnitOfWork : ITransactionalUnitOfWork, IInAppNotifica
     void AddLine(QuotationLine line);
     void RemoveLine(QuotationLine line);
     void AddEvent(QuotationEvent quotationEvent);
+}
+
+/// <summary>
+/// Implemented by the contracts module: when a customer accepts a quotation, the contract DRAFT is created from the accepted snapshot inside
+/// the acceptance transaction (same unit of work / database context), at most once per quotation.
+/// </summary>
+public interface IAcceptedQuotationContracts
+{
+    /// <summary>Adds the DRAFT contract (and its CREATED event) to the open transaction; a contract that already exists is left as it is.</summary>
+    Task<OperationResult<bool>> CreateDraftForAcceptedQuotationAsync(Guid quotationId, Guid actorUserId, DateTimeOffset now, CancellationToken cancellationToken);
 }

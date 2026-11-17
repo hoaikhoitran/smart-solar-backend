@@ -26,7 +26,7 @@ public sealed class UnappliedPaymentRefundTests
         var payOs = ctx.Installation.PayOs;
         var first = (await payments.CreateOrGetAttemptAsync(customer, contract.ContractId, None)).Value!;
         payOs.Links[first.OrderCode] = ("EXPIRED", 0, null);
-        ctx.Installation.Clock.Now = first.ExpiresAt.AddMinutes(1);
+        ctx.Installation.Clock.Now = first.ExpiresAt!.Value.AddMinutes(1);
         var second = (await payments.CreateOrGetAttemptAsync(customer, contract.ContractId, None)).Value!;
         await payments.HandleWebhookAsync(payOs.Webhook(second.OrderCode, (long)second.Amount, "FT-2"), None);
 

@@ -20,13 +20,14 @@ then registers the object key. Step-by-step guide with `fetch` examples, S3 CORS
 | Purpose | Key prefix | Types | Max | SHA-256 verified |
 |---|---|---|---|---|
 | `ONSITE_SURVEY_EVIDENCE` | `onsite-surveys/{userId}/` | jpeg, png, webp, pdf | 15 MB | yes |
-| `QUOTATION_DOCUMENT` | `quotations/{userId}/` | pdf | 20 MB | yes |
-| `CONTRACT_DOCUMENT` | `contracts/official/{userId}/` | pdf | 20 MB | yes |
+| `QUOTATION_DOCUMENT` (legacy; its attach endpoint is retired) | `quotations/{userId}/` | pdf | 20 MB | yes |
+| `CONTRACT_DOCUMENT` (Manager/Admin since 2026-11-17) | `contracts/official/{userId}/` | pdf | 20 MB | yes |
 | `SIGNED_CONTRACT` | `contracts/signed/{userId}/` | pdf | 20 MB | yes |
 | `INSTALLATION_EVIDENCE` | `installations/{userId}/` | jpeg, png, webp | 15 MB | yes |
 | `KNOWLEDGE_DOCUMENT` | `knowledge/{userId}/` | pdf, docx, txt, md | 50 MB | yes |
 | `PROJECT_DOCUMENT` | `project-documents/{userId}/` | pdf, jpeg, png | 20 MB | yes |
 | `SERVICE_EVIDENCE` | `after-sales/{userId}/` | jpeg, png, webp | 15 MB | yes |
+| `PAYMENT_EVIDENCE` (Manager/Admin: cash receipt) | `payments/cash/{userId}/` | pdf, jpeg, png, webp | 15 MB | yes |
 
 | Method | Path | Body / notes |
 |---|---|---|
@@ -63,51 +64,77 @@ Technician (`/api/technicians/me/appointments/{appointmentId}/onsite-survey`):
 
 Staff: `GET /api/survey-requests/{surveyRequestId}/onsite-survey` (Sales/Manager/Admin).
 
-## Quotations
+Completing the survey no longer generates a quotation (`automaticQuotationOutcome` is always `null`, deprecated): the technician then builds the cart below.
 
-Sales (owner):
+## Quotations (technician cart — since 2026-11-17)
+
+Full flow, state machines and the old → new mapping: [simplified-commercial-flow.md](simplified-commercial-flow.md).
+
+Technician who completed the survey (anyone else: 404):
 
 | Method | Path | Body |
 |---|---|---|
-| POST | `/api/survey-requests/{surveyRequestId}/quotations` | `{ laborCost, transportCost, otherServiceCost, discountAmount, taxRatePercent?, validUntil?, terms?, notes? }` |
-| GET | `/api/survey-requests/{surveyRequestId}/quotations` | all versions |
-| GET | `/api/quotations/{id}` | |
-| PUT | `/api/quotations/{id}` | header + `revision` |
-| POST | `/api/quotations/{id}/lines` | `{ revision, productId?, name?, unit?, quantity, unitPrice?, description? }` |
-| PUT / DELETE | `/api/quotations/{id}/lines/{lineId}` | `{ revision, quantity, unitPrice?, description? }` / `?revision=` |
-| POST | `/api/quotations/{id}/issue` | `{ revision }` |
-| POST | `/api/quotations/{id}/revisions` | new DRAFT version |
-| PUT | `/api/quotations/{id}/document` | `{ fileId }` (QUOTATION_DOCUMENT) |
+| POST | `/api/technician/survey-requests/{surveyRequestId}/quotation` | `{ notes? }` → 201, the DRAFT cart (returns the existing draft when repeated) |
+| GET | `/api/technician/survey-requests/{surveyRequestId}/quotations` | all versions |
+| GET | `/api/technician/quotations/{id}` | |
+| POST | `/api/technician/quotations/{id}/lines` | `{ revision, productId, quantity }` — the price is the catalog price; the same product again adds to its quantity |
+| PUT | `/api/technician/quotations/{id}/lines/{lineId}` | `{ revision, quantity }` |
+| DELETE | `/api/technician/quotations/{id}/lines/{lineId}?revision=` | |
+| POST | `/api/technician/quotations/{id}/issue` | `{ revision }` — re-prices every line from the catalog, computes totals, sends to the customer |
+| POST | `/api/technician/quotations/{id}/revisions` | new DRAFT from an ISSUED / REVISION_REQUESTED / REJECTED version |
 
-Customer: `GET /api/customers/me/quotations[/{id}]`, `POST …/{id}/accept`, `POST …/{id}/revision-request` `{ reason }`.
+There is no price, discount or tax field: unit prices come from the catalog, tax is `Quotation:DefaultTaxRatePercent`, no discount,
+validity `Quotation:AutomaticValidityDays` from issue. For TECHNICIAN quotations `equipmentSubtotal` is the sum of **all** cart lines
+(service items included) and `laborCost` / `transportCost` / `otherServiceCost` are 0. A product without a catalog price → 400
+`QUOTATION_PRICE_MISSING` (at issue: `details.items` names every unpriceable line).
 
-## Contracts
+Read only: `GET /api/survey-requests/{surveyRequestId}/quotations`, `GET /api/quotations/{id}` (Manager/Admin: all; Sales: requests it owns).
 
-Sales: `POST /api/quotations/{quotationId}/contracts` `{ terms, warrantyMonths? }` · `GET /api/survey-requests/{id}/contracts` ·
-`GET /api/contracts/{id}` · `PUT /api/contracts/{id}` `{ revision, terms, warrantyMonths? }` · `POST …/issue` `{ revision }` →
-response has `canonicalHash` · `PUT …/official-document` `{ revision, fileId, canonicalHash }` ·
-`POST …/publish` `{ revision }` · `POST …/amendments` `{ terms, warrantyMonths? }`.
+Customer: `GET /api/customers/me/quotations[/{id}]`, `POST …/{id}/accept` (creates the contract DRAFT in the same transaction),
+`POST …/{id}/reject` `{ reason? }`, `POST …/{id}/revision-request` `{ reason }`.
+
+Retired (410 `ENDPOINT_RETIRED`, `details.replacement` names the new route): every Sales quotation write
+(`POST /api/survey-requests/{id}/quotations`, `PUT /api/quotations/{id}`, `…/lines`, `…/issue`, `…/revisions`, `…/document`,
+`…/confirm-survey-version`, `…/pricing-approval-request`), `POST …/quotations/generate`, `GET /api/quotations/pending-review`,
+`GET /api/manager/quotations/pricing-approvals`, `POST /api/manager/quotations/{id}/pricing-approval`.
+
+## Contracts (Manager/Admin)
+
+The DRAFT exists as soon as the customer accepts. Manager/Admin: `GET /api/survey-requests/{id}/contracts` · `GET /api/contracts/{id}` ·
+`PUT /api/contracts/{id}` `{ revision, terms, warrantyMonths? }` · `POST …/issue` `{ revision }` → response has `canonicalHash` ·
+`PUT …/official-document` `{ revision, fileId, canonicalHash }` (file purpose CONTRACT_DOCUMENT, uploaded by the same Manager/Admin) ·
+`POST …/publish` `{ revision }` · `POST …/review` `{ revision, decision: APPROVE|REJECT, reason }` (signature confirmation) ·
+`POST …/discard` `{ revision, reason }` · `POST …/amendments` `{ terms, warrantyMonths? }` ·
+`POST /api/quotations/{quotationId}/contracts` `{ terms, warrantyMonths? }` only for a quotation accepted before 2026-11-17 that has no
+contract (otherwise 409 `CONTRACT_ALREADY_EXISTS`). Sales may only read (`GET`) the contracts of requests it owns.
 
 `warrantyMonths` is one of the Admin's active installation warranty options (`GET /api/sales/after-sales/warranty-options?kind=INSTALLATION`);
-omitted = the default option. A draft without months cannot be issued: **400 `CONTRACT_WARRANTY_REQUIRED`** (an Admin must configure
-the options first; see [after-sales-services.md](after-sales-services.md)). An unknown duration → 400 `CONTRACT_WARRANTY_VALIDATION_FAILED`.
-Sales owner or Manager: `POST /api/contracts/{id}/review` `{ revision, decision: APPROVE|REJECT, reason }`.
+omitted = the default option. A draft without months cannot be issued: **400 `CONTRACT_WARRANTY_REQUIRED`**; without terms:
+**400 `CONTRACT_TERMS_REQUIRED`**. An unknown duration → 400 `CONTRACT_WARRANTY_VALIDATION_FAILED`.
 
 Customer: `GET /api/customers/me/contracts[/{id}]` (includes the official document file id and its
 SHA-256) · `POST …/{id}/signed-document` `{ fileId, officialDocumentSha256 }`.
 
-## Payments (PayOS)
+## Payments (ONLINE via PayOS, or CASH)
 
 | Role | Method | Path |
 |---|---|---|
-| Customer | POST | `/api/customers/me/contracts/{contractId}/payments` → `{ paymentAttemptId, orderCode, amount, checkoutUrl, qrCode, expiresAt, status }` (idempotent) |
-| Customer | GET | `/api/customers/me/contracts/{contractId}/payments` → contract payment status (reconciles with PayOS, throttled) |
-| Customer | POST | `/api/customers/me/contracts/{contractId}/payments/cancel` |
-| Staff | GET | `/api/contracts/{contractId}/payments` |
+| Customer | POST | `/api/customers/me/contracts/{contractId}/payments` → ONLINE link `{ paymentAttemptId, orderCode, amount, checkoutUrl, qrCode, expiresAt, status, method: "ONLINE" }` (idempotent) |
+| Customer | POST | `/api/customers/me/contracts/{contractId}/payments/cash` → CASH choice `{ …, method: "CASH", status: "PENDING", expiresAt: null }` (idempotent; not a payment) |
+| Customer | GET | `/api/customers/me/contracts/{contractId}/payments` → `{ contractStatus, paymentState, current, attempts }` (reconciles ONLINE with PayOS, throttled) |
+| Customer | POST | `/api/customers/me/contracts/{contractId}/payments/cancel` → cancels the online link (checked with PayOS) or withdraws the cash choice |
+| Manager/Admin | GET | `/api/contracts/{contractId}/payments` (history; cash attempts show `confirmedByUserId`, `evidenceFileId`, `confirmationNote`) |
+| Manager/Admin | POST | `/api/contracts/{contractId}/payments/cash/confirm` `{ amount, receiptReference, evidenceFileId, note? }` |
 | PayOS | POST | `/api/payments/payos/webhook` (anonymous, signature-verified, ≤ 64 KB, not user-rate-limited) |
 
-FE flow: create → redirect to `checkoutUrl` (or show `qrCode`) → on return **poll GET** until the
-contract is `PAID`. Never treat the return URL query string as proof of payment.
+`paymentState`: `NOT_PAYABLE` (not SIGNED) · `AWAITING_PAYMENT` · `ONLINE_IN_PROGRESS` · `AWAITING_CASH_CONFIRMATION` · `PAID`.
+Only one method can be in progress: cash while a link is open → 409 `PAYMENT_CHECKOUT_IN_PROGRESS`; online while cash is chosen → 409
+`PAYMENT_CASH_SELECTED`. Cash confirmation: `amount` must equal the contract total (409 `PAYMENT_CASH_AMOUNT_MISMATCH`), the receipt
+reference is unique (409 `PAYMENT_CASH_RECEIPT_DUPLICATE`), `evidenceFileId` is a VERIFIED `PAYMENT_EVIDENCE` file uploaded by the same
+Manager/Admin; a second confirmation → 409 `PAYMENT_ALREADY_PAID`; no cash chosen → 409 `PAYMENT_CASH_NOT_SELECTED`.
+
+FE flow (online): create → redirect to `checkoutUrl` (or show `qrCode`) → on return **poll GET** until `paymentState` is `PAID`.
+Never treat the return URL query string as proof of payment.
 
 ## Installation
 
@@ -185,7 +212,7 @@ Statuses: `PENDING_ASSIGNMENT`, `PENDING_TECHNICIAN_ACCEPTANCE`, `SCHEDULED`, `I
   "toStatus": "PENDING_TECHNICIAN_ACCEPTANCE", … } ], "cancelledAt": null, "cancellationReason": null }
 // Technician view (every technician write returns it) — no checklist, events or assignment history
 { "projectId": "…", "status": "SCHEDULED", "myAssignmentStatus": "ACCEPTED", "assignmentId": "…", "startsAt": "…", "endsAt": "…",
-  "zoneName": "Khu Bình Tân", "site": { … }, "currentRound": 1, "revision": 6, "canStart": false, "startBlockedReason": "INSTALLATION_TOO_EARLY_TO_START",
+  "zoneName": "Khu Bình Tân", "site": { … }, "currentRound": 1, "revision": 6, "canStart": false, "startBlockedReason": "INSTALLATION_CHECKLIST_INCOMPLETE",
   "evidence": [ { "evidenceId": "…", "fileId": "…", "round": 1, "caption": "…", "addedAt": "…" } ], "assets": [ … ], "acceptances": [ … ] }
 // Customer view (every customer write returns it) — technician name only once accepted, no technician ids
 { "projectId": "…", "contractId": "…", "status": "PENDING_CUSTOMER_ACCEPTANCE", "scheduledStartsAt": "…", "scheduledEndsAt": "…",
@@ -211,7 +238,7 @@ Statuses: `PENDING_ASSIGNMENT`, `PENDING_TECHNICIAN_ACCEPTANCE`, `SCHEDULED`, `I
 | `INSTALLATION_INVALID_SCHEDULE` | 409 | end ≤ start, start in the past, beyond the horizon, more than `MaxAssignmentDays` days |
 | `INSTALLATION_REASON_REQUIRED` | 409 | reassign/reschedule, decline, cancel or return-to-rework without a reason |
 | `INSTALLATION_ASSIGNMENT_NOT_PENDING` · `INSTALLATION_ASSIGNMENT_NOT_ACCEPTED` | 409 | decline of an accepted job / execution before accepting |
-| `INSTALLATION_TOO_EARLY_TO_START` · `INSTALLATION_SCHEDULE_EXPIRED` · `INSTALLATION_CHECKLIST_INCOMPLETE` (details: `blocking`) | 409 | start gates (`INSTALLATION_SCHEDULE_EXPIRED`: the scheduled interval ended before the start — the Manager must reschedule; also reported as `startBlockedReason`) |
+| `INSTALLATION_ASSIGNMENT_NOT_ACCEPTED` · `INSTALLATION_INVALID_STATE` · `INSTALLATION_CHECKLIST_INCOMPLETE` (details: `blocking`) | 409 | start gates, same order as `canStart` / `startBlockedReason`. `INSTALLATION_TOO_EARLY_TO_START` and `INSTALLATION_SCHEDULE_EXPIRED` are **no longer returned** (2026-11-17: the scheduled dates do not block a start); the codes stay defined for older clients |
 | `INSTALLATION_EVIDENCE_REQUIRED` · `INSTALLATION_ASSETS_REQUIRED` (details: `missing`, e.g. `["INVERTER"]`) · `INSTALLATION_DUPLICATE_SERIAL` | 409 | completion report / assets |
 | `INSTALLATION_ASSET_QUANTITY_VALIDATION_FAILED` (details per `assets[i].quantity` / `assets[i].productId`) | 400 | a lot without a catalog product or with a quantity outside 1–10 000, or a serialised entry with a quantity other than 1 |
 | `INSTALLATION_NOT_HANDED_OVER` | 409 | handover before COMPLETED |

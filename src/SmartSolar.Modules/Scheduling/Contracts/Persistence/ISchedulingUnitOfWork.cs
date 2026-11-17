@@ -57,7 +57,7 @@ public sealed record AppointmentSnapshot(
 /// <summary>A survey request seen from the scheduling side (owner, site, active appointment).</summary>
 public sealed record SurveyRequestSchedulingContext(
     Guid SurveyRequestId,
-    Guid PreSurveyId,
+    Guid? PreSurveyId,
     Guid PropertySiteId,
     Guid CustomerUserId,
     Guid? AssignedSaleId,
@@ -116,7 +116,7 @@ public sealed record TechnicianJobDetail(
     decimal? Longitude,
     InstallationSurfaceType? InstallationSurfaceType,
     string? SurfaceMaterial,
-    Guid PreSurveyId,
+    Guid? PreSurveyId,
     decimal? TotalAreaM2,
     decimal? UsableAreaM2,
     decimal? SurfaceLengthM,
@@ -125,18 +125,22 @@ public sealed record TechnicianJobDetail(
     decimal? AzimuthDegree,
     bool? HasObstruction,
     string? ObstaclesJson,
-    SelectedSimulationSummary? SelectedSimulation);
+    SelectedSimulationSummary? SelectedSimulation,
+    string Source = SurveyRequestSources.PreSurvey,
+    string? ContactName = null,
+    string? ContactPhone = null);
 
 public sealed record CustomerSurveyRequestRow(
     Guid SurveyRequestId,
-    Guid PreSurveyId,
+    Guid? PreSurveyId,
     Guid PropertySiteId,
     string PropertyName,
     SurveyRequestStatus Status,
     DateTimeOffset SubmittedAt,
     DateTimeOffset? ScheduledAt,
     AppointmentSnapshot? ActiveAppointment,
-    string? AssignedTechnicianName);
+    string? AssignedTechnicianName,
+    string Source = SurveyRequestSources.PreSurvey);
 
 public sealed record ScheduleEntry(AppointmentSnapshot Appointment, string PropertyName);
 
@@ -196,8 +200,25 @@ public sealed record CommuneMappingRow(string CommuneCode, Guid ZoneId, string Z
 /// <summary>An active zone membership with the technician's state.</summary>
 public sealed record ZoneMemberRow(Guid TechnicianUserId, string FullName, bool IsActiveUser, bool HasTechnicianRole, bool IsSchedulingActive, DateTimeOffset AssignedAt);
 
+/// <summary>
+/// Result of opening a direct-booking survey request for a site: the request to book (<see cref="Created"/> = new, otherwise the site's
+/// open direct request is reused), or <see cref="ConflictingSource"/> = PRE_SURVEY when the site already has an open pre-survey request.
+/// </summary>
+public sealed record DirectSurveyRequestOpening(Guid SurveyRequestId, bool Created, string? ConflictingSource);
+
 public interface ISchedulingUnitOfWork : IInAppNotificationWriter
 {
+    // ---- Direct booking (Option B) ----
+
+    /// <summary>
+    /// Under the property-site lock: reuses the site's open (Pending / Scheduled) DIRECT_BOOKING request, reports an open PRE_SURVEY request
+    /// as a conflict, or inserts <paramref name="candidate"/> (partial unique index backstop). No pre-survey is created.
+    /// </summary>
+    Task<DirectSurveyRequestOpening> OpenDirectSurveyRequestAsync(SurveyRequest candidate, CancellationToken cancellationToken);
+
+    /// <summary>The account phone number (null when none).</summary>
+    Task<string?> GetUserPhoneAsync(Guid userId, CancellationToken cancellationToken);
+
     // ---- Reads ----
     Task<PropertySiteInfo?> GetPropertySiteAsync(Guid propertySiteId, CancellationToken cancellationToken);
 

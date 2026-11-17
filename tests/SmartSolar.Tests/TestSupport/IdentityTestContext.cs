@@ -195,7 +195,7 @@ public sealed class IdentityTestContext : IAsyncDisposable
             UnitOfWork,
             PasswordHasher,
             TokenFactory,
-            Publisher,
+            CreatePasswordResetDispatcher(),
             VerificationOptions,
             FrontendOptions,
             NullLogger<RegisterHandler>.Instance);
@@ -207,7 +207,7 @@ public sealed class IdentityTestContext : IAsyncDisposable
         => new(
             UnitOfWork,
             TokenFactory,
-            Publisher,
+            CreatePasswordResetDispatcher(),
             VerificationOptions,
             FrontendOptions,
             NullLogger<ResendVerificationHandler>.Instance);

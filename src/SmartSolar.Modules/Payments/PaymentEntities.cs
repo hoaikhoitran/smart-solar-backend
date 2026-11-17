@@ -30,9 +30,43 @@ public sealed class PaymentAttempt
     public DateTimeOffset? PaidAt { get; set; }
     public string? FailureReason { get; set; }
     public DateTimeOffset? LastReconciledAt { get; set; }
+
+    /// <summary>CASH only: the Manager/Admin who recorded the cash receipt (who). <see cref="PaidAt"/> is when, <see cref="AmountPaid"/> how much,
+    /// <see cref="ProviderReference"/> the receipt reference (unique per provider).</summary>
+    public Guid? ConfirmedByUserId { get; set; }
+
+    /// <summary>CASH only: verified PAYMENT_EVIDENCE file (receipt scan or photo) uploaded by the confirming staff member.</summary>
+    public Guid? EvidenceFileId { get; set; }
+
+    /// <summary>CASH only: free-text note of the confirmation.</summary>
+    public string? ConfirmationNote { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
     public int Revision { get; set; }
+}
+
+/// <summary>
+/// Payment methods of a contract. ONLINE = the configured gateway (PayOS); CASH = the customer pays in cash and a Manager/Admin records it.
+/// A CASH attempt occupies the same "one payable attempt per contract" slot as an online link, so the two methods can never run at once.
+/// </summary>
+public static class PaymentProviders
+{
+    public const string Cash = "CASH";
+}
+
+/// <summary>Derived payment state of a contract for the FE (the contract status itself stays SIGNED until it is PAID).</summary>
+public static class ContractPaymentStates
+{
+    /// <summary>The contract is not SIGNED yet (or was superseded): nothing can be paid.</summary>
+    public const string NotPayable = "NOT_PAYABLE";
+    /// <summary>SIGNED, no method in progress: the customer chooses ONLINE or CASH.</summary>
+    public const string AwaitingPayment = "AWAITING_PAYMENT";
+    /// <summary>An online (PayOS) link is open.</summary>
+    public const string OnlineInProgress = "ONLINE_IN_PROGRESS";
+    /// <summary>The customer chose CASH; a Manager/Admin must record the receipt. Not paid yet.</summary>
+    public const string AwaitingCashConfirmation = "AWAITING_CASH_CONFIRMATION";
+    public const string Paid = "PAID";
 }
 
 /// <summary>
@@ -135,6 +169,8 @@ public static class PaymentSources
     public const string Reconciliation = "RECONCILIATION";
     public const string Customer = "CUSTOMER";
     public const string System = "SYSTEM";
+    /// <summary>A Manager/Admin action (cash confirmation).</summary>
+    public const string Staff = "STAFF";
 }
 
 public static class PaymentErrorCodes
@@ -149,4 +185,12 @@ public static class PaymentErrorCodes
     public const string AttemptNotFound = "PAYMENT_ATTEMPT_NOT_FOUND";
     public const string InvalidSignature = "PAYMENT_WEBHOOK_INVALID_SIGNATURE";
     public const string CheckoutInProgress = "PAYMENT_CHECKOUT_IN_PROGRESS";
+    /// <summary>The customer chose CASH and it waits for a Manager/Admin; cancel the cash choice first to pay online (409).</summary>
+    public const string CashSelected = "PAYMENT_CASH_SELECTED";
+    /// <summary>There is no CASH payment awaiting confirmation for this contract (409).</summary>
+    public const string CashNotSelected = "PAYMENT_CASH_NOT_SELECTED";
+    /// <summary>The confirmed cash amount is not exactly the contract total (no partial or over-payment is recorded) (409).</summary>
+    public const string CashAmountMismatch = "PAYMENT_CASH_AMOUNT_MISMATCH";
+    /// <summary>The receipt reference was already used by another cash confirmation (409).</summary>
+    public const string CashReceiptDuplicate = "PAYMENT_CASH_RECEIPT_DUPLICATE";
 }

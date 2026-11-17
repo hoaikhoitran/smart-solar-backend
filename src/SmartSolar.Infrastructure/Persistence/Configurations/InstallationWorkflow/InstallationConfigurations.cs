@@ -45,7 +45,7 @@ public sealed class InstallationProjectConfiguration : IEntityTypeConfiguration<
         builder.Property(x => x.SurveyRequestId).HasColumnName("survey_request_id").IsRequired();
         builder.Property(x => x.CustomerUserId).HasColumnName("customer_user_id").IsRequired();
         builder.Property(x => x.PropertySiteId).HasColumnName("property_site_id").IsRequired();
-        builder.Property(x => x.ManagerUserId).HasColumnName("manager_user_id").IsRequired();
+        builder.Property(x => x.ManagerUserId).HasColumnName("manager_user_id").IsRequired(false);
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(40).IsRequired();
         // service_area_id stays in the database (nullable, unused) until the cleanup draft; the zone replaces it.
         builder.Property(x => x.OperationalZoneId).HasColumnName("operational_zone_id");
@@ -359,5 +359,77 @@ public sealed class EquipmentSubstitutionItemConfiguration : IEntityTypeConfigur
             .HasConstraintName("fk_installation_equipment_substitution_item_substitution");
         builder.HasOne<Product>().WithMany().HasForeignKey(x => x.ProductId).OnDelete(DeleteBehavior.Restrict)
             .HasConstraintName("fk_installation_equipment_substitution_item_product");
+    }
+}
+
+
+/// <summary>Technician-agreed installation schedules (one live row per contract; history kept).</summary>
+public sealed class InstallationScheduleProposalConfiguration : IEntityTypeConfiguration<InstallationScheduleProposal>
+{
+    public void Configure(EntityTypeBuilder<InstallationScheduleProposal> builder)
+    {
+        static string In(IEnumerable<string> values) => "(" + string.Join(", ", values.Select(v => $"'{v}'")) + ")";
+        builder.ToTable("installation_schedule_proposal", t =>
+        {
+            t.HasCheckConstraint("ck_installation_schedule_proposal_status", $"status IN {In(InstallationScheduleStatuses.All)}");
+            t.HasCheckConstraint("ck_installation_schedule_proposal_interval", "ends_at > starts_at");
+            t.HasCheckConstraint("ck_installation_schedule_proposal_confirmed",
+                $"status <> '{InstallationScheduleStatuses.Confirmed}' OR (project_id IS NOT NULL AND confirmed_at IS NOT NULL)");
+            t.HasCheckConstraint("ck_installation_schedule_proposal_reschedule",
+                $"status <> '{InstallationScheduleStatuses.RescheduleRequired}' OR (reschedule_reason_code IS NOT NULL AND reschedule_required_at IS NOT NULL)");
+            t.HasCheckConstraint("ck_installation_schedule_proposal_reschedule_reason",
+                $"reschedule_reason_code IS NULL OR reschedule_reason_code IN {In(InstallationScheduleRescheduleReasons.All)}");
+            t.HasCheckConstraint("ck_installation_schedule_proposal_cancelled",
+                $"(status = '{InstallationScheduleStatuses.Cancelled}') = (cancelled_at IS NOT NULL) AND (status <> '{InstallationScheduleStatuses.Cancelled}' OR cancellation_reason IS NOT NULL)");
+        });
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.ContractId).HasColumnName("contract_id").IsRequired();
+        builder.Property(x => x.SurveyRequestId).HasColumnName("survey_request_id").IsRequired();
+        builder.Property(x => x.CustomerUserId).HasColumnName("customer_user_id").IsRequired();
+        builder.Property(x => x.PropertySiteId).HasColumnName("property_site_id").IsRequired();
+        builder.Property(x => x.TechnicianUserId).HasColumnName("technician_user_id").IsRequired();
+        builder.Property(x => x.StartsAt).HasColumnName("starts_at").IsRequired();
+        builder.Property(x => x.EndsAt).HasColumnName("ends_at").IsRequired();
+        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(30).IsRequired();
+        builder.Property(x => x.CustomerAgreementNote).HasColumnName("customer_agreement_note").HasMaxLength(500).IsRequired();
+        builder.Property(x => x.ChangeReason).HasColumnName("change_reason").HasMaxLength(500);
+        builder.Property(x => x.ReplacesProposalId).HasColumnName("replaces_proposal_id");
+        builder.Property(x => x.CreatedByUserId).HasColumnName("created_by_user_id").IsRequired();
+        builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
+        builder.Property(x => x.ProjectId).HasColumnName("project_id");
+        builder.Property(x => x.ConfirmedAt).HasColumnName("confirmed_at");
+        builder.Property(x => x.RescheduleReasonCode).HasColumnName("reschedule_reason_code").HasMaxLength(40);
+        builder.Property(x => x.RescheduleDetail).HasColumnName("reschedule_detail").HasMaxLength(500);
+        builder.Property(x => x.RescheduleRequiredAt).HasColumnName("reschedule_required_at");
+        builder.Property(x => x.CustomerChangeRequestedAt).HasColumnName("customer_change_requested_at");
+        builder.Property(x => x.CustomerChangeRequestNote).HasColumnName("customer_change_request_note").HasMaxLength(500);
+        builder.Property(x => x.CancelledAt).HasColumnName("cancelled_at");
+        builder.Property(x => x.CancelledByUserId).HasColumnName("cancelled_by_user_id");
+        builder.Property(x => x.CancellationReason).HasColumnName("cancellation_reason").HasMaxLength(500);
+        builder.Property(x => x.Revision).HasColumnName("revision").IsConcurrencyToken().IsRequired();
+        builder.HasIndex(x => x.ContractId).IsUnique().HasDatabaseName("ux_installation_schedule_proposal_one_live")
+            .HasFilter($"status IN {In(InstallationScheduleStatuses.Live)}");
+        builder.HasIndex(x => new { x.TechnicianUserId, x.Status }).HasDatabaseName("ix_installation_schedule_proposal_technician_status");
+        builder.HasIndex(x => new { x.CustomerUserId, x.Status }).HasDatabaseName("ix_installation_schedule_proposal_customer_status");
+        builder.HasOne<CustomerContract>().WithMany().HasForeignKey(x => x.ContractId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_schedule_proposal_contract");
+        builder.HasOne<SurveyRequest>().WithMany().HasForeignKey(x => x.SurveyRequestId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_schedule_proposal_survey_request");
+        builder.HasOne<PropertySite>().WithMany().HasForeignKey(x => x.PropertySiteId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_schedule_proposal_property_site");
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.CustomerUserId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_schedule_proposal_customer");
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.TechnicianUserId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_schedule_proposal_technician");
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.CreatedByUserId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_schedule_proposal_created_by");
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.CancelledByUserId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_schedule_proposal_cancelled_by");
+        builder.HasOne<InstallationProject>().WithMany().HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_schedule_proposal_project");
+        builder.HasOne<InstallationScheduleProposal>().WithMany().HasForeignKey(x => x.ReplacesProposalId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_schedule_proposal_replaces");
     }
 }

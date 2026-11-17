@@ -313,6 +313,19 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
         var draft = (await ctx.Contracts().CreateAsync(ready.Survey.Sales.Id, ready.QuotationId, "Terms", None)).Value!;
         Assert.True((await ctx.Contracts().DiscardAsync(ready.Survey.Sales.Id, draft.ContractId, draft.Revision, "Customer withdrew", None)).Succeeded);
         Assert.True((await quotations.CloseRequestAsync(ready.Survey.Sales.Id, ready.Survey.Request.Request.Id, "CUSTOMER_DECLINED", null, None)).Succeeded);
+        // A legacy contract that still carries its Sales owner (rows written before the 2026-11-17 simplified flow).
+        Assert.Equal(1, await ctx.Db.CustomerContracts.Where(c => c.Id == draft.ContractId)
+            .ExecuteUpdateAsync(u => u.SetProperty(c => c.SalesUserId, ready.Survey.Sales.Id)));
+
+        // Simplified flow: a fifth customer pays a SIGNED contract in cash, confirmed by the Manager with receipt evidence.
+        ctx.Clock.Now = DefaultNow.ToUniversalTime();
+        var signed = await SimplifiedFlowFixture.SignedAsync(ctx, "Fifth customer");
+        var payments = ctx.PaymentsWithCash();
+        Assert.True((await payments.SelectCashAsync(signed.Cart.CustomerId, signed.Contract.ContractId, None)).Succeeded);
+        var evidence = await ctx.VerifiedFileAsync(signed.Manager.Id, SmartSolar.Modules.Files.FilePurposes.PaymentEvidence);
+        var cash = await payments.ConfirmCashAsync(signed.Manager.Id, signed.Contract.ContractId,
+            new(signed.Contract.TotalAmount, "PT-PG-0001", evidence, "Receipt booklet 12"), None);
+        Assert.True(cash.Succeeded, cash.Message);
     }
 
     /// <summary>A second request: on-site amendment with a file, quotation document and revision, contract amendment.</summary>

@@ -93,21 +93,10 @@ public sealed class ForgotPasswordHandler
             ExpiresAt = expiresAt
         });
 
-        var dispatchId = Guid.NewGuid();
-        _unitOfWork.AddPasswordResetDispatch(new PasswordResetDispatch
-        {
-            Id = dispatchId,
-            UserId = user.Id,
-            ActionTokenId = tokenId,
-            Email = user.Email,
-            FullName = user.FullName,
-            ResetUrl = VerificationUrlBuilder.Build(_frontendOptions.PasswordResetUrl, resetToken.RawToken),
-            Status = PasswordResetDispatchStatuses.Pending,
-            NextAttemptAt = now,
-            CreatedAt = now,
-            ExpiresAt = expiresAt
-        });
+        var dispatch = AuthLinkDispatches.Pending(user.Id, tokenId, user.Email, user.FullName,
+            VerificationUrlBuilder.Build(_frontendOptions.PasswordResetUrl, resetToken.RawToken), now, expiresAt);
+        _unitOfWork.AddPasswordResetDispatch(dispatch);
 
-        return dispatchId;
+        return dispatch.Id;
     }
 }

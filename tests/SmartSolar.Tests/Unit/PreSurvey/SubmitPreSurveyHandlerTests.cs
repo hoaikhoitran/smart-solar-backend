@@ -280,7 +280,7 @@ public sealed class SubmitPreSurveyHandlerTests
         var customer = await ctx.SeedCustomerAsync(user.Id);
         var site = await ctx.SeedPropertySiteAsync(customer.Id);
         var submitted = await ctx.SeedPreSurveyAsync(site.Id, PreSurveyStatus.Submitted);
-        var request = PreSurveyTestContext.NewSurveyRequest(submitted.Id);
+        var request = PreSurveyTestContext.NewSurveyRequest(submitted.Id, propertySiteId: submitted.PropertyId);
 
         // Act
         var stored = await ctx.UnitOfWork.TrySubmitPreSurveyAsync(request, CancellationToken.None);

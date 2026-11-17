@@ -14,7 +14,31 @@ public sealed record KnowledgeRevisionRequest(int Revision);
 
 public sealed record ReindexKnowledgeVersionRequest(Guid VersionId);
 
-public sealed record AskChatRequest(Guid? SessionId, string? Message, string? ClientMessageId);
+/// <param name="Advisor">Optional structured values for configuration advice (override values recognised in the message text).</param>
+public sealed record AskChatRequest(Guid? SessionId, string? Message, string? ClientMessageId, SolarAdvisorRequest? Advisor = null);
+
+/// <summary>Configuration-advisor inputs; every field optional. <c>propertySiteId</c> must be one of the caller's own sites.</summary>
+public sealed record SolarAdvisorRequest(decimal? RoofAreaM2, decimal? BudgetVnd, decimal? MonthlyConsumptionKwh, Guid? PropertySiteId, decimal? Latitude,
+    decimal? Longitude, decimal? TiltDegree, decimal? AzimuthDegree, bool? WantsBattery)
+{
+    /// <summary>The first invalid field and its message, or null.</summary>
+    public (string Field, string Message)? Problem()
+    {
+        if (RoofAreaM2 is { } a && (a <= 0 || a > 100_000)) return ("advisor.roofAreaM2", "Must be greater than 0 and at most 100000 m².");
+        if (BudgetVnd is { } b && (b < 1_000_000 || b > 100_000_000_000)) return ("advisor.budgetVnd", "Must be between 1,000,000 and 100,000,000,000 VND.");
+        if (MonthlyConsumptionKwh is { } c && (c <= 0 || c > 1_000_000)) return ("advisor.monthlyConsumptionKwh", "Must be greater than 0 and at most 1000000 kWh.");
+        if (Latitude is { } la && (la < -90 || la > 90)) return ("advisor.latitude", "Must be between -90 and 90.");
+        if (Longitude is { } lo && (lo < -180 || lo > 180)) return ("advisor.longitude", "Must be between -180 and 180.");
+        if ((Latitude is null) != (Longitude is null)) return ("advisor.latitude", "Give both latitude and longitude, or neither.");
+        if (TiltDegree is { } t && (t < 0 || t > 90)) return ("advisor.tiltDegree", "Must be between 0 and 90.");
+        if (AzimuthDegree is { } z && (z < 0 || z > 360)) return ("advisor.azimuthDegree", "Must be between 0 and 360 (compass).");
+        if (PropertySiteId == Guid.Empty) return ("advisor.propertySiteId", "Must be a site id.");
+        return null;
+    }
+
+    public SmartSolar.Modules.KnowledgeBase.Advisor.SolarAdvisorInput ToInput()
+        => new(RoofAreaM2, BudgetVnd, MonthlyConsumptionKwh, PropertySiteId, Latitude, Longitude, TiltDegree, AzimuthDegree, WantsBattery ?? false);
+}
 
 /// <summary>
 /// Draft values; omitted fields keep the draft's (or, for a new draft, the active configuration's) value. <c>temperature</c>:

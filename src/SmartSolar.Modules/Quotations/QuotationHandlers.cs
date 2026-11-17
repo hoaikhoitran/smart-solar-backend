@@ -71,7 +71,9 @@ public sealed class QuotationOptions
 /// ISSUED/ACCEPTED quotation per survey request, so concurrent edits, issues and acceptances can
 /// never produce two live offers.
 /// </summary>
-public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, FileService files, QuotationOptions options, TimeProvider time)
+/// <param name="contracts">Drafts the contract inside the acceptance transaction (production wiring; null in tests that only exercise quotations).</param>
+public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, FileService files, QuotationOptions options, TimeProvider time,
+    IAcceptedQuotationContracts? contracts = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -425,8 +427,10 @@ public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, F
 
         return await RunAsync(quotationId, async (q, _, now, token) =>
         {
+            // A concurrent (double-clicked) acceptance by the same customer won the lock first: same outcome, nothing written twice.
+            if (q.Status == QuotationStatuses.Accepted) return OperationResult<bool>.Ok(true);
             if (q.ValidUntil is { } validUntil && validUntil <= now)
-                return OperationResult<bool>.Fail(QuotationErrorCodes.Expired, "This quotation has expired; ask Sales for a new version.");
+                return OperationResult<bool>.Fail(QuotationErrorCodes.Expired, "This quotation has expired; ask for a new version.");
             if (q.Status == QuotationStatuses.Issued && SurveyChangedError(q, await unitOfWork.GetSurveyVersionAsync(q.SurveyRequestId, token)) is { } changed)
                 return changed;
             if (!await unitOfWork.TryAcceptAsync(q.Id, now, token))
@@ -434,8 +438,15 @@ public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, F
                     ? OperationResult<bool>.Fail(QuotationErrorCodes.SurveyChanged, "The on-site survey changed meanwhile; this quotation can no longer be accepted.")
                     : OperationResult<bool>.Fail(QuotationErrorCodes.NotIssued, "This quotation can no longer be accepted (it was revised or changed).");
             AddEvent(q.Id, QuotationEventTypes.Accepted, customerUserId, null, now);
+            // The contract DRAFT is made from the accepted snapshot in the SAME transaction: an accepted quotation never exists without its
+            // contract, and the one-draft / one-live contract indexes keep it at exactly one.
+            if (contracts is not null)
+            {
+                var drafted = await contracts.CreateDraftForAcceptedQuotationAsync(q.Id, customerUserId, now, token);
+                if (!drafted.Succeeded) return drafted;
+            }
             return OperationResult<bool>.Ok(true);
-        }, cancellationToken, trackedChanges: false, forCustomer: true);
+        }, cancellationToken, trackedChanges: false, forCustomer: true, lockSurveyRequestId: quotation.SurveyRequestId);
     }
 
     public async Task<OperationResult<QuotationView>> RequestRevisionAsync(Guid customerUserId, Guid quotationId, string reason, CancellationToken cancellationToken)
@@ -483,12 +494,15 @@ public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, F
     /// <summary>Loads the quotation and lines tracked, applies the change, bumps the revision and commits.</summary>
     private async Task<OperationResult<QuotationView>> RunAsync(Guid quotationId,
         Func<Quotation, List<QuotationLine>, DateTimeOffset, CancellationToken, Task<OperationResult<bool>>> change,
-        CancellationToken cancellationToken, bool trackedChanges = true, bool forCustomer = false)
+        CancellationToken cancellationToken, bool trackedChanges = true, bool forCustomer = false, Guid? lockSurveyRequestId = null)
     {
         try
         {
             var outcome = await unitOfWork.ExecuteInTransactionAsync<OperationResult<bool>>(async token =>
             {
+                // Paths that create or end commercial records (issue, acceptance + contract draft) take the request lock first, in the global
+                // order survey_request → quotation → contract shared with withdrawal and closure.
+                if (lockSurveyRequestId is { } requestId) await unitOfWork.LockSurveyRequestAsync(requestId, token);
                 // Lock first, then read: a concurrent editor waits and then sees the new revision (STALE),
                 // instead of racing on derived values such as the next line number.
                 await unitOfWork.LockAsync(quotationId, token);
@@ -526,7 +540,9 @@ public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, F
         => constraint is "ux_quotation_one_live" or "ux_quotation_one_draft"
            || (constraint?.StartsWith("quotation.survey_request_id", StringComparison.Ordinal) ?? false);
 
-    private async Task<OperationResult<QuotationView>> PersistNewAsync(Quotation quotation, List<QuotationLine> lines, Guid actor, string eventType, string? detail, CancellationToken cancellationToken)
+    /// <param name="beforeAdd">Runs inside the transaction after the request lock and before the insert; a failure aborts without writing anything.</param>
+    private async Task<OperationResult<QuotationView>> PersistNewAsync(Quotation quotation, List<QuotationLine> lines, Guid actor, string eventType, string? detail, CancellationToken cancellationToken,
+        Func<CancellationToken, Task<OperationResult<bool>>>? beforeAdd = null)
     {
         Recalculate(quotation, lines);
         if (quotation.DiscountAmount > quotation.Subtotal)
@@ -537,6 +553,7 @@ public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, F
             {
                 // Same request lock as withdrawal/closure: a closure either sees this new draft (and cancels it) or this sees the closure.
                 if (await RequestClosedUnderLockAsync(quotation.SurveyRequestId, token)) return (RequestClosedError<bool>(), false);
+                if (beforeAdd is not null && await beforeAdd(token) is { Succeeded: false } refused) return (refused, false);
                 unitOfWork.AddQuotation(quotation);
                 foreach (var line in lines) unitOfWork.AddLine(line);
                 AddEvent(quotation.Id, eventType, actor, detail, quotation.CreatedAt);

@@ -18,22 +18,25 @@ public class EmailConsumerTests
     {
         var sender = new FakeEmailSender();
         var service = new VerificationEmailService(sender, new EmailVerificationOptions { LifetimeMinutes = 1440 }, NullLogger<VerificationEmailService>.Instance);
-        return (new EmailVerificationRequestedConsumer(service), sender);
+        return (new EmailVerificationRequestedConsumer(service, LegacyDelivery()), sender);
     }
 
     private static (PasswordResetRequestedConsumer Consumer, FakeEmailSender Sender) Reset()
     {
         var sender = new FakeEmailSender();
         var service = new PasswordResetEmailService(sender, new PasswordResetOptions { LifetimeMinutes = 60 }, NullLogger<PasswordResetEmailService>.Instance);
-        return (new PasswordResetRequestedConsumer(service, new UnusedDispatchStore(), TimeProvider.System,
-            NullLogger<PasswordResetRequestedConsumer>.Instance), sender);
+        return (new PasswordResetRequestedConsumer(service, LegacyDelivery()), sender);
     }
+
+    /// <summary>Delivery for messages without an outbox id: the store must never be touched.</summary>
+    private static AuthLinkEmailDelivery LegacyDelivery() => new(new UnusedDispatchStore(), TimeProvider.System, NullLogger<AuthLinkEmailDelivery>.Instance);
 
     /// <summary>Messages without an outbox id (published before the outbox existed) never touch the store.</summary>
     private sealed class UnusedDispatchStore : SmartSolar.Modules.Identity.PasswordRecovery.IPasswordResetDispatchStore
     {
         private static T Fail<T>() => throw new InvalidOperationException("The outbox must not be used for a message without a dispatch id.");
-        public Task<SmartSolar.Modules.Identity.PasswordRecovery.PasswordResetDispatch?> TryClaimAsync(Guid id, DateTimeOffset now, TimeSpan lease, CancellationToken cancellationToken) => Fail<Task<SmartSolar.Modules.Identity.PasswordRecovery.PasswordResetDispatch?>>();
+        public Task<SmartSolar.Modules.Identity.PasswordRecovery.ClaimedDispatch?> TryClaimAsync(Guid id, DateTimeOffset now, TimeSpan lease, CancellationToken cancellationToken) => Fail<Task<SmartSolar.Modules.Identity.PasswordRecovery.ClaimedDispatch?>>();
+        public Task<bool> ReturnForRetryAsync(Guid id, string url, DateTimeOffset now, string error, CancellationToken cancellationToken) => Fail<Task<bool>>();
         public Task<IReadOnlyList<Guid>> ListDueAsync(DateTimeOffset now, int limit, CancellationToken cancellationToken) => Fail<Task<IReadOnlyList<Guid>>>();
         public Task MarkPublishedAsync(Guid id, DateTimeOffset now, CancellationToken cancellationToken) => Fail<Task>();
         public Task RecordPublishFailureAsync(Guid id, DateTimeOffset nextAttemptAt, string error, CancellationToken cancellationToken) => Fail<Task>();

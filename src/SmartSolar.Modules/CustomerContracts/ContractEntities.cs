@@ -17,7 +17,12 @@ public sealed class CustomerContract
     public int QuotationVersion { get; set; }
     public Guid SurveyRequestId { get; set; }
     public Guid CustomerUserId { get; set; }
-    public Guid SalesUserId { get; set; }
+
+    /// <summary>
+    /// The Sales owner of contracts created by Sales before 2026-11-17 (history). Null for contracts drafted automatically when the customer
+    /// accepted a quotation: Manager/Admin prepare, issue and review them.
+    /// </summary>
+    public Guid? SalesUserId { get; set; }
     public string Status { get; set; } = null!;
     public string Currency { get; set; } = null!;
     public decimal TotalAmount { get; set; }

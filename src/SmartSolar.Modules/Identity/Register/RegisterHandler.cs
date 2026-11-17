@@ -1,13 +1,12 @@
 using Microsoft.Extensions.Logging;
-using SmartSolar.Modules.Common.Messaging;
 using SmartSolar.Modules.Identity.Constants;
 using SmartSolar.Modules.Identity.Contracts.Persistence;
 using SmartSolar.Modules.Identity.Contracts.Security;
 using SmartSolar.Modules.Identity.EmailVerification;
 using SmartSolar.Modules.Identity.Entities;
 using SmartSolar.Modules.Identity.Enums;
-using SmartSolar.Modules.Identity.Events;
 using SmartSolar.Modules.Identity.Options;
+using SmartSolar.Modules.Identity.PasswordRecovery;
 
 namespace SmartSolar.Modules.Identity.Register;
 
@@ -16,7 +15,7 @@ public sealed class RegisterHandler
     private readonly IIdentityUnitOfWork _unitOfWork;
     private readonly IPasswordHashingService _passwordHasher;
     private readonly EmailVerificationTokenFactory _tokenFactory;
-    private readonly IIntegrationEventPublisher _publisher;
+    private readonly PasswordResetDispatcher _dispatcher;
     private readonly EmailVerificationOptions _verificationOptions;
     private readonly FrontendOptions _frontendOptions;
     private readonly ILogger<RegisterHandler> _logger;
@@ -25,7 +24,7 @@ public sealed class RegisterHandler
         IIdentityUnitOfWork unitOfWork,
         IPasswordHashingService passwordHasher,
         EmailVerificationTokenFactory tokenFactory,
-        IIntegrationEventPublisher publisher,
+        PasswordResetDispatcher dispatcher,
         EmailVerificationOptions verificationOptions,
         FrontendOptions frontendOptions,
         ILogger<RegisterHandler> logger)
@@ -33,7 +32,7 @@ public sealed class RegisterHandler
         _unitOfWork = unitOfWork;
         _passwordHasher = passwordHasher;
         _tokenFactory = tokenFactory;
-        _publisher = publisher;
+        _dispatcher = dispatcher;
         _verificationOptions = verificationOptions;
         _frontendOptions = frontendOptions;
         _logger = logger;
@@ -97,42 +96,30 @@ public sealed class RegisterHandler
             RoleId = customerRoleId,
             AssignedAt = now
         });
+        var tokenId = Guid.NewGuid();
+        var expiresAt = now.AddMinutes(_verificationOptions.LifetimeMinutes);
         _unitOfWork.AddAuthActionToken(new AuthActionToken
         {
-            Id = Guid.NewGuid(),
+            Id = tokenId,
             UserId = user.Id,
             TokenHash = verificationToken.TokenHash,
             Type = AuthActionTokenType.EmailVerification,
-            ExpiresAt = now.AddMinutes(_verificationOptions.LifetimeMinutes)
+            ExpiresAt = expiresAt
         });
 
-        return new CreatedAccount(user.Id, user.Email, user.FullName, verificationToken.RawToken);
+        // The verification email is an outbox row of the same transaction: a broker or SMTP outage cannot lose it (audit INT-02).
+        var dispatch = AuthLinkDispatches.Pending(user.Id, tokenId, user.Email, user.FullName,
+            VerificationUrlBuilder.Build(_frontendOptions.EmailVerificationUrl, verificationToken.RawToken), now, expiresAt);
+        _unitOfWork.AddPasswordResetDispatch(dispatch);
+
+        return new CreatedAccount(user.Id, user.Email, dispatch.Id);
     }
 
-    private async Task PublishVerificationEventAsync(
+    /// <summary>One publish attempt after the commit; on failure the outbox worker retries until the token expires.</summary>
+    private Task PublishVerificationEventAsync(
         CreatedAccount account,
         CancellationToken cancellationToken)
-    {
-        try
-        {
-            await _publisher.PublishAsync(
-                new EmailVerificationRequestedEvent(
-                    account.UserId,
-                    account.Email,
-                    account.FullName,
-                    VerificationUrlBuilder.Build(_frontendOptions.EmailVerificationUrl, account.RawToken)),
-                cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            // The account is already committed; the user can request a new email.
-            // The URL is never logged because it carries the raw token.
-            _logger.LogError(
-                ex,
-                "Failed to publish email verification event for user {UserId}.",
-                account.UserId);
-        }
-    }
+        => _dispatcher.TryPublishAsync(account.DispatchId, cancellationToken);
 
-    private sealed record CreatedAccount(Guid UserId, string Email, string FullName, string RawToken);
+    private sealed record CreatedAccount(Guid UserId, string Email, Guid DispatchId);
 }

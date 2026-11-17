@@ -51,7 +51,7 @@ public class SurveyRequestsEndpointsTests
         var preSurvey = await factory.SeedAsync(
             PreSurveyTestContext.NewPreSurvey(customer.Site.Id, PreSurveyStatus.Submitted));
         return await factory.SeedAsync(PreSurveyTestContext.NewSurveyRequest(
-            preSurvey.Id, status, assignedSaleId, submittedAt, assignedAt));
+            preSurvey.Id, status, assignedSaleId, submittedAt, assignedAt, preSurvey.PropertyId));
     }
 
     private static List<Guid> IdsOf(JsonElement array)

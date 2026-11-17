@@ -109,6 +109,9 @@ public interface IAdminUserStore
 
     void AddActionToken(AuthActionToken token);
 
+    /// <summary>Outbox row of the link email, saved with the same transaction as its token.</summary>
+    void AddLinkDispatch(PasswordRecovery.PasswordResetDispatch dispatch);
+
     void AddAudit(UserAccountAuditEntry entry);
 
     /// <summary>

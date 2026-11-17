@@ -11,12 +11,28 @@ public sealed class PasswordResetDispatchStore(AppDbContext db) : IPasswordReset
 {
     private const int ErrorMaxLength = 200;
 
-    public async Task<PasswordResetDispatch?> TryClaimAsync(Guid id, DateTimeOffset now, TimeSpan lease, CancellationToken cancellationToken)
+    public async Task<ClaimedDispatch?> TryClaimAsync(Guid id, DateTimeOffset now, TimeSpan lease, CancellationToken cancellationToken)
     {
         var claimed = await db.PasswordResetDispatches
             .Where(d => d.Id == id && d.Status == PasswordResetDispatchStatuses.Pending && d.NextAttemptAt <= now && d.ExpiresAt > now)
             .ExecuteUpdateAsync(s => s.SetProperty(d => d.NextAttemptAt, now + lease).SetProperty(d => d.PublishAttempts, d => d.PublishAttempts + 1), cancellationToken);
-        return claimed == 1 ? await db.PasswordResetDispatches.AsNoTracking().FirstOrDefaultAsync(d => d.Id == id, cancellationToken) : null;
+        if (claimed != 1) return null;
+        // The kind of email is the type of the token the row belongs to (the FK cascades, so the token always exists).
+        var row = await db.PasswordResetDispatches.AsNoTracking()
+            .Join(db.AuthActionTokens.AsNoTracking(), d => d.ActionTokenId, t => t.Id, (d, t) => new { Dispatch = d, t.Type })
+            .FirstOrDefaultAsync(x => x.Dispatch.Id == id, cancellationToken);
+        return row is null ? null : new ClaimedDispatch(row.Dispatch, row.Type);
+    }
+
+    public async Task<bool> ReturnForRetryAsync(Guid id, string url, DateTimeOffset now, string error, CancellationToken cancellationToken)
+    {
+        var attempts = await db.PasswordResetDispatches.AsNoTracking().Where(d => d.Id == id).Select(d => (int?)d.PublishAttempts).FirstOrDefaultAsync(cancellationToken);
+        if (attempts is null) return false;
+        var next = now + PasswordResetDispatcher.Backoff(attempts.Value);
+        return await db.PasswordResetDispatches
+            .Where(d => d.Id == id && d.Status == PasswordResetDispatchStatuses.Published && d.ExpiresAt > now)
+            .ExecuteUpdateAsync(s => s.SetProperty(d => d.Status, PasswordResetDispatchStatuses.Pending).SetProperty(d => d.ResetUrl, url)
+                .SetProperty(d => d.NextAttemptAt, next).SetProperty(d => d.LastError, Truncate(error)), cancellationToken) == 1;
     }
 
     public async Task<IReadOnlyList<Guid>> ListDueAsync(DateTimeOffset now, int limit, CancellationToken cancellationToken)

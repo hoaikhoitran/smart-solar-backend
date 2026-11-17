@@ -63,8 +63,8 @@ public sealed class PostgresM1M4MigrationTests
         // Down to the schema before M-1 (disposable database only).
         await db.GetService<IMigrator>().MigrateAsync(BeforeM1);
         // Readiness reports exactly the missing migrations: M-1..M-4 and the later M-7.
-        Assert.Equal(M1ToM4.Append(M7).Append(M8).Append(M9).Append(M10), await db.Database.GetPendingMigrationsAsync());
-        Assert.Equal(M1ToM4.Append(M7).Append(M8).Append(M9).Append(M10), await ProbeAsync(database));
+        Assert.Equal(M1ToM4.Append(M7).Append(M8).Append(M9).Append(M10).Append(M11).Append(M12).Append(M13), await db.Database.GetPendingMigrationsAsync());
+        Assert.Equal(M1ToM4.Append(M7).Append(M8).Append(M9).Append(M10).Append(M11).Append(M12).Append(M13), await ProbeAsync(database));
         Assert.False(await db.Database.SqlQueryRaw<bool>(
             "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'knowledge_document' AND column_name = 'audience') AS \"Value\"").SingleAsync());
 
@@ -155,6 +155,12 @@ public sealed class PostgresM1M4MigrationTests
     private const string M9 = "20261115153613_IotEnergyMonitoring";
     /// <summary>Transactional outbox of password-reset emails (one new table; after M-9).</summary>
     private const string M10 = "20261115153617_PasswordResetDispatchOutbox";
+    /// <summary>Simplified commercial flow: optional Sales owner, TECHNICIAN quotations, CASH confirmation columns (after M-10).</summary>
+    private const string M11 = "20261117074228_SimplifiedCommercialFlow";
+    /// <summary>Direct survey booking and technician-agreed installation schedules (after M-11).</summary>
+    private const string M12 = "20261117092018_DirectBookingAndInstallationSchedule";
+    /// <summary>Rolling-deploy trigger that fills survey_request.property_site_id for older API builds (after M-12).</summary>
+    private const string M13 = "20261117101818_SurveyRequestSiteCompatibility";
 
     [PostgresFact]
     public async Task M7_goes_down_and_up_over_draft_issued_signed_and_paid_contracts_without_changing_them()
@@ -182,12 +188,12 @@ public sealed class PostgresM1M4MigrationTests
 
         // Down to M-4: the readiness probe reports exactly M-7; Up restores it; history lists all seven pending-era migrations in order.
         await db.GetService<IMigrator>().MigrateAsync(M1ToM4[^1]);
-        Assert.Equal([M7, M8, M9, M10], await ProbeAsync(database));
+        Assert.Equal([M7, M8, M9, M10, M11, M12, M13], await ProbeAsync(database));
         await db.Database.MigrateAsync();
         Assert.Empty((await ProbeAsync(database))!);
         var applied = (await db.Database.GetAppliedMigrationsAsync()).ToList();
-        Assert.Equal(M10, applied[^1]);
-        Assert.Equal(new[] { "20261021164225_AddCommuneReferencePoints", "20261030122441_AutomatedInstallationQuotation" }.Concat(M1ToM4).Append(M7).Append(M8).Append(M9).Append(M10),
+        Assert.Equal(M13, applied[^1]);
+        Assert.Equal(new[] { "20261021164225_AddCommuneReferencePoints", "20261030122441_AutomatedInstallationQuotation" }.Concat(M1ToM4).Append(M7).Append(M8).Append(M9).Append(M10).Append(M11).Append(M12).Append(M13),
             applied.SkipWhile(m => m != "20261021164225_AddCommuneReferencePoints"));
 
         // Every existing contract is unchanged; none became DISCARDED or got discard data.
@@ -213,7 +219,7 @@ public sealed class PostgresM1M4MigrationTests
         await using var check = database.NewContext();
         // M-10, M-9 and M-8 (no lots yet) went down first; M-7 refused, so the schema stays at M-7 and M-8..M-10 are pending again.
         Assert.Equal(M7, (await check.Database.GetAppliedMigrationsAsync()).Last());
-        Assert.Equal([M8, M9, M10], await ProbeAsync(database));
+        Assert.Equal([M8, M9, M10, M11, M12, M13], await ProbeAsync(database));
         Assert.Equal("DISCARDED", await check.Database.SqlQuery<string>($"SELECT status AS \"Value\" FROM customer_contract WHERE id = {draftId}").SingleAsync());
     }
 }

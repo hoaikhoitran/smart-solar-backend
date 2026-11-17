@@ -29,8 +29,10 @@ public sealed record ChecklistUpdate(bool IsRequired, string Status, Guid? Evide
 /// Manager (re)assignment of the responsible technician for an interval. <see cref="Reason"/> is required for a reassignment or
 /// reschedule, and for a cross-zone technician together with <see cref="CrossZoneAuthorized"/> = true.
 /// </summary>
+/// <param name="ScheduleProposalId">Set by the schedule confirmation (the technician-agreed date); null for a Manager/Admin assignment, which supersedes
+/// any live technician schedule of the contract.</param>
 public sealed record AssignTechnicianInput(Guid TechnicianUserId, DateTimeOffset StartsAt, DateTimeOffset EndsAt, string? Reason, int ExpectedRevision,
-    bool CrossZoneAuthorized = false);
+    bool CrossZoneAuthorized = false, Guid? ScheduleProposalId = null);
 
 public sealed class InstallationOptions
 {
@@ -91,9 +93,14 @@ public sealed partial class InstallationHandlers(
     public Task<IReadOnlyList<PaidContractSource>> ListReadyContractsAsync(CancellationToken cancellationToken)
         => unitOfWork.ListPaidContractsWithoutProjectAsync(cancellationToken);
 
-    /// <summary>PAID contract → PENDING_ASSIGNMENT (one project per contract; unique index backstop).</summary>
-    public async Task<OperationResult<InstallationStaffView>> CreateProjectAsync(Guid managerUserId, Guid contractId, CancellationToken cancellationToken)
+    /// <summary>
+    /// PAID contract → PENDING_ASSIGNMENT (one project per contract; unique index backstop). <paramref name="managerUserId"/> null = created by the
+    /// system when a PAID contract has a technician-agreed schedule (<paramref name="actorUserId"/> = that technician, recorded on the event).
+    /// </summary>
+    public async Task<OperationResult<InstallationStaffView>> CreateProjectAsync(Guid? managerUserId, Guid contractId, CancellationToken cancellationToken,
+        Guid? actorUserId = null)
     {
+        var actor = managerUserId ?? actorUserId ?? throw new ArgumentException("A project is created by a Manager/Admin or for a technician-agreed schedule.");
         var contract = await unitOfWork.GetContractAsync(contractId, cancellationToken);
         if (contract is null) return OperationResult<InstallationStaffView>.Fail(InstallationErrorCodes.ContractNotFound, "Contract was not found.");
         if (contract.Status != CustomerContracts.ContractStatuses.Paid)
@@ -130,7 +137,8 @@ public sealed partial class InstallationHandlers(
                     foreach (var (code, title) in DefaultInstallationPlan.Checklist)
                         unitOfWork.Add(new InstallationChecklistItem { Id = Guid.NewGuid(), ProjectId = projectId, Code = code, Title = title,
                             IsRequired = options.PrerequisitesRequiredByDefault, Status = ChecklistStatuses.Pending });
-                    Event(projectId, InstallationEventTypes.ProjectCreated, managerUserId, null, InstallationStatuses.PendingAssignment, $"contract {contract.ContractNumber}", now);
+                    Event(projectId, InstallationEventTypes.ProjectCreated, actor, null, InstallationStatuses.PendingAssignment,
+                        managerUserId is null ? $"contract {contract.ContractNumber}; created automatically: paid with an agreed installation schedule" : $"contract {contract.ContractNumber}", now);
                     await unitOfWork.SaveChangesAsync(token);
                     return (true, true);
                 }, cancellationToken);
@@ -305,6 +313,9 @@ public sealed partial class InstallationHandlers(
                 if (authorization is { } authorizationId) detail = $"{detail}; cross-zone authorization {authorizationId}";
                 if (session!.MovedHoldIds.Count > 0) detail = Trim($"{detail}; survey holds re-homed: {session.MovedHoldIds.Count}", 1000);
                 Event(projectId, type, managerUserId, from, p.Status, detail, now);
+                // A Manager/Admin decision replaces the technician-agreed schedule (kept as history).
+                if (input.ScheduleProposalId is null)
+                    await InstallationScheduleHandlers.ReleaseLiveAsync(unitOfWork, p.ContractId, managerUserId, $"SUPERSEDED: Manager/Admin assignment; {reason}", false, now, token);
                 await unitOfWork.SaveChangesAsync(token);
                 // The survey holds get their new holders (HOLD_MOVED events) in the same transaction.
                 await planner.Rehoming.AttachAsync(session, input.TechnicianUserId, managerUserId, now, token);
@@ -352,6 +363,7 @@ public sealed partial class InstallationHandlers(
             p.ResponsibleTechnicianUserId = null;
             p.TechnicianAcceptedAt = null;
             Event(projectId, InstallationEventTypes.ProjectCancelled, managerUserId, from, p.Status, why, now);
+            await InstallationScheduleHandlers.ReleaseLiveAsync(unitOfWork, p.ContractId, managerUserId, $"INSTALLATION_CANCELLED: {why}", false, now, token);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
         return await ThenAsync(result, () => StaffViewAsync(projectId, cancellationToken));
@@ -503,24 +515,33 @@ public sealed partial class InstallationHandlers(
             Event(projectId, InstallationEventTypes.AssignmentDeclined, technicianUserId, from, p.Status, why, now);
             return Task.FromResult(OperationResult<bool>.Ok(true));
         }, cancellationToken);
+        // The technician who agreed the date can no longer do it: the schedule must be chosen again (the project waits for a Manager or a new date).
+        if (result.Succeeded)
+            await unitOfWork.ExecuteInTransactionAsync<bool>(async token =>
+            {
+                var project = await unitOfWork.FindProjectAsync(projectId, false, token);
+                if (project is null) return (false, false);
+                await InstallationScheduleHandlers.ReleaseLiveAsync(unitOfWork, project.ContractId, technicianUserId, $"Technician declined the assignment: {why}", true,
+                    time.GetUtcNow(), token);
+                await unitOfWork.SaveChangesAsync(token);
+                return (true, true);
+            }, cancellationToken);
         if (!result.Succeeded) return result.As<InstallationTechnicianView>();
         var assignment = (await unitOfWork.GetAssignmentsAsync(projectId, false, cancellationToken)).Single(a => a.Id == declined);
         return OperationResult<InstallationTechnicianView>.Ok(await TechnicianViewAsync(projectId, assignment, cancellationToken));
     }
 
     /// <summary>
-    /// SCHEDULED → IN_PROGRESS: accepted assignment, on/after the scheduled local start date and before the scheduled end
-    /// (afterwards INSTALLATION_SCHEDULE_EXPIRED: the Manager must reschedule), required checklist satisfied.
+    /// SCHEDULED → IN_PROGRESS: the responsible technician's assignment is ACCEPTED and every mandatory prerequisite (EVN, PCCC,
+    /// structural assessment) and required checklist item is satisfied. The scheduled dates are kept for planning only: starting
+    /// before the scheduled date or after the planned interval is allowed (business decision 2026-11-17). No evidence, asset or
+    /// completion report is needed to start.
     /// </summary>
     public Task<OperationResult<InstallationTechnicianView>> StartProjectAsync(Guid technicianUserId, Guid projectId, CancellationToken cancellationToken)
         => TechnicianActionAsync(technicianUserId, projectId, null, requireAccepted: true, async (p, _, now, token) =>
         {
             if (p.Status == InstallationStatuses.InProgress) return OperationResult<bool>.Fail(Noop, "already started");
             if (p.Status != InstallationStatuses.Scheduled) return Fail(InstallationErrorCodes.InvalidState, "Only scheduled projects can start.");
-            if (calendar.LocalDateOf(now) < calendar.LocalDateOf(p.ScheduledStartsAt!.Value))
-                return Fail(InstallationErrorCodes.TooEarlyToStart, "The installation can start on or after its scheduled start date.");
-            if (now >= p.ScheduledEndsAt!.Value)
-                return Fail(InstallationErrorCodes.ScheduleExpired, "The scheduled interval has ended. Ask the manager to reschedule before starting.");
             var blocking = BlockingChecklist(await unitOfWork.GetChecklistAsync(projectId, false, token));
             if (blocking.Count > 0) return OperationResult<bool>.Fail(InstallationErrorCodes.ChecklistIncomplete, "Required checklist items are not satisfied.", new { blocking });
             p.Status = InstallationStatuses.InProgress;
@@ -975,9 +996,8 @@ public sealed partial class InstallationHandlers(
         var involved = assignment.Status is AssignmentStatuses.Pending or AssignmentStatuses.Accepted or AssignmentStatuses.Completed;
         string? blocked = null;
         if (assignment.Status != AssignmentStatuses.Accepted) blocked = InstallationErrorCodes.AssignmentNotAccepted;
+        // Same rules, same order as StartProjectAsync (the scheduled dates do not block a start).
         else if (p.Status != InstallationStatuses.Scheduled) blocked = InstallationErrorCodes.InvalidState;
-        else if (calendar.LocalDateOf(time.GetUtcNow()) < calendar.LocalDateOf(p.ScheduledStartsAt!.Value)) blocked = InstallationErrorCodes.TooEarlyToStart;
-        else if (time.GetUtcNow() >= p.ScheduledEndsAt!.Value) blocked = InstallationErrorCodes.ScheduleExpired;
         else if (BlockingChecklist(await unitOfWork.GetChecklistAsync(projectId, false, cancellationToken)).Count > 0) blocked = InstallationErrorCodes.ChecklistIncomplete;
         var zone = p.OperationalZoneId is { } zoneId ? await unitOfWork.GetZoneSummaryAsync(zoneId, cancellationToken) : null;
         return new InstallationTechnicianView(p.Id, p.Status, assignment.Status, assignment.Id, Local(assignment.StartsAt)!.Value, Local(assignment.EndsAt)!.Value,

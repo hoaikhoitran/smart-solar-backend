@@ -27,6 +27,7 @@ to N × the limit), which is acceptable for cheap reads and writes.
 | `payment-create` | 5 / 10 min | user + contract | **cluster-wide** |
 | `payos-webhook` | 600 / min | source IP | per instance (abuse guard only) |
 | `iot-telemetry-ingest` (ESP32 readings, no user JWT) | 12 / min | device id + source IP | per instance (6 readings/min at the agreed 10 s cycle; the rest is margin) |
+| `RateLimiting:IotTelemetryIngestPerIp` (global limiter, ingest endpoint only) | 60 / min | source IP, all device ids together | per instance; rotating the device id in the URL no longer bypasses the limit (audit RL-01) |
 | `iot-read` / `iot-write` (device registry, bindings, measured reads) | 60 / min, 20 / min | user | per instance |
 | all other Installation Flow, file-read, chat-history and admin-read policies | see `appsettings.json` | user | per instance |
 | `system-settings-read` (scheduling settings + history, Admin/Manager) | 60 / min | user | per instance |
@@ -74,3 +75,14 @@ replayed valid delivery is deduplicated by payload hash, so it cannot apply a pa
   estimate (never forgiven, never reset by a restart). A completion arriving later is ignored (no double charge).
 * The FastAPI service additionally caps concurrent generations (8) and ingestions (2) per process and
   stops an ingestion at `RAG_INGEST_DEADLINE_SECONDS` (270 s, below the API's 300 s call timeout).
+
+
+## Client IP behind a reverse proxy (audit RL-03, 2026-11-16)
+
+Every IP partition (auth policies, anonymous catalog, IoT ingest, PayOS webhook) uses `HttpContext.Connection.RemoteIpAddress` after
+`UseForwardedHeaders`, which is now the first middleware. `X-Forwarded-For` / `X-Forwarded-Proto` are applied **only** when the
+connection comes from `ForwardedHeaders:KnownProxies` (addresses) or `ForwardedHeaders:KnownNetworks` (CIDR); only the last hop is
+used. When neither is configured, forwarding is **disabled**: ASP.NET Core would otherwise accept the headers from any client (its
+source check is skipped when both lists are empty), and every forged `X-Forwarded-For` would get a fresh rate-limit bucket. In
+`docker-compose.pull.yml` the API trusts the `edge` network of the built-in TLS proxy (`EDGE_SUBNET`, default `172.30.250.0/24`); with a
+host reverse proxy, set `ForwardedHeaders__KnownProxies__0` to the address the API sees for it.

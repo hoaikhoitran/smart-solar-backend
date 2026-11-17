@@ -10,15 +10,21 @@ using SmartSolar.Modules.Common.Features;
 
 namespace SmartSolar.Api.Controllers;
 
-/// <summary>Sales (owner) prepares, issues and publishes contracts; Sales or Managers review signed scans.</summary>
+/// <summary>
+/// Manager/Admin prepare, issue and publish contracts and confirm the customer's signature (2026-11-17 simplified flow). The DRAFT is created
+/// automatically when the customer accepts the quotation. Sales is consult-only: it reads the contracts of the requests it owns, nothing else.
+/// </summary>
 [ApiController]
 [Route("api")]
 [Authorize(Roles = $"{RoleCodes.Sales},{RoleCodes.Manager},{RoleCodes.Admin}")]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
 public sealed class SalesContractsController(ContractHandlers handlers, ContractDocumentHandlers documents) : OperationResultControllerBase
 {
+    /// <summary>
+    /// Only for an ACCEPTED quotation that has no contract yet (accepted before the automatic draft existed); otherwise 409 CONTRACT_ALREADY_EXISTS.
+    /// </summary>
     [HttpPost("quotations/{quotationId:guid}/contracts")]
-    [Authorize(Roles = RoleCodes.Sales)]
+    [Authorize(Roles = StaffRoles)]
     [EnableRateLimiting(RateLimitingExtensions.ContractWritePolicy)]
     public async Task<IActionResult> Create(Guid quotationId, [FromBody] ContractTermsRequest request, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await handlers.CreateAsync(user, quotationId, request.Terms, cancellationToken, request.WarrantyMonths), StatusCodes.Status201Created) : UnauthorizedFailure();
@@ -34,7 +40,7 @@ public sealed class SalesContractsController(ContractHandlers handlers, Contract
         => CurrentUserId() is { } user ? Respond(await handlers.GetForStaffAsync(user, IsManager(), contractId, cancellationToken)) : UnauthorizedFailure();
 
     [HttpPut("contracts/{contractId:guid}")]
-    [Authorize(Roles = RoleCodes.Sales)]
+    [Authorize(Roles = StaffRoles)]
     [EnableRateLimiting(RateLimitingExtensions.ContractWritePolicy)]
     public async Task<IActionResult> UpdateTerms(Guid contractId, [FromBody] ContractTermsRequest request, CancellationToken cancellationToken)
     {
@@ -44,17 +50,17 @@ public sealed class SalesContractsController(ContractHandlers handlers, Contract
     }
 
     [HttpPost("contracts/{contractId:guid}/issue")]
-    [Authorize(Roles = RoleCodes.Sales)]
+    [Authorize(Roles = StaffRoles)]
     [EnableRateLimiting(RateLimitingExtensions.ContractWritePolicy)]
     public async Task<IActionResult> Issue(Guid contractId, [FromBody] RevisionRequest request, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await handlers.IssueAsync(user, contractId, request.Revision, cancellationToken)) : UnauthorizedFailure();
 
     /// <summary>
-    /// Discards the quotation's initial DRAFT contract (Sales owner only, reason required). The row stays as DISCARDED; the survey request can
+    /// Discards the quotation's initial DRAFT contract (Manager/Admin, reason required). The row stays as DISCARDED; the survey request can
     /// then be closed. Issued, signed or paid contracts, and amendment drafts, cannot be discarded (409).
     /// </summary>
     [HttpPost("contracts/{contractId:guid}/discard")]
-    [Authorize(Roles = RoleCodes.Sales)]
+    [Authorize(Roles = StaffRoles)]
     [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.CustomerContracts.ContractView>), StatusCodes.Status200OK)]
     [EnableRateLimiting(RateLimitingExtensions.ContractWritePolicy)]
     public async Task<IActionResult> Discard(Guid contractId, [FromBody] DiscardContractRequest request, CancellationToken cancellationToken)
@@ -65,7 +71,7 @@ public sealed class SalesContractsController(ContractHandlers handlers, Contract
     }
 
     [HttpPut("contracts/{contractId:guid}/official-document")]
-    [Authorize(Roles = RoleCodes.Sales)]
+    [Authorize(Roles = StaffRoles)]
     [EnableRateLimiting(RateLimitingExtensions.ContractWritePolicy)]
     public async Task<IActionResult> AttachOfficialDocument(Guid contractId, [FromBody] OfficialDocumentRequest request, CancellationToken cancellationToken)
         => CurrentUserId() is { } user
@@ -100,30 +106,32 @@ public sealed class SalesContractsController(ContractHandlers handlers, Contract
     }
 
     [HttpPost("contracts/{contractId:guid}/publish")]
-    [Authorize(Roles = RoleCodes.Sales)]
+    [Authorize(Roles = StaffRoles)]
     [EnableRateLimiting(RateLimitingExtensions.ContractWritePolicy)]
     public async Task<IActionResult> Publish(Guid contractId, [FromBody] RevisionRequest request, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await handlers.PublishAsync(user, contractId, request.Revision, cancellationToken)) : UnauthorizedFailure();
 
     /// <summary>Internal review of the hand-signed scan (not electronic signature verification).</summary>
     [HttpPost("contracts/{contractId:guid}/review")]
-    [Authorize(Roles = $"{RoleCodes.Sales},{RoleCodes.Manager}")]
+    [Authorize(Roles = StaffRoles)]
     [EnableRateLimiting(RateLimitingExtensions.ContractWritePolicy)]
     public async Task<IActionResult> Review(Guid contractId, [FromBody] ContractReviewRequest request, CancellationToken cancellationToken)
     {
         if (CurrentUserId() is not { } user) return UnauthorizedFailure();
         var decision = request.Decision?.Trim().ToUpperInvariant() switch { "APPROVE" => ReviewDecision.Approve, "REJECT" => ReviewDecision.Reject, _ => (ReviewDecision?)null };
         if (decision is null) return Invalid("decision", "'decision' must be APPROVE or REJECT.");
-        return Respond(await handlers.ReviewAsync(user, IsInRole(RoleCodes.Manager), contractId, request.Revision, decision.Value, request.Reason, cancellationToken));
+        return Respond(await handlers.ReviewAsync(user, true, contractId, request.Revision, decision.Value, request.Reason, cancellationToken));
     }
 
     [HttpPost("contracts/{contractId:guid}/amendments")]
-    [Authorize(Roles = RoleCodes.Sales)]
+    [Authorize(Roles = StaffRoles)]
     [EnableRateLimiting(RateLimitingExtensions.ContractWritePolicy)]
     public async Task<IActionResult> Amend(Guid contractId, [FromBody] ContractTermsRequest request, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await handlers.CreateAmendmentAsync(user, contractId, request.Terms, cancellationToken, request.WarrantyMonths), StatusCodes.Status201Created) : UnauthorizedFailure();
 
     private bool IsManager() => IsInRole(RoleCodes.Manager) || IsInRole(RoleCodes.Admin);
+
+    private const string StaffRoles = $"{RoleCodes.Manager},{RoleCodes.Admin}";
 }
 
 /// <summary>Customer: published contracts (download metadata for the FE) and submission of the hand-signed scan.</summary>

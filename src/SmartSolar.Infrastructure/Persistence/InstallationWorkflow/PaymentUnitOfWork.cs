@@ -26,7 +26,8 @@ public sealed class PaymentUnitOfWork(AppDbContext db) : TransactionalUnitOfWork
 
     public async Task<IReadOnlyList<Guid>> ListAttemptsToReconcileAsync(DateTimeOffset checkedBefore, int limit, CancellationToken cancellationToken)
         => await Db.PaymentAttempts.AsNoTracking()
-            .Where(a => (a.Status == PaymentStatuses.Pending || a.Status == PaymentStatuses.Processing) && (a.LastReconciledAt == null || a.LastReconciledAt < checkedBefore))
+            .Where(a => (a.Status == PaymentStatuses.Pending || a.Status == PaymentStatuses.Processing) && a.Provider != PaymentProviders.Cash
+                        && (a.LastReconciledAt == null || a.LastReconciledAt < checkedBefore))
             .OrderBy(a => a.CreatedAt).Take(limit).Select(a => a.Id).ToListAsync(cancellationToken);
 
     public async Task<IReadOnlyList<PaymentEvent>> GetEventsAsync(Guid contractId, CancellationToken cancellationToken)
@@ -35,7 +36,7 @@ public sealed class PaymentUnitOfWork(AppDbContext db) : TransactionalUnitOfWork
     public Task<bool> WebhookSeenAsync(string payloadSha256, CancellationToken cancellationToken)
         => Db.PaymentWebhookEvents.AsNoTracking().AnyAsync(e => e.PayloadSha256 == payloadSha256, cancellationToken);
 
-    public async Task<bool> TryMarkContractPaidAsync(Guid contractId, DateTimeOffset now, CancellationToken cancellationToken)
+    public async Task<bool> TryMarkContractPaidAsync(Guid contractId, DateTimeOffset now, CancellationToken cancellationToken, Guid? actorUserId = null, string? detail = null)
     {
         var updated = await Db.CustomerContracts.Where(c => c.Id == contractId && c.Status == ContractStatuses.Signed)
             .ExecuteUpdateAsync(s => s.SetProperty(c => c.Status, ContractStatuses.Paid).SetProperty(c => c.PaidAt, now)
@@ -43,8 +44,9 @@ public sealed class PaymentUnitOfWork(AppDbContext db) : TransactionalUnitOfWork
         if (updated)
         {
             Db.ContractEvents.Add(new ContractEvent { Id = Guid.NewGuid(), ContractId = contractId, EventType = "STATUS_CHANGED", FromStatus = ContractStatuses.Signed,
-                ToStatus = ContractStatuses.Paid, ActorUserId = await Db.CustomerContracts.Where(c => c.Id == contractId).Select(c => c.CustomerUserId).FirstAsync(cancellationToken),
-                Detail = "full payment verified", CreatedAt = now });
+                ToStatus = ContractStatuses.Paid,
+                ActorUserId = actorUserId ?? await Db.CustomerContracts.Where(c => c.Id == contractId).Select(c => c.CustomerUserId).FirstAsync(cancellationToken),
+                Detail = detail ?? "full payment verified", CreatedAt = now });
         }
         return updated;
     }

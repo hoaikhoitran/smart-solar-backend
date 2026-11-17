@@ -223,7 +223,9 @@ Tính từ dấu thời gian lúc đọc, không có worker:
 | 404 | `IOT_DEVICE_NOT_FOUND` · `IOT_BINDING_NOT_FOUND` · `INSTALLATION_PROJECT_NOT_FOUND` | Sai id, hoặc khách xem công trình không phải của mình |
 | 409 | `IOT_DEVICE_NOT_BOUND` | Thiết bị hợp lệ nhưng chưa được Manager gắn |
 | 409 | `IOT_DEVICE_ID_TAKEN` · `IOT_DEVICE_ALREADY_BOUND` · `IOT_PROJECT_ALREADY_BOUND` · `IOT_PROJECT_NOT_BINDABLE` · `IOT_BINDING_NOT_ACTIVE` · `IOT_DEVICE_NOT_DISABLED` · `IOT_STALE_REVISION` | Xung đột trạng thái |
-| 429 | `AUTH_TOO_MANY_REQUESTS` (+ `Retry-After`) | Quá giới hạn: thiết bị gửi nhanh hơn 12 lần/phút |
+| 411 | `REQUEST_LENGTH_REQUIRED` | Body không khai báo `Content-Length` (chunked); ESP32 `HTTPClient.POST(String)` luôn gửi header này |
+| 413 | `REQUEST_BODY_TOO_LARGE` | Body lớn hơn 1 KiB (payload thật ~20 byte); bị từ chối trước khi đọc / parse |
+| 429 | `AUTH_TOO_MANY_REQUESTS` (+ `Retry-After`) | Quá giới hạn: thiết bị gửi nhanh hơn 12 lần/phút, **hoặc** cùng một IP nguồn gửi hơn 60 lần/phút cho mọi deviceId cộng lại (`RateLimiting__IotTelemetryIngestPerIp__PermitLimit`) |
 | 503 | `IOT_STORAGE_UNAVAILABLE` | Database lỗi / hết thời gian lúc lưu số đo; thiết bị gửi tiếp ở chu kỳ sau |
 | 503 | `FEATURE_PENDING_MIGRATION` · `SCHEMA_NOT_READY` | Feature tắt / migration chưa áp dụng |
 

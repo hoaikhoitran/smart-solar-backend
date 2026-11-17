@@ -5,22 +5,13 @@ using SmartSolar.Modules.Identity.Events;
 namespace SmartSolar.Infrastructure.Messaging.RabbitMQ.Consumers;
 
 /// <summary>
-/// Delivers the verification email. Exceptions are allowed to escape so
-/// MassTransit retries the message and, once retries are exhausted, moves it
-/// to the error queue.
+/// Delivers the verification email through <see cref="AuthLinkEmailDelivery"/> (outbox-aware: dedupe, hand-back to the outbox on SMTP
+/// failure, SENT on success). Messages without an outbox id keep the old behaviour: failures escape to the MassTransit retry.
 /// </summary>
-public sealed class EmailVerificationRequestedConsumer
+public sealed class EmailVerificationRequestedConsumer(VerificationEmailService verificationEmailService, AuthLinkEmailDelivery delivery)
     : IConsumer<EmailVerificationRequestedEvent>
 {
-    private readonly VerificationEmailService _verificationEmailService;
-
-    public EmailVerificationRequestedConsumer(VerificationEmailService verificationEmailService)
-    {
-        _verificationEmailService = verificationEmailService;
-    }
-
     public Task Consume(ConsumeContext<EmailVerificationRequestedEvent> context)
-        => _verificationEmailService.SendVerificationEmailAsync(
-            context.Message,
-            context.CancellationToken);
+        => delivery.DeliverAsync(context.Message.DispatchId, context.Message.UserId, context.Message.VerificationUrl,
+            token => verificationEmailService.SendVerificationEmailAsync(context.Message, token), context.CancellationToken);
 }

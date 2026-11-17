@@ -46,6 +46,7 @@ public static class DependencyInjection
 
         services.AddScoped<IIdentityUnitOfWork, IdentityUnitOfWork>();
         services.AddScoped<SmartSolar.Modules.Identity.PasswordRecovery.IPasswordResetDispatchStore, PasswordResetDispatchStore>();
+        services.AddScoped<SmartSolar.Infrastructure.Messaging.RabbitMQ.Consumers.AuthLinkEmailDelivery>();
         services.AddScoped<ICatalogUnitOfWork, CatalogUnitOfWork>();
         services.AddScoped<IProductImageUnitOfWork, ProductImageUnitOfWork>();
         services.AddScoped<SystemRoleSeeder>();

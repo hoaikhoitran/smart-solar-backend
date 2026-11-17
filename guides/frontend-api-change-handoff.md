@@ -1,5 +1,9 @@
 # Frontend API changes — business remediation (2026-10-30, updated 2026-10-31)
 
+> **2026-11-17 — simplified quotation / contract / payment flow supersedes sections 2, 7 and 9 below where they describe Sales quotation
+> editing, automatic generation, the review queue, pricing approval and Sales contract actions.** Those routes now answer
+> `410 ENDPOINT_RETIRED`. Read [simplified-commercial-flow.md](simplified-commercial-flow.md) (old → new API mapping and FE checklist).
+
 **2026-10-31: the approved business directions are in §0. Read it first.** §1–§6 are the 2026-10-30 changes and still apply,
 except where §0 says otherwise.
 
@@ -288,3 +292,33 @@ No request or response shape changed. Behaviour changes the FE must handle:
   means the request is stored, not that the email was sent: the email goes through a transactional outbox (`password_reset_dispatch`)
   and is retried while RabbitMQ is unavailable, until the link expires (`Auth:PasswordReset:LifetimeMinutes`, default 60). The FE text
   should say "if an account exists, an email is on its way" and offer a resend after a minute.
+
+
+## Production hardening (16/11/2026, audit SEC-01/02, INT-01/02, RL-01/02/03)
+
+No request or response shape changed.
+
+* Swagger is off outside Development unless `Swagger__Enabled=true`. The deployed API is reached only through HTTPS (TLS proxy);
+  plain HTTP on the API port is redirected to HTTPS and is not published on the Internet.
+* Registration, resend-verification, admin-created accounts, admin email change and admin recovery links now go through the same
+  outbox as password reset: an email accepted by the API is retried during broker or SMTP outages until its link expires. Admin
+  responses therefore report `activation.emailDelivery = "QUEUED"` whenever the link is stored (`"EMAIL_DELIVERY_DISABLED"` when the
+  environment has no RabbitMQ/SMTP); `"PUBLISH_FAILED"` is kept in the enum but is no longer produced. "QUEUED" still does not mean
+  "sent".
+* IoT ingest: new answers 411 / 413 (see `iot-energy-monitoring-api-integration.md` §5) and a per-IP 429.
+
+## Simplified quotation, contract and payment flow (17/11/2026)
+
+Breaking for the FE (details, state machines and the full mapping: [simplified-commercial-flow.md](simplified-commercial-flow.md)):
+
+* The surveying **technician** builds the quotation as a cart: `POST /api/technician/survey-requests/{id}/quotation`,
+  `POST|PUT|DELETE /api/technician/quotations/{id}/lines[/{lineId}]` (`{ revision, productId, quantity }` / `{ revision, quantity }`),
+  `POST /api/technician/quotations/{id}/issue`, `POST /api/technician/quotations/{id}/revisions`. No price, discount or tax input.
+* Every Sales quotation write, `…/quotations/generate`, `GET /api/quotations/pending-review` and the Manager pricing-approval routes → **410**.
+* Accepting a quotation creates the contract DRAFT. Contract actions (terms, issue, official PDF, publish, review, discard, amendments)
+  are **Manager/Admin** only; Sales gets 403. `CONTRACT_DOCUMENT` uploads: Manager/Admin.
+* Payment: new `POST /api/customers/me/contracts/{id}/payments/cash` (customer) and `POST /api/contracts/{id}/payments/cash/confirm`
+  `{ amount, receiptReference, evidenceFileId, note? }` (Manager/Admin, file purpose `PAYMENT_EVIDENCE`). `GET /api/contracts/{id}/payments`
+  is Manager/Admin only. Payment views add `paymentState`, `method`, `amountPaid`; `expiresAt` is null for CASH.
+* `automaticQuotationOutcome` of the on-site survey is always null (deprecated).
+

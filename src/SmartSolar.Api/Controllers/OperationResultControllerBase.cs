@@ -47,6 +47,14 @@ public abstract class OperationResultControllerBase : ControllerBase
             _ => null,
         };
 
+    /// <summary>Error code of endpoints retired by the 2026-11-17 simplified quotation / contract / payment flow (HTTP 410).</summary>
+    public const string EndpointRetiredCode = "ENDPOINT_RETIRED";
+
+    /// <summary>410 Gone for a retired endpoint, naming its replacement (the legacy data stays readable through the read endpoints).</summary>
+    protected IActionResult Retired(string replacement)
+        => StatusCode(StatusCodes.Status410Gone, ApiResponse<object>.Failure(new ApiError(EndpointRetiredCode,
+            "This endpoint was retired by the simplified quotation, contract and payment flow (2026-11-17).", new { replacement }), HttpContext.GetTraceId()));
+
     protected IActionResult Invalid(string field, string message)
         => BadRequest(ApiResponse<object>.Failure(new ApiError(CommonErrorCodes.ValidationFailed, "One or more fields are invalid.",
             new Dictionary<string, string[]> { [field] = [message] }), HttpContext.GetTraceId()));
@@ -63,6 +71,7 @@ public abstract class OperationResultControllerBase : ControllerBase
                 or "RAG_MESSAGE_TOO_LONG" or "PAYMENT_AMOUNT_NOT_SUPPORTED" or "AFTER_SALES_REASON_REQUIRED" or "CONTRACT_WARRANTY_REQUIRED"
                 or "CONTRACT_TERMS_REQUIRED" or "INSTALLATION_CHECKLIST_WAIVER_REASON_REQUIRED" or "QUOTATION_PRICE_MISSING"
                 or "INSTALLATION_EXEMPTION_EVIDENCE_REQUIRED" or "CONTRACT_DISCARD_REASON_REQUIRED"
+                or "INSTALLATION_SCHEDULE_AGREEMENT_REQUIRED" or "INSTALLATION_SCHEDULE_REASON_REQUIRED" or "INSTALLATION_SCHEDULE_INVALID"
             || code.StartsWith("SYSTEM_SETTING_", StringComparison.Ordinal))
             return StatusCodes.Status400BadRequest;
         if (code is CommonErrorCodes.Forbidden or "FILE_NOT_OWNED" or "FILE_UPLOAD_NOT_ALLOWED" or "IOT_DEVICE_DISABLED") return StatusCodes.Status403Forbidden;
@@ -72,7 +81,9 @@ public abstract class OperationResultControllerBase : ControllerBase
         if (code is "SITE_LOCATION_REQUIRED" or "NO_ZONE_COVERAGE" or "ZONE_NOT_SERVICEABLE"
             or "ADMINISTRATIVE_LOCATION_UNKNOWN" or "ADMINISTRATIVE_LOCATION_SUPERSEDED" or "ADMINISTRATIVE_LOCATION_OUT_OF_SERVICE_AREA")
             return StatusCodes.Status422UnprocessableEntity;
-        if (code is CommonErrorCodes.FeaturePendingMigration or "PAYMENT_PROVIDER_NOT_CONFIGURED" or "RAG_SERVICE_UNAVAILABLE" or "FILE_STORAGE_UNAVAILABLE"
+        // The assistant took longer than the API waits (no answer was stored).
+        if (code is "RAG_TIMEOUT") return StatusCodes.Status504GatewayTimeout;
+        if (code is CommonErrorCodes.FeaturePendingMigration or "PAYMENT_PROVIDER_NOT_CONFIGURED" or "RAG_SERVICE_UNAVAILABLE" or "RAG_ADVISOR_UNAVAILABLE" or "RAG_BUSY" or "FILE_STORAGE_UNAVAILABLE"
             or "STORAGE_NOT_CONFIGURED" or "STORAGE_UNAVAILABLE" or "STORAGE_PUBLIC_URL_NOT_CONFIGURED" or "IOT_STORAGE_UNAVAILABLE")
             return StatusCodes.Status503ServiceUnavailable;
         // The stored object of a verified file was deleted from storage: gone for good.

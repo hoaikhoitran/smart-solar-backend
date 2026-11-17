@@ -135,6 +135,9 @@ public sealed class PasswordChangeTokenRevocationTests
 
         Assert.Equal((known.StatusCode, (await DataOf(known)).ToString()), (unknown.StatusCode, (await DataOf(unknown)).ToString()));
         await using var db = factory.CreateDbContext();
-        Assert.Equal(1, await db.PasswordResetDispatches.CountAsync());
+        // The outbox also carries the registration's verification email: count the password-reset rows only (kind = token type).
+        Assert.Equal(1, await db.PasswordResetDispatches
+            .Join(db.AuthActionTokens, d => d.ActionTokenId, t => t.Id, (d, t) => t.Type)
+            .CountAsync(t => t == AuthActionTokenType.PasswordReset));
     }
 }

@@ -172,7 +172,7 @@ public sealed class SimulationEndpointsTests
         var preSurvey = await factory.SeedAsync(PreSurveyTestContext.NewPreSurvey(customer.Site.Id, Modules.PreSurvey.Enums.PreSurveyStatus.Submitted));
         var (sale, sales) = await factory.SeedUserClientAsync(RoleCodes.Sales);
         var request = await factory.SeedAsync(PreSurveyTestContext.NewSurveyRequest(
-            preSurvey.Id, Modules.PreSurvey.Enums.SurveyRequestStatus.Pending, sale.Id, assignedAt: DateTimeOffset.UtcNow));
+            preSurvey.Id, Modules.PreSurvey.Enums.SurveyRequestStatus.Pending, sale.Id, assignedAt: DateTimeOffset.UtcNow, propertySiteId: preSurvey.PropertyId));
 
         var detail = await DataOf(await sales.GetAsync($"/api/survey-requests/{request.Id}"));
 
@@ -230,14 +230,19 @@ public sealed class SimulationEndpointsTests
     }
 
     [Fact]
-    public async Task Simulation_without_a_surface_is_unprocessable()
+    public async Task Simulation_without_the_surface_step_runs_on_the_declared_usable_area_and_submit_needs_no_surface()
     {
         using var factory = new AuthApiFactory();
         var (customer, preSurveyId, productId) = await SeedDraftAsync(factory);
 
-        await AssertFailureAsync(
-            await customer.Client.PostAsJsonAsync($"/api/pre-surveys/{preSurveyId}/simulations", FlushBody(0, productId)),
-            (HttpStatusCode)422, SimulationErrorCodes.SurfaceNotDefined);
+        // No PUT …/surface: the simulation still runs (declared usable area as the surface).
+        var created = await customer.Client.PostAsJsonAsync($"/api/pre-surveys/{preSurveyId}/simulations", FlushBody(0, productId));
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        // The old surface endpoints keep working for clients that still use them.
+        Assert.Equal(HttpStatusCode.OK, (await customer.Client.GetAsync($"/api/pre-surveys/{preSurveyId}/surface")).StatusCode);
+        // Submit never needed the surface step.
+        var submitted = await customer.Client.PostAsync($"/api/pre-surveys/{preSurveyId}/submit", null);
+        Assert.True(submitted.IsSuccessStatusCode, await submitted.Content.ReadAsStringAsync());
     }
 
     [Fact]

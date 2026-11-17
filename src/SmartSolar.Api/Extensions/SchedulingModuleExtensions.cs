@@ -36,6 +36,7 @@ public static class SchedulingModuleExtensions
 
         services.AddScoped<GetSurveySlotsHandler>();
         services.AddScoped<BookSurveyAppointmentHandler>();
+        services.AddScoped<DirectSurveyBookingHandler>();
         services.AddScoped<RescheduleSurveyAppointmentHandler>();
         services.AddScoped<CancelSurveyAppointmentHandler>();
         services.AddScoped<CustomerSurveyRequestQueries>();

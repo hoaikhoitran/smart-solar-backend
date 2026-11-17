@@ -135,6 +135,9 @@ public interface IKnowledgeUnitOfWork : ITransactionalUnitOfWork
     Task<IReadOnlyList<ChatSession>> ListSessionsAsync(Guid userId, CancellationToken cancellationToken);
     Task<IReadOnlyList<ChatMessage>> GetMessagesAsync(Guid sessionId, int? lastCount, CancellationToken cancellationToken);
     Task<ChatMessage?> FindMessageByClientIdAsync(Guid sessionId, string clientMessageId, CancellationToken cancellationToken);
+
+    /// <summary>The user's question with this client message id in any of their sessions (a retried first question has no session id yet).</summary>
+    Task<ChatMessage?> FindUserMessageByClientIdAsync(Guid userId, string clientMessageId, CancellationToken cancellationToken);
     Task<ChatMessage?> FindReplyAsync(Guid userMessageId, CancellationToken cancellationToken);
     Task<IReadOnlyList<ChatCitation>> GetCitationsAsync(IReadOnlyCollection<Guid> messageIds, CancellationToken cancellationToken);
 

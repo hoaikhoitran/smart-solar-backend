@@ -51,7 +51,8 @@ public sealed class SolarSimulationUnitOfWork : ISolarSimulationUnitOfWork
                 x.TotalAreaM2,
                 x.Property.Latitude,
                 x.Property.Longitude,
-                null))
+                null,
+                x.UsableAreaM2))
             .FirstOrDefaultAsync(cancellationToken);
         if (source is null)
         {
