@@ -11,7 +11,7 @@ public sealed class InstallationUnitOfWork(AppDbContext db) : TransactionalUnitO
 {
     private async Task<List<PaidContractSource>> ContractsAsync(IQueryable<CustomerContract> contracts, CancellationToken cancellationToken)
         => (await contracts.AsNoTracking()
-                .Join(Db.SurveyRequests, c => c.SurveyRequestId, s => s.Id, (c, s) => new { c, s.PreSurvey.PropertyId })
+                .Join(Db.SurveyRequests, c => c.SurveyRequestId, s => s.Id, (c, s) => new { c, PropertyId = s.PropertySiteId })
                 .Join(Db.PropertySites, x => x.PropertyId, p => p.Id, (x, p) => new
                 {
                     x.c.Id, x.c.ContractNumber, x.c.Status, x.c.SurveyRequestId, x.c.CustomerUserId, SiteId = p.Id, p.Latitude, p.Longitude, x.c.TotalAmount, x.c.PaidAt,
@@ -19,6 +19,64 @@ public sealed class InstallationUnitOfWork(AppDbContext db) : TransactionalUnitO
                 .ToListAsync(cancellationToken))
             .Select(x => new PaidContractSource(x.Id, x.ContractNumber, x.Status, x.SurveyRequestId, x.CustomerUserId, x.SiteId, x.Latitude, x.Longitude, x.TotalAmount, x.PaidAt))
             .ToList();
+
+    private IQueryable<ScheduleContractInfo> ScheduleContracts(IQueryable<CustomerContract> contracts)
+        => contracts.Join(Db.SurveyRequests, c => c.SurveyRequestId, s => s.Id, (c, s) => new { c, s.PropertySiteId })
+            .Join(Db.PropertySites, x => x.PropertySiteId, p => p.Id, (x, p) => new ScheduleContractInfo(
+                x.c.Id, x.c.ContractNumber, x.c.Status, x.c.SurveyRequestId, x.c.CustomerUserId, x.PropertySiteId,
+                Db.OnSiteSurveyReports.Where(r => r.SurveyRequestId == x.c.SurveyRequestId && r.Status == SmartSolar.Modules.OnSiteSurveys.OnSiteSurveyStatuses.Completed)
+                    .OrderByDescending(r => r.CompletedAt).Select(r => (Guid?)r.TechnicianUserId).FirstOrDefault(),
+                p.Name,
+                Db.UserAccounts.Where(u => u.Id == x.c.CustomerUserId).Select(u => u.FullName).FirstOrDefault() ?? ""));
+
+    public Task<ScheduleContractInfo?> GetScheduleContractAsync(Guid contractId, CancellationToken cancellationToken)
+        => ScheduleContracts(Db.CustomerContracts.AsNoTracking().Where(c => c.Id == contractId)).FirstOrDefaultAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<ScheduleContractInfo>> ListScheduleContractsForTechnicianAsync(Guid technicianUserId, CancellationToken cancellationToken)
+        => (await ScheduleContracts(Db.CustomerContracts.AsNoTracking().Where(c => (c.Status == ContractStatuses.Signed || c.Status == ContractStatuses.Paid)
+                    && Db.OnSiteSurveyReports.Any(r => r.SurveyRequestId == c.SurveyRequestId && r.TechnicianUserId == technicianUserId
+                        && r.Status == SmartSolar.Modules.OnSiteSurveys.OnSiteSurveyStatuses.Completed)))
+                .ToListAsync(cancellationToken))
+            // The responsible technician is the one of the LATEST completed report.
+            .Where(c => c.SurveyTechnicianUserId == technicianUserId)
+            .OrderBy(c => c.ContractNumber, StringComparer.Ordinal).ToList();
+
+    public Task<InstallationProject?> FindProjectByContractAsync(Guid contractId, CancellationToken cancellationToken)
+        => Db.InstallationProjects.AsNoTracking().FirstOrDefaultAsync(p => p.ContractId == contractId, cancellationToken);
+
+    public Task<InstallationScheduleProposal?> GetLiveProposalAsync(Guid contractId, bool track, CancellationToken cancellationToken)
+        => (track ? Db.InstallationScheduleProposals : Db.InstallationScheduleProposals.AsNoTracking())
+            .FirstOrDefaultAsync(p => p.ContractId == contractId && (p.Status == InstallationScheduleStatuses.Planned
+                || p.Status == InstallationScheduleStatuses.Confirmed || p.Status == InstallationScheduleStatuses.RescheduleRequired), cancellationToken);
+
+    public Task<InstallationScheduleProposal?> FindProposalAsync(Guid proposalId, bool track, CancellationToken cancellationToken)
+        => (track ? Db.InstallationScheduleProposals : Db.InstallationScheduleProposals.AsNoTracking()).FirstOrDefaultAsync(p => p.Id == proposalId, cancellationToken);
+
+    public async Task<IReadOnlyList<InstallationScheduleProposal>> ListProposalsAsync(Guid? contractId, Guid? technicianUserId, Guid? customerUserId, string? status,
+        CancellationToken cancellationToken)
+        => (await Db.InstallationScheduleProposals.AsNoTracking()
+                .Where(p => (contractId == null || p.ContractId == contractId) && (technicianUserId == null || p.TechnicianUserId == technicianUserId)
+                            && (customerUserId == null || p.CustomerUserId == customerUserId) && (status == null || p.Status == status))
+                .ToListAsync(cancellationToken))
+            .OrderByDescending(p => p.CreatedAt).ToList();
+
+    public async Task<IReadOnlyList<Guid>> ListContractsWithPlannedProposalAndPaidAsync(int limit, CancellationToken cancellationToken)
+        => await Db.InstallationScheduleProposals.AsNoTracking()
+            .Where(p => p.Status == InstallationScheduleStatuses.Planned
+                        && Db.CustomerContracts.Any(c => c.Id == p.ContractId && c.Status == ContractStatuses.Paid))
+            .OrderBy(p => p.CreatedAt).Select(p => p.ContractId).Take(limit).ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<Guid>> ListExpiredPlannedProposalIdsAsync(DateTimeOffset nowUtc, int limit, CancellationToken cancellationToken)
+        => await Db.InstallationScheduleProposals.AsNoTracking()
+            .Where(p => p.Status == InstallationScheduleStatuses.Planned && p.StartsAt <= nowUtc
+                        && !Db.CustomerContracts.Any(c => c.Id == p.ContractId && c.Status == ContractStatuses.Paid))
+            .OrderBy(p => p.StartsAt).Select(p => p.Id).Take(limit).ToListAsync(cancellationToken);
+
+    public async Task LockContractAsync(Guid contractId, CancellationToken cancellationToken)
+    {
+        if (!Db.Database.IsNpgsql()) return;
+        await Db.Database.ExecuteSqlInterpolatedAsync($"SELECT 1 FROM customer_contract WHERE id = {contractId} FOR UPDATE", cancellationToken);
+    }
 
     public async Task<PaidContractSource?> GetContractAsync(Guid contractId, CancellationToken cancellationToken)
         => (await ContractsAsync(Db.CustomerContracts.Where(c => c.Id == contractId), cancellationToken)).FirstOrDefault();
@@ -85,7 +143,7 @@ public sealed class InstallationUnitOfWork(AppDbContext db) : TransactionalUnitO
 
     public async Task<SimulatedProductionView?> GetSelectedSimulationAsync(Guid surveyRequestId, CancellationToken cancellationToken)
     {
-        var simulationId = await Db.SurveyRequests.AsNoTracking().Where(s => s.Id == surveyRequestId).Select(s => s.PreSurvey.SelectedSimulationId).FirstOrDefaultAsync(cancellationToken);
+        var simulationId = await Db.SurveyRequests.AsNoTracking().Where(s => s.Id == surveyRequestId).Select(s => s.PreSurvey!.SelectedSimulationId).FirstOrDefaultAsync(cancellationToken);
         if (simulationId is null) return null;
         return await Db.SelectedSimulations.AsNoTracking().Where(s => s.SimulationId == simulationId)
             .Select(s => new SimulatedProductionView(s.SimulationId, s.SelectedAt, s.AlgorithmVersion, s.EnergyStatus, s.PanelCount, s.InstalledCapacityKwp,

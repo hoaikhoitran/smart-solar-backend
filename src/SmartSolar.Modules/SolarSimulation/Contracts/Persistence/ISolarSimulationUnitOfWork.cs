@@ -18,7 +18,8 @@ public sealed record SimulationSource(
     decimal? DeclaredTotalAreaM2,
     decimal? Latitude,
     decimal? Longitude,
-    IReadOnlyList<Guid>? AssignedTechnicianUserIds = null);
+    IReadOnlyList<Guid>? AssignedTechnicianUserIds = null,
+    decimal? DeclaredUsableAreaM2 = null);
 
 public enum SelectSimulationOutcome
 {

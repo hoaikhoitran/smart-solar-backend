@@ -121,7 +121,7 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
     {
         var row = await _db.SurveyRequests.AsNoTracking()
             .Where(x => x.Id == surveyRequestId)
-            .Select(x => new { x.Id, x.PreSurveyId, x.PreSurvey.PropertyId, x.PreSurvey.Property.Customer.UserId, x.AssignedSaleId, x.Status })
+            .Select(x => new { x.Id, x.PreSurveyId, PropertyId = x.PropertySiteId, x.PropertySite.Customer.UserId, x.AssignedSaleId, x.Status })
             .FirstOrDefaultAsync(cancellationToken);
         if (row is null) return null;
 
@@ -233,8 +233,8 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
     public async Task<IReadOnlyList<CustomerSurveyRequestRow>> ListCustomerSurveyRequestsAsync(Guid customerUserId, CancellationToken cancellationToken)
     {
         var requests = await _db.SurveyRequests.AsNoTracking()
-            .Where(x => x.PreSurvey.Property.Customer.UserId == customerUserId)
-            .Select(x => new { x.Id, x.PreSurveyId, x.PreSurvey.PropertyId, x.PreSurvey.Property.Name, x.Status, x.SubmittedAt, x.ScheduledAt })
+            .Where(x => x.PropertySite.Customer.UserId == customerUserId)
+            .Select(x => new { x.Id, x.PreSurveyId, PropertyId = x.PropertySiteId, x.PropertySite.Name, x.Source, x.Status, x.SubmittedAt, x.ScheduledAt })
             .ToListAsync(cancellationToken);
         if (requests.Count == 0) return [];
 
@@ -251,7 +251,7 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
                 var appointment = appointments.FirstOrDefault(a => a.SurveyRequestId == r.Id);
                 var technicianName = appointment?.AssignedTechnicianUserId is { } tid && names.TryGetValue(tid, out var n) ? n : null;
                 return new CustomerSurveyRequestRow(r.Id, r.PreSurveyId, r.PropertyId, r.Name, r.Status, r.SubmittedAt, r.ScheduledAt,
-                    appointment is null ? null : Snapshot(appointment), technicianName);
+                    appointment is null ? null : Snapshot(appointment), technicianName, r.Source);
             })
             .ToList();
     }
@@ -297,9 +297,13 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
             {
                 x.Id,
                 x.Status,
-                User = x.PreSurvey.Property.Customer.User,
-                Property = x.PreSurvey.Property,
+                User = x.PropertySite.Customer.User,
+                Property = x.PropertySite,
                 PreSurvey = x.PreSurvey,
+                x.PreSurveyId,
+                x.Source,
+                x.ContactName,
+                x.ContactPhone,
             })
             .Select(x => new
             {
@@ -318,17 +322,20 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
                 x.Property.Longitude,
                 x.Property.InstallationSurfaceType,
                 x.Property.SurfaceMaterial,
-                PreSurveyId = x.PreSurvey.Id,
-                x.PreSurvey.TotalAreaM2,
-                x.PreSurvey.UsableAreaM2,
-                x.PreSurvey.SurfaceLengthM,
-                x.PreSurvey.SurfaceWidthM,
-                x.PreSurvey.TiltDegree,
-                x.PreSurvey.AzimuthDegree,
-                x.PreSurvey.HasObstruction,
-                x.PreSurvey.Obstacles,
-                x.PreSurvey.SelectedSimulationId,
-                x.PreSurvey.GeometryVersion,
+                x.PreSurveyId,
+                x.Source,
+                x.ContactName,
+                x.ContactPhone,
+                x.PreSurvey!.TotalAreaM2,
+                x.PreSurvey!.UsableAreaM2,
+                x.PreSurvey!.SurfaceLengthM,
+                x.PreSurvey!.SurfaceWidthM,
+                x.PreSurvey!.TiltDegree,
+                x.PreSurvey!.AzimuthDegree,
+                x.PreSurvey!.HasObstruction,
+                x.PreSurvey!.Obstacles,
+                x.PreSurvey!.SelectedSimulationId,
+                GeometryVersion = (int?)x.PreSurvey!.GeometryVersion,
             })
             .FirstOrDefaultAsync(cancellationToken);
         if (job is null) return null;
@@ -346,7 +353,7 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
         return new TechnicianJobDetail(Snapshot(appointment), job.Id, job.Status, job.FullName, job.Phone, job.Email,
             job.PropertyId, job.PropertyName, job.Province, job.District, job.Ward, job.StreetLine, job.Latitude, job.Longitude,
             job.InstallationSurfaceType, job.SurfaceMaterial, job.PreSurveyId, job.TotalAreaM2, job.UsableAreaM2, job.SurfaceLengthM,
-            job.SurfaceWidthM, job.TiltDegree, job.AzimuthDegree, job.HasObstruction, job.Obstacles, simulation);
+            job.SurfaceWidthM, job.TiltDegree, job.AzimuthDegree, job.HasObstruction, job.Obstacles, simulation, job.Source, job.ContactName, job.ContactPhone);
     }
 
     public async Task<IReadOnlyList<ScheduleEntry>> GetTechnicianScheduleAsync(
@@ -398,7 +405,7 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
 
         var requestIds = rows.Select(r => r.a.SurveyRequestId).ToList();
         var surveys = await _db.SurveyRequests.AsNoTracking().Where(s => requestIds.Contains(s.Id))
-            .Select(s => new { s.Id, s.PreSurvey.TotalAreaM2, s.PreSurvey.UsableAreaM2 }).ToDictionaryAsync(s => s.Id, cancellationToken);
+            .Select(s => new { s.Id, s.PreSurvey!.TotalAreaM2, s.PreSurvey!.UsableAreaM2 }).ToDictionaryAsync(s => s.Id, cancellationToken);
         var recordedZoneIds = rows.Where(r => r.a.OperationalZoneId != null).Select(r => r.a.OperationalZoneId!.Value).Distinct().ToList();
         var recorded = await _db.OperationalZones.AsNoTracking().Where(z => recordedZoneIds.Contains(z.Id)).ToDictionaryAsync(z => z.Id, cancellationToken);
 
@@ -421,11 +428,11 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
             {
                 a,
                 s.AssignedSaleId,
-                CustomerName = s.PreSurvey.Property.Customer.User.FullName,
-                s.PreSurvey.Property.Name,
-                s.PreSurvey.Property.Province,
-                s.PreSurvey.Property.District,
-                s.PreSurvey.Property.Ward,
+                CustomerName = s.PropertySite.Customer.User.FullName,
+                s.PropertySite.Name,
+                s.PropertySite.Province,
+                s.PropertySite.District,
+                s.PropertySite.Ward,
             })
             .ToListAsync(cancellationToken);
         var zoneIds = rows.Where(r => r.a.OperationalZoneId != null).Select(r => r.a.OperationalZoneId!.Value).Distinct().ToList();
@@ -508,6 +515,38 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
             .Take(limit)
             .Select(a => a.Id)
             .ToListAsync(cancellationToken);
+
+    public async Task<DirectSurveyRequestOpening> OpenDirectSurveyRequestAsync(SurveyRequest candidate, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await ExecuteInTransactionAsync(async token =>
+                {
+                    await LockPropertySiteAsync(candidate.PropertySiteId, token);
+                    var open = await _db.SurveyRequests.AsNoTracking()
+                        .Where(s => s.PropertySiteId == candidate.PropertySiteId
+                                    && (s.Status == SurveyRequestStatus.Pending || s.Status == SurveyRequestStatus.Scheduled))
+                        .OrderBy(s => s.SubmittedAt)
+                        .Select(s => new { s.Id, s.Source })
+                        .FirstOrDefaultAsync(token);
+                    if (open is not null)
+                        return (new DirectSurveyRequestOpening(open.Id, false, open.Source == SurveyRequestSources.DirectBooking ? null : open.Source), false);
+                    _db.SurveyRequests.Add(candidate);
+                    await _db.SaveChangesAsync(token);
+                    return (new DirectSurveyRequestOpening(candidate.Id, true, null), true);
+                }, cancellationToken);
+            }
+            catch (DbUpdateException) when (attempt == 0)
+            {
+                // SQLite has no row lock: a concurrent identical request hit the partial unique index. Re-read once and reuse it.
+            }
+        }
+    }
+
+    public Task<string?> GetUserPhoneAsync(Guid userId, CancellationToken cancellationToken)
+        => _db.UserAccounts.AsNoTracking().Where(u => u.Id == userId).Select(u => u.Phone).FirstOrDefaultAsync(cancellationToken);
 
     public Task<T> ExecuteInTransactionAsync<T>(Func<CancellationToken, Task<(T Result, bool Commit)>> work, CancellationToken cancellationToken)
     {

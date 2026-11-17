@@ -155,16 +155,16 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
             .Select(x => new PendingSurveyRequestItem(
                 x.Id,
                 x.PreSurveyId,
-                x.PreSurvey.Property.Customer.User.FullName,
-                x.PreSurvey.Property.Name,
-                x.PreSurvey.Property.Province,
-                x.PreSurvey.Property.District,
-                x.PreSurvey.Property.InstallationSurfaceType,
-                x.PreSurvey.TotalAreaM2,
-                x.PreSurvey.UsableAreaM2,
+                x.PropertySite.Customer.User.FullName,
+                x.PropertySite.Name,
+                x.PropertySite.Province,
+                x.PropertySite.District,
+                x.PropertySite.InstallationSurfaceType,
+                x.PreSurvey!.TotalAreaM2,
+                x.PreSurvey!.UsableAreaM2,
                 x.SubmittedAt,
-                x.PreSurvey.Property.Ward,
-                _db.AdministrativeCommunes.Where(c => c.Code == x.PreSurvey.Property.CommuneCode).Select(c => c.Name).FirstOrDefault(),
+                x.PropertySite.Ward,
+                _db.AdministrativeCommunes.Where(c => c.Code == x.PropertySite.CommuneCode).Select(c => c.Name).FirstOrDefault(),
                 null))
             .ToListAsync(cancellationToken);
         // Unclaimed queue: the appointment summary without technician details.
@@ -235,16 +235,16 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
             .Select(x => new MySurveyRequestItem(
                 x.Id,
                 x.PreSurveyId,
-                x.PreSurvey.Property.Customer.User.FullName,
-                x.PreSurvey.Property.Name,
-                x.PreSurvey.Property.Province,
-                x.PreSurvey.Property.District,
+                x.PropertySite.Customer.User.FullName,
+                x.PropertySite.Name,
+                x.PropertySite.Province,
+                x.PropertySite.District,
                 x.Status,
                 x.SubmittedAt,
                 x.AssignedAt,
                 x.ScheduledAt,
-                x.PreSurvey.Property.Ward,
-                _db.AdministrativeCommunes.Where(c => c.Code == x.PreSurvey.Property.CommuneCode).Select(c => c.Name).FirstOrDefault(),
+                x.PropertySite.Ward,
+                _db.AdministrativeCommunes.Where(c => c.Code == x.PropertySite.CommuneCode).Select(c => c.Name).FirstOrDefault(),
                 null))
             .ToListAsync(cancellationToken);
         // The caller owns these requests: the technician of each appointment is included.
@@ -266,27 +266,27 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
             x.PreSurveyId,
             x.AssignedSaleId,
 
-            x.PreSurvey.Property.Customer.User.FullName,
-            x.PreSurvey.Property.Customer.User.Phone,
-            x.PreSurvey.Property.Customer.User.Email,
+            x.PropertySite.Customer.User.FullName,
+            x.PropertySite.Customer.User.Phone,
+            x.PropertySite.Customer.User.Email,
 
-            x.PreSurvey.Property.Name,
-            x.PreSurvey.Property.Province,
-            x.PreSurvey.Property.District,
-            x.PreSurvey.Property.Ward,
-            x.PreSurvey.Property.StreetLine,
+            x.PropertySite.Name,
+            x.PropertySite.Province,
+            x.PropertySite.District,
+            x.PropertySite.Ward,
+            x.PropertySite.StreetLine,
 
-            x.PreSurvey.Property.Latitude,
-            x.PreSurvey.Property.Longitude,
+            x.PropertySite.Latitude,
+            x.PropertySite.Longitude,
 
-            x.PreSurvey.Property.InstallationSurfaceType,
-            x.PreSurvey.Property.SurfaceMaterial,
+            x.PropertySite.InstallationSurfaceType,
+            x.PropertySite.SurfaceMaterial,
 
-            x.PreSurvey.TotalAreaM2,
-            x.PreSurvey.UsableAreaM2,
-            x.PreSurvey.TiltDegree,
-            x.PreSurvey.AzimuthDegree,
-            x.PreSurvey.HasObstruction,
+            x.PreSurvey!.TotalAreaM2,
+            x.PreSurvey!.UsableAreaM2,
+            x.PreSurvey!.TiltDegree,
+            x.PreSurvey!.AzimuthDegree,
+            x.PreSurvey!.HasObstruction,
 
             x.Status,
             x.SubmittedAt,
@@ -297,8 +297,8 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
 
             null,
             null),
-           x.PreSurvey.SelectedSimulationId,
-           x.PreSurvey.GeometryVersion
+           x.PreSurvey!.SelectedSimulationId,
+           GeometryVersion = (int?)x.PreSurvey!.GeometryVersion
        })
         .FirstOrDefaultAsync(cancellationToken);
 

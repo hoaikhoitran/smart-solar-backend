@@ -104,7 +104,8 @@ public class AuthEndpointsTests
     [Fact]
     public async Task Verify_email_returns_200_for_a_valid_token()
     {
-        using var factory = new AuthApiFactory();
+        // Broker + SMTP configured: the verification email is published (otherwise it waits in the outbox until it expires).
+        using var factory = new AuthApiFactory { EmailCanDeliver = true };
         var client = factory.CreateClient();
         await client.PostAsJsonAsync("/api/auth/register", RegisterBody());
         var rawToken = factory.Publisher.Published

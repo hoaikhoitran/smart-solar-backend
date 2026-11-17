@@ -4,7 +4,7 @@ namespace SmartSolar.Modules.PreSurvey.GetSurveyRequestDetail;
 
 public sealed record SurveyRequestDetail(
     Guid SurveyRequestId,
-    Guid PreSurveyId,
+    Guid? PreSurveyId,
     Guid? AssignedSaleId,
 
     string CustomerName,

@@ -5,7 +5,7 @@ namespace SmartSolar.Modules.PreSurvey.GetPendingSurveyRequests;
 
 public sealed record PendingSurveyRequestItem(
     Guid SurveyRequestId,
-    Guid PreSurveyId,
+    Guid? PreSurveyId,
     string CustomerName,
     string PropertyName,
     string Province,

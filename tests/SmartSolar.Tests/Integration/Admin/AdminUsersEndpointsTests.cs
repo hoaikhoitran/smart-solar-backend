@@ -343,7 +343,7 @@ public sealed class AdminUsersEndpointsTests
         await GrantRoleAsync(factory, sales.Id, RoleCodes.Sales);
         var customer = await factory.SeedCustomerWithSiteAsync();
         var preSurvey = await factory.SeedAsync(PreSurveyTestContext.NewPreSurvey(customer.Site.Id, PreSurveyStatus.Submitted));
-        var request = PreSurveyTestContext.NewSurveyRequest(preSurvey.Id);
+        var request = PreSurveyTestContext.NewSurveyRequest(preSurvey.Id, propertySiteId: preSurvey.PropertyId);
         request.AssignedSaleId = sales.Id;
         request.Status = SurveyRequestStatus.Pending;
         await factory.SeedAsync(request);
@@ -422,7 +422,7 @@ public sealed class AdminUsersEndpointsTests
         await GrantRoleAsync(factory, technician.Id, RoleCodes.Technician);
         var customer = await factory.SeedCustomerWithSiteAsync();
         var preSurvey = await factory.SeedAsync(PreSurveyTestContext.NewPreSurvey(customer.Site.Id, PreSurveyStatus.Submitted));
-        var request = await factory.SeedAsync(PreSurveyTestContext.NewSurveyRequest(preSurvey.Id));
+        var request = await factory.SeedAsync(PreSurveyTestContext.NewSurveyRequest(preSurvey.Id, propertySiteId: preSurvey.PropertyId));
         var now = DateTimeOffset.UtcNow;
         await factory.SeedAsync(new TechnicianProfile { UserId = technician.Id, IsSchedulingActive = true, CreatedAt = now, UpdatedAt = now });
         await factory.SeedAsync(new TechnicianAppointment

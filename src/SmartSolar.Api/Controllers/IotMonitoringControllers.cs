@@ -155,9 +155,14 @@ public sealed class IotTelemetryController(IotTelemetryHandlers telemetry) : Ope
 {
     public const string DeviceKeyHeader = "X-Device-Key";
 
+    /// <summary>The firmware payload is about 20 bytes; anything above 1 KiB is refused before it is read (audit RL-02).</summary>
+    public const int MaxBodyBytes = 1024;
+
     [HttpPost]
     [ProducesResponseType(typeof(ApiResponse<IotIngestView>), StatusCodes.Status201Created)]
     [EnableRateLimiting(RateLimitingExtensions.IotTelemetryIngestPolicy)]
+    [RequestSizeLimit(MaxBodyBytes)]
+    [BoundedRequestBody(MaxBodyBytes)]
     public async Task<IActionResult> Ingest(string deviceId, [FromBody] TelemetryReadingRequest request, CancellationToken cancellationToken)
     {
         NoStore();

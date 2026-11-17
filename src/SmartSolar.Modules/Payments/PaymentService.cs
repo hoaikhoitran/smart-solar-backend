@@ -21,13 +21,25 @@ public sealed class PaymentOptions
     public string CancelUrl { get; set; } = "";
 }
 
+/// <param name="Method">ONLINE (payment gateway) or CASH.</param>
+/// <param name="ExpiresAt">Link expiry of an ONLINE attempt; null for CASH (a cash choice does not expire, the customer or staff cancel it).</param>
+/// <param name="ProviderReference">Gateway transaction reference, or the receipt reference of a confirmed CASH payment.</param>
+/// <param name="AmountPaid">Amount the gateway reported or the cash amount confirmed.</param>
+/// <param name="ConfirmedByUserId">CASH, staff view only: the Manager/Admin who recorded the receipt.</param>
+/// <param name="EvidenceFileId">CASH, staff view only: the receipt evidence file.</param>
+/// <param name="ConfirmationNote">CASH, staff view only.</param>
 public sealed record PaymentAttemptView(Guid PaymentAttemptId, Guid? ContractId, long OrderCode, decimal Amount, string Currency, string Status,
-    string? CheckoutUrl, string? QrCode, DateTimeOffset ExpiresAt, DateTimeOffset? PaidAt, string? ProviderReference, string? FailureReason, DateTimeOffset CreatedAt);
+    string? CheckoutUrl, string? QrCode, DateTimeOffset? ExpiresAt, DateTimeOffset? PaidAt, string? ProviderReference, string? FailureReason, DateTimeOffset CreatedAt,
+    string Method = "ONLINE", decimal? AmountPaid = null, Guid? ConfirmedByUserId = null, Guid? EvidenceFileId = null, string? ConfirmationNote = null);
+
+/// <summary>What a Manager/Admin records when the customer paid the contract in cash.</summary>
+public sealed record CashConfirmation(decimal Amount, string? ReceiptReference, Guid EvidenceFileId, string? Note);
 
 public sealed record PaymentEventView(Guid PaymentAttemptId, string EventType, string? FromStatus, string? ToStatus, string Source, string? Detail, DateTimeOffset CreatedAt);
 
+/// <param name="PaymentState">Derived state for the FE (<see cref="ContractPaymentStates"/>); the contract stays SIGNED until it is PAID.</param>
 public sealed record ContractPaymentView(Guid ContractId, string ContractStatus, decimal Amount, string Currency, PaymentAttemptView? Current,
-    IReadOnlyList<PaymentAttemptView> Attempts, IReadOnlyList<PaymentEventView>? History);
+    IReadOnlyList<PaymentAttemptView> Attempts, IReadOnlyList<PaymentEventView>? History, string PaymentState = ContractPaymentStates.NotPayable);
 
 public sealed record WebhookResult(bool Accepted, string Outcome);
 
@@ -47,9 +59,32 @@ public sealed record WebhookResult(bool Accepted, string Outcome);
 /// contract plus service packages, or a repair / maintenance quotation alone. Their items are settled by
 /// <see cref="IPaymentItemSettlement"/> in the confirmation transaction, using the provider-confirmed transaction time.
 /// </para>
+/// <para>
+/// CASH (2026-11-17): the customer may instead choose to pay a SIGNED contract in cash. The choice is a CASH attempt that holds the same
+/// "one payable attempt per contract" slot as an online link (so the two can never run together); it is not a payment. Only a Manager/Admin
+/// marks it PAID by recording who, when, the exact contract amount, a unique receipt reference and a verified evidence file. Online money that
+/// arrives late for a contract already paid in cash is REFUND_REQUIRED and opens a manual refund request (no automatic refund).
+/// </para>
+/// <param name="files">Verifies cash evidence files (production wiring; without it cash confirmation is refused).</param>
+/// <param name="paidFollowUp">Runs after a transaction that made a contract PAID has committed (the technician-agreed installation schedule is
+/// confirmed there). Its failure never undoes or fails the payment; the installation sweep retries.</param>
 public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGateway gateway, PaymentOptions options, TimeProvider time, ILogger<PaymentService> logger,
-    IPaymentItemSettlement? settlement = null, Func<DateTimeOffset, long>? orderCodes = null)
+    IPaymentItemSettlement? settlement = null, Func<DateTimeOffset, long>? orderCodes = null, Files.FileService? files = null,
+    Installations.IContractPaidFollowUp? paidFollowUp = null)
 {
+    private async Task FollowUpPaidAsync(Guid contractId, CancellationToken cancellationToken)
+    {
+        if (paidFollowUp is null) return;
+        try
+        {
+            await paidFollowUp.ContractPaidAsync(contractId, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Post-payment follow-up for contract {ContractId} failed; the installation sweep retries it.", contractId);
+        }
+    }
+
     /// <summary>Tries for a new attempt whose random order-code digits repeat one already issued in the same second.</summary>
     private const int OrderCodeTries = 3;
 
@@ -65,9 +100,12 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AmountNotSupported,
                 $"The contract total must be a whole VND amount up to {options.MaxAmountVnd:N0}; it is never split into several payments.");
 
-        // Reuse a live attempt; settle stale ones with the provider first.
+        // Reuse a live attempt; settle stale ones with the provider first. A live CASH choice blocks online payment until it is cancelled.
         foreach (var attempt in (await unitOfWork.ListAttemptsAsync(contractId, cancellationToken)).Where(a => PaymentStatuses.Payable.Contains(a.Status)))
         {
+            if (attempt.Provider == PaymentProviders.Cash)
+                return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CashSelected,
+                    "Cash payment was chosen and waits for confirmation by the company. Cancel the cash choice first to pay online.");
             if (attempt.ExpiresAt > time.GetUtcNow()) return OperationResult<PaymentAttemptView>.Ok(View(attempt));
             var settled = await ReconcileAsync(attempt.Id, force: true, cancellationToken);
             if (settled?.Status == PaymentStatuses.Paid) return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid.");
@@ -104,11 +142,13 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
             }
             catch (PersistenceConflictException)
             {
-                // A concurrent request created the payable attempt first: return it (never two links).
+                // A concurrent request created the payable attempt first: return it (never two links). A concurrent CASH choice won the slot.
                 var live = (await unitOfWork.ListAttemptsAsync(contractId, cancellationToken)).FirstOrDefault(a => PaymentStatuses.Payable.Contains(a.Status));
-                return live is not null
-                    ? OperationResult<PaymentAttemptView>.Ok(View(live))
-                    : OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid or being paid.");
+                return live is null
+                    ? OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid or being paid.")
+                    : live.Provider == PaymentProviders.Cash
+                        ? OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CashSelected, "Cash payment was chosen meanwhile; cancel it first to pay online.")
+                        : OperationResult<PaymentAttemptView>.Ok(View(live));
             }
         }
 
@@ -220,7 +260,25 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
 
     private async Task<OperationResult<PaymentAttemptView>> RecordLinkAsync(Guid attemptId, PaymentLinkResult link, CancellationToken cancellationToken)
     {
-        var result = await unitOfWork.ExecuteInTransactionAsync<PaymentAttempt?>(async token =>
+        // A concurrent reconciliation or cash-choice check may touch the same attempt (revision bump) between the read and the save:
+        // re-read and apply the gateway's answer again (bounded), so the created link is never lost and no conflict escapes.
+        PaymentAttempt? result = null;
+        for (var tries = 0; ; tries++)
+        {
+            try
+            {
+                result = await RecordLinkOnceAsync(attemptId, link, cancellationToken);
+                break;
+            }
+            catch (PersistenceConflictException) when (tries < 4)
+            {
+            }
+        }
+        return LinkOutcome(result, link);
+    }
+
+    private Task<PaymentAttempt?> RecordLinkOnceAsync(Guid attemptId, PaymentLinkResult link, CancellationToken cancellationToken)
+        => unitOfWork.ExecuteInTransactionAsync<PaymentAttempt?>(async token =>
         {
             var attempt = await unitOfWork.FindAttemptAsync(attemptId, true, token);
             if (attempt is null || attempt.Status != PaymentStatuses.Pending) return (attempt, false);
@@ -245,13 +303,13 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
             return (attempt, true);
         }, cancellationToken);
 
-        return link.Status switch
+    private OperationResult<PaymentAttemptView> LinkOutcome(PaymentAttempt? result, PaymentLinkResult link)
+        => link.Status switch
         {
             GatewayCallStatus.Succeeded => OperationResult<PaymentAttemptView>.Ok(View(result!)),
             GatewayCallStatus.NotConfigured => OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ProviderNotConfigured, "Online payment is not configured in this environment."),
             _ => OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ProviderError, "The payment provider could not create a payment link. Please try again."),
         };
-    }
 
     /// <summary>Customer cancels the current link (if the provider reports it already paid, it is confirmed instead).</summary>
     public async Task<OperationResult<PaymentAttemptView>> CancelCurrentAsync(Guid customerUserId, Guid contractId, CancellationToken cancellationToken)
@@ -261,6 +319,12 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ContractNotFound, "Contract was not found.");
         var live = (await unitOfWork.ListAttemptsAsync(contractId, cancellationToken)).FirstOrDefault(a => PaymentStatuses.Payable.Contains(a.Status));
         if (live is null) return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AttemptNotFound, "There is no payment in progress.");
+        if (live.Provider == PaymentProviders.Cash)
+        {
+            // Withdrawing the cash choice (e.g. to pay online). Conditional on the attempt still being PENDING: a confirmation that won stays PAID.
+            var withdrawn = await TransitionAsync(live.Id, PaymentStatuses.Cancelled, PaymentSources.Customer, "cash choice cancelled by customer", cancellationToken);
+            return OperationResult<PaymentAttemptView>.Ok(View(withdrawn ?? live));
+        }
 
         var settled = await ReconcileAsync(live.Id, force: true, cancellationToken);
         if (settled is not null && !PaymentStatuses.Payable.Contains(settled.Status)) return OperationResult<PaymentAttemptView>.Ok(View(settled));
@@ -285,6 +349,149 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
         => await unitOfWork.GetContractAsync(contractId, cancellationToken) is null
             ? OperationResult<ContractPaymentView>.Fail(PaymentErrorCodes.ContractNotFound, "Contract was not found.")
             : OperationResult<ContractPaymentView>.Ok(await ViewForContractAsync(contractId, includeHistory: true, cancellationToken));
+
+    /// <summary>
+    /// The customer chooses to pay the SIGNED contract in cash. Not a payment: the contract stays SIGNED and its payment state becomes
+    /// AWAITING_CASH_CONFIRMATION until a Manager/Admin records the receipt. An online link in progress is first checked with the gateway
+    /// (paid → already paid; still open → refused until the customer cancels it), so the two methods never overlap. Idempotent.
+    /// </summary>
+    public async Task<OperationResult<PaymentAttemptView>> SelectCashAsync(Guid customerUserId, Guid contractId, CancellationToken cancellationToken)
+    {
+        var contract = await unitOfWork.GetContractAsync(contractId, cancellationToken);
+        if (contract is null || contract.CustomerUserId != customerUserId)
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ContractNotFound, "Contract was not found.");
+        if (contract.Status == "PAID") return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid.");
+        if (contract.Status != "SIGNED")
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ContractNotSigned, "Payment opens after the signed contract is approved.");
+        if (contract.Currency != "VND" || contract.TotalAmount <= 0 || decimal.Truncate(contract.TotalAmount) != contract.TotalAmount)
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AmountNotSupported, "The contract total must be a whole VND amount.");
+
+        foreach (var live in (await unitOfWork.ListAttemptsAsync(contractId, cancellationToken)).Where(a => PaymentStatuses.Payable.Contains(a.Status)))
+        {
+            if (live.Provider == PaymentProviders.Cash) return OperationResult<PaymentAttemptView>.Ok(View(live));
+            // An online link is open: ask the gateway first (money may already have arrived).
+            var settled = await ReconcileAsync(live.Id, force: true, cancellationToken);
+            if (settled?.Status == PaymentStatuses.Paid) return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid.");
+            if (settled is not null && PaymentStatuses.Payable.Contains(settled.Status))
+                return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CheckoutInProgress,
+                    "An online payment is in progress. Cancel it first (its status is checked with the payment provider) to pay in cash.");
+        }
+
+        var now = time.GetUtcNow();
+        var created = new PaymentAttempt
+        {
+            Id = Guid.NewGuid(), ContractId = contractId, CustomerUserId = customerUserId, Provider = PaymentProviders.Cash, Amount = contract.TotalAmount,
+            Currency = "VND", Status = PaymentStatuses.Pending,
+            // Not a deadline: a cash choice stays open until it is confirmed or cancelled (the view shows no expiry for CASH).
+            ExpiresAt = now.AddYears(1), CreatedAt = now, UpdatedAt = now,
+        };
+        for (var tries = 1; ; tries++)
+        {
+            AssignOrderCode(created, now);
+            try
+            {
+                await unitOfWork.ExecuteInTransactionAsync<bool>(async token =>
+                {
+                    unitOfWork.AddAttempt(created);
+                    AddEvent(created, "CASH_SELECTED", null, PaymentStatuses.Pending, PaymentSources.Customer, "awaiting cash confirmation", now);
+                    await unitOfWork.SaveChangesAsync(token);
+                    return (true, true);
+                }, cancellationToken);
+                return OperationResult<PaymentAttemptView>.Ok(View(created));
+            }
+            catch (PersistenceConflictException ex) when (IsOrderCodeCollision(ex) && tries < OrderCodeTries)
+            {
+            }
+            catch (PersistenceConflictException)
+            {
+                // The payable slot was taken concurrently (an online link, or the same cash choice twice).
+                var live = (await unitOfWork.ListAttemptsAsync(contractId, cancellationToken)).FirstOrDefault(a => PaymentStatuses.Payable.Contains(a.Status));
+                return live?.Provider == PaymentProviders.Cash
+                    ? OperationResult<PaymentAttemptView>.Ok(View(live))
+                    : OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CheckoutInProgress, "Another payment for this contract started meanwhile.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// A Manager/Admin records the cash the customer paid: the CASH attempt becomes PAID and the contract SIGNED → PAID in one transaction.
+    /// The amount must be exactly the contract total (no partial or over-payment), the receipt reference unique, and the evidence a VERIFIED
+    /// PAYMENT_EVIDENCE file uploaded by the confirming staff member. A second confirmation is refused (409), never applied twice.
+    /// </summary>
+    public async Task<OperationResult<PaymentAttemptView>> ConfirmCashAsync(Guid staffUserId, Guid contractId, CashConfirmation input, CancellationToken cancellationToken)
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (input.Amount <= 0 || decimal.Truncate(input.Amount) != input.Amount) errors["amount"] = ["A positive whole VND amount is required."];
+        var receipt = input.ReceiptReference?.Trim();
+        if (string.IsNullOrEmpty(receipt) || receipt.Length > 100) errors["receiptReference"] = ["A receipt reference of at most 100 characters is required."];
+        if (input.EvidenceFileId == Guid.Empty) errors["evidenceFileId"] = ["The receipt evidence file is required."];
+        if (input.Note is { Length: > 500 }) errors["note"] = ["At most 500 characters."];
+        if (errors.Count > 0) return OperationResult<PaymentAttemptView>.Fail(CommonErrorCodes.ValidationFailed, "One or more fields are invalid.", errors);
+
+        var contract = await unitOfWork.GetContractAsync(contractId, cancellationToken);
+        if (contract is null) return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ContractNotFound, "Contract was not found.");
+        if (contract.Status == "PAID") return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid.");
+        var cash = (await unitOfWork.ListAttemptsAsync(contractId, cancellationToken))
+            .FirstOrDefault(a => a.Provider == PaymentProviders.Cash && a.Status == PaymentStatuses.Pending);
+        if (cash is null)
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CashNotSelected, "The customer has not chosen cash payment for this contract (or it was cancelled).");
+        if (input.Amount != cash.Amount || input.Amount != contract.TotalAmount)
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CashAmountMismatch,
+                $"The confirmed amount must be exactly the contract total {contract.TotalAmount:0} VND; partial or over-payments are not recorded.",
+                new { expected = contract.TotalAmount, received = input.Amount });
+        if (files is null)
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ProviderNotConfigured, "Cash confirmation needs file verification, which is not configured.");
+        var evidence = await files.RequireVerifiedAsync([input.EvidenceFileId], Files.FilePurposes.PaymentEvidence, staffUserId, cancellationToken);
+        if (!evidence.Succeeded) return evidence.As<PaymentAttemptView>();
+
+        try
+        {
+            var outcome = await unitOfWork.ExecuteInTransactionAsync<OperationResult<PaymentAttempt>>(async token =>
+            {
+                var attempt = await unitOfWork.FindAttemptAsync(cash.Id, true, token);
+                if (attempt is null || attempt.Status != PaymentStatuses.Pending)
+                    return (attempt?.Status == PaymentStatuses.Paid
+                        ? OperationResult<PaymentAttempt>.Fail(PaymentErrorCodes.AlreadyPaid, "This cash payment was already confirmed.")
+                        : OperationResult<PaymentAttempt>.Fail(PaymentErrorCodes.CashNotSelected, "The cash choice was cancelled meanwhile."), false);
+                var now = time.GetUtcNow();
+                // SIGNED → PAID is the single decisive, conditional step: if anything else paid the contract first, nothing is written.
+                if (!await unitOfWork.TryMarkContractPaidAsync(contractId, now, token, staffUserId, $"cash received; receipt {receipt}"))
+                    return (await unitOfWork.IsContractPaidAsync(contractId, token)
+                        ? OperationResult<PaymentAttempt>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid.")
+                        : OperationResult<PaymentAttempt>.Fail(PaymentErrorCodes.ContractNotSigned, "The contract is no longer SIGNED."), false);
+                var from = attempt.Status;
+                attempt.Status = PaymentStatuses.Paid;
+                attempt.AmountPaid = input.Amount;
+                attempt.PaidAt = now;
+                attempt.ProviderReference = receipt;
+                attempt.ProviderTransactionAt = now;
+                attempt.ConfirmedByUserId = staffUserId;
+                attempt.EvidenceFileId = input.EvidenceFileId;
+                attempt.ConfirmationNote = Truncate(input.Note?.Trim(), 500);
+                attempt.UpdatedAt = now;
+                attempt.Revision++;
+                foreach (var item in await unitOfWork.GetItemsAsync(attempt.Id, true, token)) item.Status = PaymentItemStatuses.Settled;
+                AddEvent(attempt, "CASH_CONFIRMED", from, PaymentStatuses.Paid, PaymentSources.Staff, $"by {staffUserId}; receipt {receipt}; amount {input.Amount:0}", now);
+                await unitOfWork.SaveChangesAsync(token);
+                return (OperationResult<PaymentAttempt>.Ok(attempt), true);
+            }, cancellationToken);
+            if (outcome.Succeeded) await FollowUpPaidAsync(contractId, cancellationToken);
+            return outcome.Succeeded ? OperationResult<PaymentAttemptView>.Ok(View(outcome.Value!, staff: true)) : outcome.As<PaymentAttemptView>();
+        }
+        catch (PersistenceConflictException ex) when (ex.Kind == PersistenceConflictException.UniqueViolation
+                                                     && (ex.Constraint?.Contains("provider_reference", StringComparison.Ordinal) ?? false))
+        {
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CashReceiptDuplicate, "This receipt reference was already used for another cash payment.");
+        }
+        catch (PersistenceConflictException)
+        {
+            // A concurrent confirmation or cancellation of the same attempt won.
+            var now = await unitOfWork.FindAttemptAsync(cash.Id, false, cancellationToken);
+            return now?.Status == PaymentStatuses.Paid
+                ? OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This cash payment was already confirmed.")
+                : OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CashNotSelected, "The cash choice changed meanwhile. Reload and try again.");
+        }
+    }
 
     /// <summary>
     /// Provider webhook. Invalid signatures are rejected; deliveries are deduplicated by payload hash;
@@ -346,7 +553,8 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
     public async Task<PaymentAttempt?> ReconcileAsync(Guid attemptId, bool force, CancellationToken cancellationToken)
     {
         var attempt = await unitOfWork.FindAttemptAsync(attemptId, false, cancellationToken);
-        if (attempt is null || !PaymentStatuses.Payable.Contains(attempt.Status)) return attempt;
+        // A CASH choice has nothing to ask a gateway about: only a Manager/Admin confirmation settles it.
+        if (attempt is null || !PaymentStatuses.Payable.Contains(attempt.Status) || attempt.Provider == PaymentProviders.Cash) return attempt;
         var now = time.GetUtcNow();
         if (!force && attempt.LastReconciledAt is { } last && last > now.AddSeconds(-options.ReconcileThrottleSeconds) && attempt.ExpiresAt > now) return attempt;
 
@@ -379,13 +587,17 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
     {
         for (var tries = 0; tries < 3; tries++)
         {
+            Guid? paidContract = null;
             try
             {
-                return await unitOfWork.ExecuteInTransactionAsync<PaymentAttempt?>(async token =>
+                var confirmed = await unitOfWork.ExecuteInTransactionAsync<PaymentAttempt?>(async token =>
                 {
+                    paidContract = null;
                     var attempt = await unitOfWork.FindAttemptAsync(attemptId, true, token);
                     if (attempt is null) return (null, false);
                     if (attempt.Status is PaymentStatuses.Paid or PaymentStatuses.RefundRequired or PaymentStatuses.ReviewRequired) return (attempt, false);
+                    // Gateway confirmations (webhook / reconciliation) never settle a CASH attempt (order codes are internal; defence in depth).
+                    if (attempt.Provider == PaymentProviders.Cash) return (attempt, false);
                     var now = time.GetUtcNow();
                     var from = attempt.Status;
                     attempt.ProviderReference = Truncate(reference, 100);
@@ -412,6 +624,7 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
                     }
                     else if (await unitOfWork.TryMarkContractPaidAsync(attempt.ContractId.Value, now, token))
                     {
+                        paidContract = attempt.ContractId;
                         attempt.Status = PaymentStatuses.Paid;
                         attempt.PaidAt = now;
                         AddEvent(attempt, "PAID", from, attempt.Status, source, reference, now);
@@ -437,6 +650,8 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
                         logger.LogWarning("Payment attempt {AttemptId} needs manual handling: {Status}.", attempt.Id, attempt.Status);
                     return (attempt, true);
                 }, cancellationToken);
+                if (paidContract is { } contractId) await FollowUpPaidAsync(contractId, cancellationToken);
+                return confirmed;
             }
             catch (PersistenceConflictException)
             {
@@ -512,21 +727,34 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
     private async Task<ContractPaymentView> ViewForContractAsync(Guid contractId, bool includeHistory, CancellationToken cancellationToken)
     {
         var contract = (await unitOfWork.GetContractAsync(contractId, cancellationToken))!;
-        var attempts = (await unitOfWork.ListAttemptsAsync(contractId, cancellationToken)).OrderByDescending(a => a.CreatedAt).Select(View).ToList();
+        var attempts = (await unitOfWork.ListAttemptsAsync(contractId, cancellationToken)).OrderByDescending(a => a.CreatedAt)
+            .Select(a => View(a, staff: includeHistory)).ToList();
         var current = attempts.FirstOrDefault(a => a.Status == PaymentStatuses.Paid) ?? attempts.FirstOrDefault(a => PaymentStatuses.Payable.Contains(a.Status));
         var history = includeHistory
             ? (await unitOfWork.GetEventsAsync(contractId, cancellationToken)).Select(e => new PaymentEventView(e.PaymentAttemptId, e.EventType, e.FromStatus, e.ToStatus, e.Source, e.Detail, e.CreatedAt)).ToList()
             : null;
-        return new ContractPaymentView(contractId, contract.Status, contract.TotalAmount, contract.Currency, current, attempts, history);
+        var state = contract.Status == "PAID" ? ContractPaymentStates.Paid
+            : contract.Status != "SIGNED" ? ContractPaymentStates.NotPayable
+            : current is { Status: not PaymentStatuses.Paid } live ? (live.Method == PaymentProviders.Cash ? ContractPaymentStates.AwaitingCashConfirmation : ContractPaymentStates.OnlineInProgress)
+            : ContractPaymentStates.AwaitingPayment;
+        return new ContractPaymentView(contractId, contract.Status, contract.TotalAmount, contract.Currency, current, attempts, history, state);
     }
 
     private void AddEvent(PaymentAttempt a, string type, string? from, string? to, string source, string? detail, DateTimeOffset now)
         => unitOfWork.AddEvent(new PaymentEvent { Id = Guid.NewGuid(), PaymentAttemptId = a.Id, ContractId = a.ContractId, EventType = type, FromStatus = from,
             ToStatus = to, Source = source, Detail = Truncate(detail, 300), CreatedAt = now });
 
-    public static PaymentAttemptView View(PaymentAttempt a) => new(a.Id, a.ContractId, a.OrderCode, a.Amount, a.Currency, a.Status,
-        PaymentStatuses.Payable.Contains(a.Status) ? a.CheckoutUrl : null, PaymentStatuses.Payable.Contains(a.Status) ? a.QrCode : null,
-        a.ExpiresAt, a.PaidAt, a.ProviderReference, a.FailureReason, a.CreatedAt);
+    public static PaymentAttemptView View(PaymentAttempt a) => View(a, staff: false);
+
+    /// <param name="staff">Adds who recorded a cash payment, its evidence file and note.</param>
+    public static PaymentAttemptView View(PaymentAttempt a, bool staff)
+    {
+        var cash = a.Provider == PaymentProviders.Cash;
+        return new(a.Id, a.ContractId, a.OrderCode, a.Amount, a.Currency, a.Status,
+            PaymentStatuses.Payable.Contains(a.Status) ? a.CheckoutUrl : null, PaymentStatuses.Payable.Contains(a.Status) ? a.QrCode : null,
+            cash ? null : a.ExpiresAt, a.PaidAt, a.ProviderReference, a.FailureReason, a.CreatedAt, cash ? PaymentProviders.Cash : "ONLINE", a.AmountPaid,
+            staff ? a.ConfirmedByUserId : null, staff ? a.EvidenceFileId : null, staff ? a.ConfirmationNote : null);
+    }
 
     /// <summary>Positive, below 2^53 (PayOS limit), unique by index; time-prefixed with random low digits.</summary>
     private static long NewOrderCode(DateTimeOffset now) => (now.ToUnixTimeSeconds() % 1_000_000_000L) * 10_000L + RandomNumberGenerator.GetInt32(0, 10_000);

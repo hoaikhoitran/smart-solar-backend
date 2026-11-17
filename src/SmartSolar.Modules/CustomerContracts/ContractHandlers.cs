@@ -29,25 +29,61 @@ public sealed record ContractDiscardView(DateTimeOffset DiscardedAt, Guid Discar
 public enum ReviewDecision { Approve = 1, Reject = 2 }
 
 /// <summary>
-/// Contract lifecycle: DRAFT → ISSUED (content frozen, canonical hash fixed) → AWAITING_SIGNATURE
-/// (official PDF verified and confirmed by Sales against the hash) → UNDER_REVIEW (customer submitted
-/// a hand-signed scan of exactly that PDF) → SIGNED (Sales/Manager approved) → PAID (payment module).
+/// Contract lifecycle: DRAFT (created automatically when the customer accepts the quotation) → ISSUED (content frozen, canonical hash
+/// fixed) → AWAITING_SIGNATURE (official PDF verified and confirmed against the hash) → UNDER_REVIEW (customer submitted a hand-signed
+/// scan of exactly that PDF) → SIGNED (signature confirmed) → PAID (payment module: online or confirmed cash).
 /// Rejection: UNDER_REVIEW → SIGNATURE_REJECTED, after which the customer submits again. Amendments
 /// create a new version that supersedes the previous one when issued; PAID contracts are final.
-/// Every transition is a conditional update with an audit event.
+/// Since 2026-11-17 every staff step is a Manager/Admin step (the API restricts the roles); Sales is consult-only and has read access to the
+/// contracts of the requests it owns. Every transition is a conditional update with an audit event.
 /// </summary>
-public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService files, TimeProvider time)
+public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService files, TimeProvider time) : Quotations.IAcceptedQuotationContracts
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    // ------------------------------------------------------------------ Sales
+    // ------------------------------------------------------------------ Automatic draft (customer acceptance)
 
+    /// <summary>
+    /// Called inside the quotation-acceptance transaction (after ISSUED → ACCEPTED): adds the contract DRAFT built from the accepted snapshot
+    /// (lines, totals, customer data, default installation warranty). Idempotent: a quotation that already has a contract gets no second one.
+    /// </summary>
+    public async Task<OperationResult<bool>> CreateDraftForAcceptedQuotationAsync(Guid quotationId, Guid actorUserId, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        var quotation = await unitOfWork.GetQuotationAsync(quotationId, cancellationToken);
+        if (quotation?.Status != "ACCEPTED")
+            return Fail(ContractErrorCodes.QuotationNotAccepted, "Contracts are created only from a quotation the customer accepted.");
+        if ((await unitOfWork.ListByQuotationAsync(quotationId, cancellationToken)).Count > 0) return OperationResult<bool>.Ok(false);
+        var (_, defaultMonths) = await unitOfWork.GetInstallationWarrantyOptionsAsync(cancellationToken);
+        var contract = NewContract(quotation, terms: null, defaultMonths, now);
+        unitOfWork.AddContract(contract);
+        Event(contract, "CREATED", null, ContractStatuses.Draft, actorUserId,
+            $"automatically from accepted quotation {quotation.QuoteNumber} v{quotation.QuotationVersion}", now);
+        unitOfWork.AddEvent(new ContractEvent { Id = Guid.NewGuid(), ContractId = contract.Id, EventType = "AUTO_DRAFTED", ActorUserId = actorUserId,
+            Detail = "drafted on customer acceptance; Manager/Admin review and issue it", CreatedAt = now });
+        return OperationResult<bool>.Ok(true);
+    }
+
+    private static CustomerContract NewContract(AcceptedQuotationSource quotation, string? terms, int? warrantyMonths, DateTimeOffset now) => new()
+    {
+        Id = Guid.NewGuid(), ContractNumber = NewNumber(now), Version = 1, QuotationId = quotation.QuotationId, QuotationVersion = quotation.QuotationVersion,
+        SurveyRequestId = quotation.SurveyRequestId, CustomerUserId = quotation.CustomerUserId, SalesUserId = null, Status = ContractStatuses.Draft,
+        Currency = quotation.Currency, TotalAmount = quotation.TotalAmount, PricingSnapshot = quotation.PricingSnapshotJson,
+        CustomerSnapshot = quotation.CustomerSnapshotJson ?? "{}", Terms = Trim(terms, 8000) ?? quotation.Terms, WarrantyMonths = warrantyMonths,
+        CreatedAt = now, UpdatedAt = now,
+    };
+
+    // ------------------------------------------------------------------ Manager / Admin
+
+    /// <summary>
+    /// Manual creation for an ACCEPTED quotation that has no contract yet (quotations accepted before the automatic draft existed).
+    /// Normally the draft already exists (409 CONTRACT_ALREADY_EXISTS).
+    /// </summary>
     /// <param name="warrantyMonths">Installation warranty from the Admin's active options; omitted = the default option. A draft without months cannot be issued.</param>
-    public async Task<OperationResult<ContractView>> CreateAsync(Guid salesUserId, Guid quotationId, string? terms, CancellationToken cancellationToken,
+    public async Task<OperationResult<ContractView>> CreateAsync(Guid staffUserId, Guid quotationId, string? terms, CancellationToken cancellationToken,
         int? warrantyMonths = null)
     {
         var quotation = await unitOfWork.GetQuotationAsync(quotationId, cancellationToken);
-        if (quotation is null || quotation.AssignedSaleId != salesUserId)
+        if (quotation is null)
             return OperationResult<ContractView>.Fail(ContractErrorCodes.NotFound, "Quotation was not found.");
         if (quotation.Status != "ACCEPTED")
             return OperationResult<ContractView>.Fail(ContractErrorCodes.QuotationNotAccepted, "Contracts are created only from a quotation the customer accepted.");
@@ -60,17 +96,10 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
         if (!warranty.Succeeded) return warranty.As<ContractView>();
 
         var now = time.GetUtcNow();
-        var contract = new CustomerContract
-        {
-            Id = Guid.NewGuid(), ContractNumber = NewNumber(now), Version = 1, QuotationId = quotation.QuotationId, QuotationVersion = quotation.QuotationVersion,
-            SurveyRequestId = quotation.SurveyRequestId, CustomerUserId = quotation.CustomerUserId, SalesUserId = salesUserId, Status = ContractStatuses.Draft,
-            Currency = quotation.Currency, TotalAmount = quotation.TotalAmount, PricingSnapshot = quotation.PricingSnapshotJson,
-            CustomerSnapshot = quotation.CustomerSnapshotJson ?? "{}", Terms = Trim(terms, 8000) ?? quotation.Terms, WarrantyMonths = warranty.Value,
-            CreatedAt = now, UpdatedAt = now,
-        };
+        var contract = NewContract(quotation, terms, warranty.Value, now);
         // The checks above are a fast path; the decisive ones run again under the survey-request lock that withdrawal and closure also take,
         // so a contract is never created for a request closed meanwhile, and a closure never misses a contract created meanwhile.
-        return await AddNewAsync(contract, salesUserId, "CREATED", $"from quotation {quotation.QuoteNumber} v{quotation.QuotationVersion}", cancellationToken,
+        return await AddNewAsync(contract, staffUserId, "CREATED", $"from quotation {quotation.QuoteNumber} v{quotation.QuotationVersion}", cancellationToken,
             async token =>
             {
                 await unitOfWork.LockSurveyRequestAsync(quotation.SurveyRequestId, token);
@@ -87,17 +116,17 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
     }
 
     /// <summary>
-    /// The Sales owner explicitly discards an initial DRAFT (never issued) with a reason, so the request can then be closed. The row is kept as
+    /// A Manager/Admin explicitly discards an initial DRAFT (never issued) with a reason, so the request can then be closed. The row is kept as
     /// DISCARDED with actor, time and reason; nothing paid, signed or issued is touched. Takes the survey-request lock first (same order as
     /// closure and contract creation), then re-reads the contract; a concurrent issue or edit makes this stale, never half-applied. Repeating
     /// it on a discarded contract returns it unchanged (no second event).
     /// </summary>
-    public async Task<OperationResult<ContractView>> DiscardAsync(Guid salesUserId, Guid contractId, int revision, string? reason, CancellationToken cancellationToken)
+    public async Task<OperationResult<ContractView>> DiscardAsync(Guid staffUserId, Guid contractId, int revision, string? reason, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(reason) || reason.Trim().Length > 1000)
             return OperationResult<ContractView>.Fail(ContractErrorCodes.DiscardReasonRequired, "A reason of at most 1000 characters is required.");
         var contract = await unitOfWork.FindAsync(contractId, false, cancellationToken);
-        if (contract is null || await unitOfWork.GetAssignedSaleAsync(contract.SurveyRequestId, cancellationToken) != salesUserId) return NotFound();
+        if (contract is null) return NotFound();
         try
         {
             var outcome = await unitOfWork.ExecuteInTransactionAsync<OperationResult<bool>>(async token =>
@@ -114,9 +143,9 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
                             : "An amendment draft cannot be discarded here; only the initial draft of a quotation can.", new { status = c.Status }), false);
                 var now = time.GetUtcNow();
                 c.DiscardedAt = now;
-                c.DiscardedByUserId = salesUserId;
+                c.DiscardedByUserId = staffUserId;
                 c.DiscardReason = reason.Trim();
-                Move(c, ContractStatuses.Discarded, salesUserId, now, reason.Trim().Length > 450 ? reason.Trim()[..450] : reason.Trim());
+                Move(c, ContractStatuses.Discarded, staffUserId, now, reason.Trim().Length > 450 ? reason.Trim()[..450] : reason.Trim());
                 c.UpdatedAt = now;
                 c.Revision++;
                 await unitOfWork.SaveChangesAsync(token);
@@ -143,9 +172,9 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
                 : null;
 
     /// <param name="warrantyMonths">When given, changes the draft's installation warranty (one of the Admin's active options).</param>
-    public Task<OperationResult<ContractView>> UpdateTermsAsync(Guid salesUserId, Guid contractId, int revision, string? terms, CancellationToken cancellationToken,
+    public Task<OperationResult<ContractView>> UpdateTermsAsync(Guid staffUserId, Guid contractId, int revision, string? terms, CancellationToken cancellationToken,
         int? warrantyMonths = null)
-        => RunAsSalesAsync(salesUserId, contractId, revision, allowManager: false, async (c, now, token) =>
+        => RunAsStaffAsync(contractId, revision, async (c, now, token) =>
         {
             if (c.Status != ContractStatuses.Draft) return Fail(ContractErrorCodes.InvalidState, "Issued contracts are immutable; create an amendment.");
             if (warrantyMonths is not null)
@@ -155,13 +184,13 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
                 c.WarrantyMonths = warranty.Value;
             }
             c.Terms = Trim(terms, 8000);
-            Event(c, "UPDATED", null, null, salesUserId, null, now);
+            Event(c, "UPDATED", null, null, staffUserId, null, now);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
 
     /// <summary>DRAFT → ISSUED: content is frozen and its canonical hash computed. An amendment supersedes its predecessor here.</summary>
-    public Task<OperationResult<ContractView>> IssueAsync(Guid salesUserId, Guid contractId, int revision, CancellationToken cancellationToken)
-        => RunAsSalesAsync(salesUserId, contractId, revision, allowManager: false, async (c, now, token) =>
+    public Task<OperationResult<ContractView>> IssueAsync(Guid staffUserId, Guid contractId, int revision, CancellationToken cancellationToken)
+        => RunAsStaffAsync(contractId, revision, async (c, now, token) =>
         {
             if (c.Status != ContractStatuses.Draft) return Fail(ContractErrorCodes.InvalidState, "Only drafts can be issued.");
             // The terms are part of the canonical (signed) content: an issued contract always has them.
@@ -178,11 +207,11 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
                     || !await unitOfWork.TryTransitionAsync(previousId, previous.Status, ContractStatuses.Superseded, now, token))
                     return Fail(ContractErrorCodes.InvalidState, "The previous contract version was paid or changed meanwhile; this amendment cannot be issued.");
                 unitOfWork.AddEvent(new ContractEvent { Id = Guid.NewGuid(), ContractId = previousId, EventType = "SUPERSEDED", FromStatus = previous.Status,
-                    ToStatus = ContractStatuses.Superseded, ActorUserId = salesUserId, Detail = $"by version {c.Version}", CreatedAt = now });
+                    ToStatus = ContractStatuses.Superseded, ActorUserId = staffUserId, Detail = $"by version {c.Version}", CreatedAt = now });
             }
             c.IssuedAt = now;
             c.CanonicalHash = CanonicalHash(c);
-            Move(c, ContractStatuses.Issued, salesUserId, now, null);
+            Move(c, ContractStatuses.Issued, staffUserId, now, null);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
 
@@ -191,13 +220,13 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
     /// by this salesperson (backend-computed SHA-256), and the caller must echo the contract's current
     /// canonical hash — confirming the PDF was rendered from exactly this issued version.
     /// </summary>
-    public async Task<OperationResult<ContractView>> AttachOfficialDocumentAsync(Guid salesUserId, Guid contractId, int revision, Guid fileId, string canonicalHash, CancellationToken cancellationToken)
+    public async Task<OperationResult<ContractView>> AttachOfficialDocumentAsync(Guid staffUserId, Guid contractId, int revision, Guid fileId, string canonicalHash, CancellationToken cancellationToken)
     {
-        var verified = await files.RequireVerifiedAsync([fileId], FilePurposes.ContractDocument, salesUserId, cancellationToken);
+        var verified = await files.RequireVerifiedAsync([fileId], FilePurposes.ContractDocument, staffUserId, cancellationToken);
         if (!verified.Succeeded) return verified.As<ContractView>();
         var file = verified.Value![0];
 
-        return await RunAsSalesAsync(salesUserId, contractId, revision, allowManager: false, (c, now, _) =>
+        return await RunAsStaffAsync(contractId, revision, (c, now, _) =>
         {
             if (c.Status != ContractStatuses.Issued) return Task.FromResult(Fail(ContractErrorCodes.InvalidState, "The official document is attached after issuing and before publishing."));
             if (!string.Equals(c.CanonicalHash, canonicalHash?.Trim(), StringComparison.OrdinalIgnoreCase))
@@ -205,27 +234,28 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
             if (file.ChecksumSha256 is null) return Task.FromResult(Fail(FileErrorCodes.NotVerified, "The document checksum was not verified."));
             c.OfficialDocumentFileId = file.FileId;
             c.OfficialDocumentSha256 = file.ChecksumSha256;
-            c.OfficialDocumentConfirmedByUserId = salesUserId;
+            c.OfficialDocumentConfirmedByUserId = staffUserId;
             c.OfficialDocumentConfirmedAt = now;
-            Event(c, "OFFICIAL_DOCUMENT_ATTACHED", null, null, salesUserId, $"sha256={file.ChecksumSha256}", now);
+            Event(c, "OFFICIAL_DOCUMENT_ATTACHED", null, null, staffUserId, $"sha256={file.ChecksumSha256}", now);
             return Task.FromResult(OperationResult<bool>.Ok(true));
         }, cancellationToken);
     }
 
     /// <summary>ISSUED → AWAITING_SIGNATURE: the customer can now download the official PDF.</summary>
-    public Task<OperationResult<ContractView>> PublishAsync(Guid salesUserId, Guid contractId, int revision, CancellationToken cancellationToken)
-        => RunAsSalesAsync(salesUserId, contractId, revision, allowManager: false, (c, now, _) =>
+    public Task<OperationResult<ContractView>> PublishAsync(Guid staffUserId, Guid contractId, int revision, CancellationToken cancellationToken)
+        => RunAsStaffAsync(contractId, revision, (c, now, _) =>
         {
             if (c.Status != ContractStatuses.Issued) return Task.FromResult(Fail(ContractErrorCodes.InvalidState, "Only issued contracts can be published."));
             if (c.OfficialDocumentFileId is null) return Task.FromResult(Fail(ContractErrorCodes.DocumentMissing, "Attach and confirm the official PDF first."));
             c.PublishedAt = now;
-            Move(c, ContractStatuses.AwaitingSignature, salesUserId, now, null);
+            Move(c, ContractStatuses.AwaitingSignature, staffUserId, now, null);
             unitOfWork.AddNotification(c.CustomerUserId, CustomerNotificationTypes.ContractAwaitingSignature,
                 $"Contract {c.ContractNumber} is ready for your signature: download the official document, sign it and submit the signed copy.", now);
             return Task.FromResult(OperationResult<bool>.Ok(true));
         }, cancellationToken);
 
-    /// <summary>UNDER_REVIEW → SIGNED or SIGNATURE_REJECTED, by the owning salesperson or a manager. Internal review, not signature authentication.</summary>
+    /// <summary>UNDER_REVIEW → SIGNED or SIGNATURE_REJECTED, by a Manager/Admin (signature confirmation). Internal review, not signature authentication.</summary>
+    /// <param name="isManager">Kept for source compatibility; the API admits only Manager/Admin, so the reviewer is always staff.</param>
     public async Task<OperationResult<ContractView>> ReviewAsync(Guid reviewerUserId, bool isManager, Guid contractId, int revision, ReviewDecision decision, string? reason, CancellationToken cancellationToken)
     {
         if (decision == ReviewDecision.Reject && string.IsNullOrWhiteSpace(reason))
@@ -234,7 +264,7 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
         {
             // The signed scan and the official PDF must still be exactly what was verified (S3 call, no transaction open).
             var current = await unitOfWork.FindAsync(contractId, false, cancellationToken);
-            if (current is not null && (isManager || current.SalesUserId == reviewerUserId))
+            if (current is not null)
             {
                 var pending = (await unitOfWork.GetSubmissionsAsync(contractId, false, cancellationToken)).FirstOrDefault(s => s.Outcome == SignatureOutcomes.Pending);
                 foreach (var fileId in new[] { pending?.FileId, current.OfficialDocumentFileId }.OfType<Guid>().Distinct())
@@ -244,7 +274,7 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
                 }
             }
         }
-        return await RunAsSalesAsync(reviewerUserId, contractId, revision, allowManager: isManager, async (c, now, token) =>
+        return await RunAsStaffAsync(contractId, revision, async (c, now, token) =>
         {
             if (c.Status != ContractStatuses.UnderReview) return Fail(ContractErrorCodes.InvalidState, "Only submitted signatures can be reviewed.");
             var submission = (await unitOfWork.GetSubmissionsAsync(c.Id, true, token)).FirstOrDefault(s => s.Outcome == SignatureOutcomes.Pending);
@@ -276,11 +306,11 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
     }
 
     /// <summary>New DRAFT version with changed terms; pricing stays the accepted quotation's. Not possible once PAID.</summary>
-    public async Task<OperationResult<ContractView>> CreateAmendmentAsync(Guid salesUserId, Guid contractId, string? terms, CancellationToken cancellationToken,
+    public async Task<OperationResult<ContractView>> CreateAmendmentAsync(Guid staffUserId, Guid contractId, string? terms, CancellationToken cancellationToken,
         int? warrantyMonths = null)
     {
         var current = await unitOfWork.FindAsync(contractId, false, cancellationToken);
-        if (current is null || await unitOfWork.GetAssignedSaleAsync(current.SurveyRequestId, cancellationToken) != salesUserId) return NotFound();
+        if (current is null) return NotFound();
         if (current.Status is ContractStatuses.Draft or ContractStatuses.Paid or ContractStatuses.Superseded or ContractStatuses.Discarded)
             return OperationResult<ContractView>.Fail(ContractErrorCodes.InvalidState, "Only issued, unpaid contracts can be amended (edit drafts directly).");
         var versions = await unitOfWork.ListByQuotationAsync(current.QuotationId, cancellationToken);
@@ -294,11 +324,11 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
         {
             Id = Guid.NewGuid(), ContractNumber = current.ContractNumber, Version = versions.Max(c => c.Version) + 1, PreviousContractId = current.Id,
             QuotationId = current.QuotationId, QuotationVersion = current.QuotationVersion, SurveyRequestId = current.SurveyRequestId,
-            CustomerUserId = current.CustomerUserId, SalesUserId = salesUserId, Status = ContractStatuses.Draft, Currency = current.Currency,
+            CustomerUserId = current.CustomerUserId, SalesUserId = null, Status = ContractStatuses.Draft, Currency = current.Currency,
             TotalAmount = current.TotalAmount, PricingSnapshot = current.PricingSnapshot, CustomerSnapshot = current.CustomerSnapshot,
             Terms = Trim(terms, 8000) ?? current.Terms, WarrantyMonths = warranty.Value, CreatedAt = now, UpdatedAt = now,
         };
-        return await AddNewAsync(amendment, salesUserId, "AMENDMENT_CREATED", $"amends version {current.Version}", cancellationToken);
+        return await AddNewAsync(amendment, staffUserId, "AMENDMENT_CREATED", $"amends version {current.Version}", cancellationToken);
     }
 
     public async Task<OperationResult<ContractView>> GetForStaffAsync(Guid userId, bool isManager, Guid contractId, CancellationToken cancellationToken)
@@ -384,11 +414,11 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }
 
-    private async Task<OperationResult<ContractView>> RunAsSalesAsync(Guid userId, Guid contractId, int revision, bool allowManager,
+    /// <summary>A Manager/Admin step (the API admits no other role): no per-request ownership.</summary>
+    private async Task<OperationResult<ContractView>> RunAsStaffAsync(Guid contractId, int revision,
         Func<CustomerContract, DateTimeOffset, CancellationToken, Task<OperationResult<bool>>> change, CancellationToken cancellationToken)
     {
-        var contract = await unitOfWork.FindAsync(contractId, false, cancellationToken);
-        if (contract is null || (!allowManager && await unitOfWork.GetAssignedSaleAsync(contract.SurveyRequestId, cancellationToken) != userId)) return NotFound();
+        if (await unitOfWork.FindAsync(contractId, false, cancellationToken) is null) return NotFound();
         return await RunAsync(contractId, revision, change, cancellationToken);
     }
 

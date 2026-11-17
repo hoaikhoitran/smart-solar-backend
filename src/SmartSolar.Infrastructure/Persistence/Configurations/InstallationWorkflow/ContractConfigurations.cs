@@ -38,7 +38,8 @@ public sealed class CustomerContractConfiguration : IEntityTypeConfiguration<Cus
         builder.Property(x => x.QuotationVersion).HasColumnName("quotation_version").IsRequired();
         builder.Property(x => x.SurveyRequestId).HasColumnName("survey_request_id").IsRequired();
         builder.Property(x => x.CustomerUserId).HasColumnName("customer_user_id").IsRequired();
-        builder.Property(x => x.SalesUserId).HasColumnName("sales_user_id").IsRequired();
+        // Nullable since 2026-11-17: contracts drafted on customer acceptance have no Sales owner (legacy rows keep theirs).
+        builder.Property(x => x.SalesUserId).HasColumnName("sales_user_id").IsRequired(false);
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(30).IsRequired();
         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
         builder.Property(x => x.TotalAmount).HasColumnName("total_amount").HasPrecision(18, 2).IsRequired();

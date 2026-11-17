@@ -9,7 +9,15 @@ from typing import Any, Dict, List, Optional, Protocol
 import httpx
 
 from .config import TOKEN_PARAMETERS, Settings
-from .embeddings import ProviderError, ollama_model_available, ollama_options
+from .embeddings import ProviderError, ProviderTimeout, ollama_model_available, ollama_options
+
+
+def _timeout(seconds: Optional[float]) -> Dict[str, Any]:
+    """Per-call timeout: the caller's remaining deadline when it is shorter than the client's default (provider timeout).
+
+    Closing the connection when the API has given up makes Ollama stop the generation instead of finishing an answer nobody waits for.
+    """
+    return {} if seconds is None else {"timeout": max(1.0, float(seconds))}
 
 
 @dataclass
@@ -38,7 +46,8 @@ class GenerationOptions:
 class ChatModel(Protocol):
     model: str
 
-    def complete(self, messages: List[Dict[str, str]], max_tokens: int, options: Optional[GenerationOptions] = None) -> Completion: ...
+    def complete(self, messages: List[Dict[str, str]], max_tokens: int, options: Optional[GenerationOptions] = None,
+                 timeout_seconds: Optional[float] = None) -> Completion: ...
 
 
 def estimate_tokens(text: str) -> int:
@@ -67,10 +76,11 @@ class OpenAICompatibleChatModel:
             body["temperature"] = options.temperature
         return body
 
-    def complete(self, messages: List[Dict[str, str]], max_tokens: int, options: Optional[GenerationOptions] = None) -> Completion:
+    def complete(self, messages: List[Dict[str, str]], max_tokens: int, options: Optional[GenerationOptions] = None,
+                 timeout_seconds: Optional[float] = None) -> Completion:
         body = self.payload(messages, max_tokens, options)
         try:
-            response = self._client.post("chat/completions", json=body)
+            response = self._client.post("chat/completions", json=body, **_timeout(timeout_seconds))
         except httpx.HTTPError as exc:
             raise ProviderError(f"LLM provider unreachable ({type(exc).__name__})") from exc
         if response.status_code >= 400:
@@ -121,12 +131,13 @@ class OllamaChatModel:
             settings["temperature"] = options.temperature
         return {"model": options.model, "messages": messages, "stream": False, "think": False, "keep_alive": self._keep_alive, "options": settings}
 
-    def complete(self, messages: List[Dict[str, str]], max_tokens: int, options: Optional[GenerationOptions] = None) -> Completion:
+    def complete(self, messages: List[Dict[str, str]], max_tokens: int, options: Optional[GenerationOptions] = None,
+                 timeout_seconds: Optional[float] = None) -> Completion:
         body = self.payload(messages, max_tokens, options)
         try:
-            response = self._client.post("api/chat", json=body)
+            response = self._client.post("api/chat", json=body, **_timeout(timeout_seconds))
         except httpx.TimeoutException as exc:
-            raise ProviderError("LLM provider timed out") from exc
+            raise ProviderTimeout("LLM provider timed out") from exc
         except httpx.HTTPError as exc:
             raise ProviderError(f"LLM provider unreachable ({type(exc).__name__})") from exc
         if response.status_code >= 400:
@@ -169,7 +180,8 @@ class ExtractiveChatModel:
     def __init__(self, model: str = "extractive-dev") -> None:
         self.model = model
 
-    def complete(self, messages: List[Dict[str, str]], max_tokens: int, options: Optional[GenerationOptions] = None) -> Completion:
+    def complete(self, messages: List[Dict[str, str]], max_tokens: int, options: Optional[GenerationOptions] = None,
+                 timeout_seconds: Optional[float] = None) -> Completion:
         # Offline stand-in: generation options do not change its output (it never calls a provider).
         prompt = messages[-1]["content"]
         sources = _SOURCE.findall(prompt)

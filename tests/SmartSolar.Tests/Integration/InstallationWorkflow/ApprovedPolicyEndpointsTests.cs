@@ -10,9 +10,8 @@ using static SmartSolar.Tests.TestSupport.FeatureEndpointTestSupport;
 namespace SmartSolar.Tests.Integration.InstallationWorkflow;
 
 /// <summary>
-/// Endpoints of the approved policies through the real pipeline: only a Manager decides pricing approvals and equipment substitutions
-/// (the role matrix names no other approver, so Admin is refused); only the Sales owner requests a pricing approval; only the project's
-/// customer agrees to a substitution. Unknown or foreign resources answer 404, invalid bodies 400.
+/// Endpoints of the approved policies through the real pipeline: only a Manager decides equipment substitutions (the role matrix names no
+/// other approver, so Admin is refused); the retired pricing-approval routes answer 410; only the project's customer agrees to a substitution. Unknown or foreign resources answer 404, invalid bodies 400.
 /// </summary>
 public sealed class ApprovedPolicyEndpointsTests
 {
@@ -21,8 +20,9 @@ public sealed class ApprovedPolicyEndpointsTests
     private static string ManagerSubstitution(Guid id) => $"/api/installation-projects/{id}/equipment-substitution/approve";
     private static string CustomerSubstitution(Guid id) => $"/api/customers/me/installation-projects/{id}/equipment-substitution/approve";
 
+    /// <summary>2026-11-17: pricing exceptions are retired (catalog prices only); the routes stay to answer 410 ENDPOINT_RETIRED, behind the same roles.</summary>
     [Fact]
-    public async Task Only_a_manager_decides_pricing_approvals_and_only_sales_requests_them()
+    public async Task Pricing_approval_endpoints_are_retired_and_still_behind_their_roles()
     {
         using var factory = Enabled(new FakeStorageObjectVerifier(), new FakeRagServiceClient());
         var id = Guid.NewGuid();
@@ -38,18 +38,15 @@ public sealed class ApprovedPolicyEndpointsTests
             Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync(Decide(id), decision)).StatusCode);
             Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/manager/quotations/pricing-approvals")).StatusCode);
         }
-        foreach (var role in new[] { RoleCodes.Admin, RoleCodes.Manager, RoleCodes.Technician, RoleCodes.Customer })
+        foreach (var role in new[] { RoleCodes.Technician, RoleCodes.Customer })
             Assert.Equal(HttpStatusCode.Forbidden, (await CatalogEndpointsTests.ClientFor(factory, role).PostAsJsonAsync(Request(id), new { revision = 1, reason = "x" })).StatusCode);
 
         var manager = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Manager);
-        var queue = await manager.GetAsync("/api/manager/quotations/pricing-approvals");
-        Assert.Equal(HttpStatusCode.OK, queue.StatusCode);
-        Assert.Equal(0, (await BodyOf(queue)).GetProperty("data").GetArrayLength());
-        await AssertFailureAsync(await manager.PostAsJsonAsync(Decide(id), decision), HttpStatusCode.NotFound, QuotationErrorCodes.NotFound);
-        await AssertFailureAsync(await manager.PostAsJsonAsync(Decide(id), new { revision = 1, reason = "ok" }), HttpStatusCode.BadRequest, "VALIDATION_FAILED");
-        await AssertFailureAsync(await manager.PostAsJsonAsync(Decide(id), new { revision = 1, approve = false, reason = " " }), HttpStatusCode.BadRequest, "VALIDATION_FAILED");
-        await AssertFailureAsync(await CatalogEndpointsTests.ClientFor(factory, RoleCodes.Sales).PostAsJsonAsync(Request(id), new { revision = 1, reason = "promo" }),
-            HttpStatusCode.NotFound, QuotationErrorCodes.NotFound);
+        await AssertFailureAsync(await manager.GetAsync("/api/manager/quotations/pricing-approvals"), HttpStatusCode.Gone, "ENDPOINT_RETIRED");
+        await AssertFailureAsync(await manager.PostAsJsonAsync(Decide(id), decision), HttpStatusCode.Gone, "ENDPOINT_RETIRED");
+        foreach (var role in new[] { RoleCodes.Sales, RoleCodes.Manager, RoleCodes.Admin })
+            await AssertFailureAsync(await CatalogEndpointsTests.ClientFor(factory, role).PostAsJsonAsync(Request(id), new { revision = 1, reason = "promo" }),
+                HttpStatusCode.Gone, "ENDPOINT_RETIRED");
     }
 
     [Fact]
@@ -128,21 +125,24 @@ public sealed class ApprovedPolicyEndpointsTests
             HttpStatusCode.BadRequest, "AFTER_SALES_REASON_REQUIRED");
     }
 
+    /// <summary>2026-11-17: Sales is consult-only; Manager/Admin own every contract step, discard included.</summary>
     [Fact]
-    public async Task Only_the_sales_owner_discards_a_draft_contract()
+    public async Task Only_a_manager_or_admin_discards_a_draft_contract()
     {
         using var factory = Enabled(new FakeStorageObjectVerifier(), new FakeRagServiceClient());
         var path = $"/api/contracts/{Guid.NewGuid()}/discard";
         var body = new { revision = 0, reason = "Customer withdrew" };
         Assert.Equal(HttpStatusCode.Unauthorized, (await factory.CreateClient().PostAsJsonAsync(path, body)).StatusCode);
-        // The approved role rules give discard to Sales only: Manager and Admin are not expanded.
-        foreach (var role in new[] { RoleCodes.Customer, RoleCodes.Manager, RoleCodes.Admin, RoleCodes.Technician })
+        foreach (var role in new[] { RoleCodes.Customer, RoleCodes.Sales, RoleCodes.Technician })
             Assert.Equal(HttpStatusCode.Forbidden, (await CatalogEndpointsTests.ClientFor(factory, role).PostAsJsonAsync(path, body)).StatusCode);
-        var sales = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Sales);
-        await AssertFailureAsync(await sales.PostAsJsonAsync(path, new { reason = "x" }), HttpStatusCode.BadRequest, "VALIDATION_FAILED");
-        await AssertFailureAsync(await sales.PostAsJsonAsync(path, new { revision = 0, reason = " " }), HttpStatusCode.BadRequest,
-            SmartSolar.Modules.CustomerContracts.ContractErrorCodes.DiscardReasonRequired);
-        await AssertFailureAsync(await sales.PostAsJsonAsync(path, body), HttpStatusCode.NotFound, SmartSolar.Modules.CustomerContracts.ContractErrorCodes.NotFound);
+        foreach (var role in new[] { RoleCodes.Manager, RoleCodes.Admin })
+        {
+            var staff = CatalogEndpointsTests.ClientFor(factory, role);
+            await AssertFailureAsync(await staff.PostAsJsonAsync(path, new { reason = "x" }), HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+            await AssertFailureAsync(await staff.PostAsJsonAsync(path, new { revision = 0, reason = " " }), HttpStatusCode.BadRequest,
+                SmartSolar.Modules.CustomerContracts.ContractErrorCodes.DiscardReasonRequired);
+            await AssertFailureAsync(await staff.PostAsJsonAsync(path, body), HttpStatusCode.NotFound, SmartSolar.Modules.CustomerContracts.ContractErrorCodes.NotFound);
+        }
     }
 }
 

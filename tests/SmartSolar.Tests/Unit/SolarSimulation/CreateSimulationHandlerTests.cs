@@ -1,3 +1,4 @@
+using SmartSolar.Modules.SolarSimulation.Contracts.Persistence;
 using Microsoft.EntityFrameworkCore;
 using SmartSolar.Modules.Catalog.Enums;
 using SmartSolar.Modules.PreSurvey.Enums;
@@ -520,18 +521,40 @@ public sealed class CreateSimulationHandlerTests
     }
 
     [Fact]
-    public async Task Legacy_pre_survey_without_surface_is_rejected()
+    public async Task A_pre_survey_without_the_surface_step_is_simulated_on_its_declared_usable_area()
     {
         await using var ctx = new PreSurveyTestContext();
         var user = await ctx.SeedUserAsync();
         var customer = await ctx.SeedCustomerAsync(user.Id);
         var site = await ctx.SeedPropertySiteAsync(customer.Id);
-        var legacy = await ctx.SeedPreSurveyAsync(site.Id);
+        var noSurface = await ctx.SeedPreSurveyAsync(site.Id);   // usable area 90 m², tilt 15°, azimuth 180°, no PUT …/surface
         var product = await ctx.SeedPanelProductAsync();
 
-        var result = await ctx.CreateSimulationHandler().HandleAsync(Flush(user.Id, legacy.Id, product.Id, geometryVersion: 0), CancellationToken.None);
+        var result = await ctx.CreateSimulationHandler().HandleAsync(Flush(user.Id, noSurface.Id, product.Id, geometryVersion: 0), CancellationToken.None);
 
-        Assert.Equal(CreateSimulationOutcome.SurfaceNotDefined, result.Outcome);
+        Assert.Equal(CreateSimulationOutcome.Created, result.Outcome);
+        var detail = result.Simulation!;
+        Assert.True(detail.Layout.PanelCount > 0);
+        // A square of the declared usable area (√90 ≈ 9.486 m), no obstacles.
+        var side = Math.Round((decimal)Math.Sqrt(90d), 3, MidpointRounding.ToZero);
+        Assert.Equal((side, side), (CreateSimulationHandler.EffectiveSurface(new SimulationSource(noSurface.Id, user.Id, null, noSurface.Status, 0, null, null, null,
+            15m, 180m, null, 120m, null, null, null, 90m), 200m)!.Value.Length, CreateSimulationHandler.EffectiveSurface(new SimulationSource(noSurface.Id, user.Id, null,
+            noSurface.Status, 0, null, null, null, 15m, 180m, null, 120m, null, null, null, 90m), 200m)!.Value.Width));
+        Assert.True(detail.Layout.PanelCount * 2.0m < 90m, "panels must fit the declared usable area");
+    }
+
+    [Fact]
+    public void Without_a_surface_or_a_usable_area_or_beyond_the_maximum_side_there_is_no_surface_to_lay_out()
+    {
+        static SimulationSource Source(decimal? usable, decimal? length = null, decimal? width = null, string? obstacles = null)
+            => new(Guid.NewGuid(), Guid.NewGuid(), null, SmartSolar.Modules.PreSurvey.Enums.PreSurveyStatus.Draft, 0, null, length, width, 15m, 180m, obstacles, 120m, null, null, null, usable);
+
+        Assert.Null(CreateSimulationHandler.EffectiveSurface(Source(null), 200m));
+        Assert.Null(CreateSimulationHandler.EffectiveSurface(Source(0m), 200m));
+        Assert.Null(CreateSimulationHandler.EffectiveSurface(Source(50_000m), 200m));            // √50 000 ≈ 223.6 m > 200 m: the surface step is needed
+        // A saved surface always wins over the declared area (dimensions and obstacles are the customer's).
+        var saved = CreateSimulationHandler.EffectiveSurface(Source(90m, 12m, 8m, "[]"), 200m)!.Value;
+        Assert.Equal((12m, 8m, 0), (saved.Length, saved.Width, saved.Obstacles.Count));
     }
 
     [Theory]

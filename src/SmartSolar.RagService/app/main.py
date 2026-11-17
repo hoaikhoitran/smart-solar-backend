@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from typing import List, Literal, Optional
@@ -13,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from .answering import AnswerOutcome, answer_question
+from .answering import MIN_GENERATION_SECONDS, AnswerOutcome, DeadlineExceeded, answer_question
 from .config import MAX_CHUNK_CHARACTERS, MIN_CHUNK_CHARACTERS, Settings
 from .embeddings import Embedder, ProviderError, create_embedder
 from .ingestion import ingest
@@ -84,6 +85,9 @@ class AnswerBody(StrictBody):
     tokenParameter: Optional[Literal["max_tokens", "max_completion_tokens"]] = None
     minScore: Optional[float] = Field(default=None, ge=0, le=1)
     promptVersion: Optional[str] = Field(default=None, min_length=1, max_length=20)
+    # How long the caller (the .NET API) will still wait for this answer, in seconds. Optional for compatibility; without it the
+    # queue wait and the provider timeout of the environment apply as before.
+    deadlineSeconds: Optional[float] = Field(default=None, gt=0, le=1800)
 
     def generation(self, settings: Settings) -> GenerationOptions:
         temperature = self.temperature if "temperature" in self.model_fields_set else settings.llm_temperature
@@ -148,8 +152,8 @@ def create_app(services: Optional[Services] = None) -> FastAPI:
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail="invalid request") from exc
 
-    def acquire(semaphore: threading.BoundedSemaphore, wait_seconds: int) -> None:
-        if not semaphore.acquire(timeout=wait_seconds):
+    def acquire(semaphore: threading.BoundedSemaphore, wait_seconds: float) -> None:
+        if not semaphore.acquire(timeout=max(0.0, wait_seconds)):
             raise HTTPException(status_code=503, detail="busy")
 
     @app.get("/health/live")
@@ -218,15 +222,26 @@ def create_app(services: Optional[Services] = None) -> FastAPI:
             reject("generation model not allowed")
         min_score = s.settings.min_score if body.minScore is None else body.minScore
 
+        # Measured from receipt: the API's own deadline includes this request's transfer, so the service never works past it.
+        deadline = None if body.deadlineSeconds is None else time.monotonic() + body.deadlineSeconds
+
         def run() -> dict:
-            acquire(s.generations, s.settings.queue_wait_seconds)
+            # With the caller's deadline the request waits for the slot as long as the caller still waits (minus the time a generation
+            # needs), never longer: no abandoned request takes the slot later, and a short queue no longer turns into "busy" while the API
+            # would still wait (measured 2026-11-17: 3-4 of 24 concurrent questions refused after the fixed 10 s). Without a deadline
+            # (older callers) RAG_QUEUE_WAIT_SECONDS applies as before.
+            wait = s.settings.queue_wait_seconds if deadline is None else deadline - time.monotonic() - MIN_GENERATION_SECONDS
+            acquire(s.generations, wait)
             try:
                 outcome = answer_question(
                     s.settings, s.embedder, s.store, s.model, body.question,
                     [t.model_dump() for t in body.history], [v.model_dump(mode="json") for v in body.allowedVersions],
                     body.topK, body.maxContextTokens, body.maxOutputTokens,
-                    min_score=min_score, prompt_version=prompt_version, generation=generation,
+                    min_score=min_score, prompt_version=prompt_version, generation=generation, deadline=deadline,
                 )
+            except DeadlineExceeded as exc:
+                logger.warning("Answer abandoned before generation: %s.", exc)
+                raise HTTPException(status_code=503, detail="deadline exceeded") from exc
             except ProviderError as exc:
                 logger.warning("Answer generation failed: %s.", exc)
                 raise HTTPException(status_code=503, detail="provider unavailable") from exc

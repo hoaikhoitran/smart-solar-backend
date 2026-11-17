@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from .config import Settings
-from .embeddings import Embedder
+from .embeddings import Embedder, ProviderTimeout
 from .llm import ChatModel, GenerationOptions
 from .prompting import INSUFFICIENT, build_messages, select_sources
 from .vectorstore import VectorStore
@@ -39,6 +39,14 @@ class AnswerOutcome:
     timings: Optional[Dict[str, int]] = None
 
 
+# Below this much time before the caller's deadline a generation is not started: it could not finish in time.
+MIN_GENERATION_SECONDS = 2.0
+
+
+class DeadlineExceeded(Exception):
+    """The caller's deadline passed (or is about to) before the model was called."""
+
+
 def answer_question(
     settings: Settings,
     embedder: Embedder,
@@ -53,7 +61,10 @@ def answer_question(
     min_score: Optional[float] = None,
     prompt_version: str = "v1",
     generation: Optional[GenerationOptions] = None,
+    deadline: Optional[float] = None,
 ) -> AnswerOutcome:
+    """``deadline`` (``time.monotonic()`` value) is when the caller stops waiting: no generation starts after it, and the model call
+    is cut at it, so an answer nobody will read never holds the generation slot (DeadlineExceeded)."""
     threshold = settings.min_score if min_score is None else min_score
     started = time.monotonic()
     titles = {str(v["versionId"]): str(v.get("title") or "") for v in allowed}
@@ -69,7 +80,16 @@ def answer_question(
     sources = select_sources(hits, titles, min(max_context_tokens, settings.max_context_tokens))
     messages = build_messages(question, history, sources, prompt_version=prompt_version)
     started = time.monotonic()
-    completion = model.complete(messages, min(max_output_tokens, settings.max_output_tokens), generation)
+    remaining = None if deadline is None else deadline - time.monotonic()
+    if remaining is not None and remaining < MIN_GENERATION_SECONDS:
+        raise DeadlineExceeded(f"{max(0.0, remaining):.1f}s left before the caller's deadline; generation not started")
+    try:
+        completion = model.complete(messages, min(max_output_tokens, settings.max_output_tokens), generation, timeout_seconds=remaining)
+    except ProviderTimeout as exc:
+        if deadline is None:
+            raise
+        # Cut at the caller's deadline: a timeout for the caller, not a provider outage.
+        raise DeadlineExceeded("the model did not finish before the caller's deadline") from exc
     generation_ms = int((time.monotonic() - started) * 1000)
 
     text = completion.text.strip()

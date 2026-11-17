@@ -62,8 +62,12 @@ public static class FilePurposes
     /// <summary>Service package cover image uploaded from the Admin's device; served to anyone through <c>GET /api/files/public/{id}</c>.</summary>
     public const string PackageImage = "PACKAGE_IMAGE";
 
+    /// <summary>Cash receipt scan or photo recorded by a Manager/Admin when confirming a CASH contract payment.</summary>
+    public const string PaymentEvidence = "PAYMENT_EVIDENCE";
+
     public static readonly IReadOnlyList<string> All =
-        [OnSiteSurveyEvidence, QuotationDocument, ContractDocument, SignedContract, InstallationEvidence, KnowledgeDocument, ProjectDocument, ServiceEvidence, ProductImage, PackageImage];
+        [OnSiteSurveyEvidence, QuotationDocument, ContractDocument, SignedContract, InstallationEvidence, KnowledgeDocument, ProjectDocument, ServiceEvidence, ProductImage, PackageImage,
+         PaymentEvidence];
 
     /// <summary>The only purposes an anonymous visitor may read (catalog pictures). Every other purpose is served after authorization only.</summary>
     public static readonly IReadOnlyList<string> PublicImagePurposes = [ProductImage, PackageImage];

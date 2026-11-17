@@ -38,8 +38,31 @@ public sealed class CustomerSurveyRequestsController(
     IValidator<BookSurveyAppointmentCommand> bookValidator,
     RescheduleSurveyAppointmentHandler rescheduleHandler,
     IValidator<RescheduleSurveyAppointmentCommand> rescheduleValidator,
-    CancelSurveyAppointmentHandler cancelHandler) : SchedulingControllerBase
+    CancelSurveyAppointmentHandler cancelHandler,
+    DirectSurveyBookingHandler directHandler,
+    IValidator<DirectSurveyBookingCommand> directValidator) : SchedulingControllerBase
 {
+    /// <summary>
+    /// Option B (no pre-survey): opens a DIRECT_BOOKING survey request for an own property site and books it (201; a retry with the same
+    /// start returns 200). A coverage / capacity failure keeps the request Pending and returns <c>details.surveyRequestId</c>.
+    /// </summary>
+    [HttpPost("direct")]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingWritePolicy)]
+    public async Task<IActionResult> BookDirect([FromBody] DirectSurveyBookingRequest request, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } userId) return UnauthorizedFailure();
+        if (request.PropertySiteId is not { } siteId || siteId == Guid.Empty) return InvalidField("propertySiteId", "'propertySiteId' is required.");
+        if (!IsoTimestamp.TryParse(request.StartsAt, out var startsAt))
+            return InvalidField("startsAt", "'startsAt' must be ISO 8601 with an offset, e.g. 2026-10-20T08:00:00+07:00.");
+
+        var command = new DirectSurveyBookingCommand(userId, siteId, startsAt, request.ContactName, request.ContactPhone, request.Note);
+        var validation = await directValidator.ValidateAsync(command, cancellationToken);
+        if (!validation.IsValid) return ValidationFailure(validation);
+
+        var result = await directHandler.HandleAsync(command, cancellationToken);
+        return Respond(result, result.Value is { Booking.Created: true } ? StatusCodes.Status201Created : StatusCodes.Status200OK);
+    }
+
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken cancellationToken)
         => CurrentUserId() is { } userId ? Ok(await queries.ListAsync(userId, cancellationToken)) : UnauthorizedFailure();

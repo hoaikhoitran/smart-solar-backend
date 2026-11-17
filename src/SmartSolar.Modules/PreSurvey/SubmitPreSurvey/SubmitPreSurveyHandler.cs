@@ -65,6 +65,8 @@ public sealed class SubmitPreSurveyHandler
         {
             Id = Guid.NewGuid(),
             PreSurveyId = preSurvey.Id,
+            PropertySiteId = preSurvey.PropertyId,
+            Source = SurveyRequestSources.PreSurvey,
             AssignedSaleId = null,
             Status = SurveyRequestStatus.Pending,
             SubmittedAt = now,

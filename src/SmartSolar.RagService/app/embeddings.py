@@ -30,6 +30,10 @@ class ProviderError(Exception):
     """Provider failure (timeout, transport error, HTTP error): the ingestion is retried later by the API."""
 
 
+class ProviderTimeout(ProviderError):
+    """The provider did not answer within the time given (the client timeout or the caller's deadline)."""
+
+
 class EmbeddingContractError(ProviderError):
     """The provider answered, but not with what was asked for (model, dimension, count or values)."""
 

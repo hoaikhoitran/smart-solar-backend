@@ -89,6 +89,7 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
         }
         // Installation Flow background sweeps are driven explicitly by tests.
         builder.UseSetting("Payments:ReconciliationWorkerEnabled", "false");
+        builder.UseSetting("Installation:ScheduleWorkerEnabled", "false");
         builder.UseSetting("Rag:IngestionWorkerEnabled", "false");
         // The escalation worker is driven explicitly by tests.
         builder.UseSetting("Scheduling:EscalationWorkerEnabled", "false");
@@ -97,6 +98,7 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
         // with the test's requests; a concurrent DbContext then fails (SQLite Error 5) and surfaces as a
         // spurious 401 or 500. Dispatch tests drive DispatchSweepService explicitly.
         builder.UseSetting("Dispatch:WorkerEnabled", "false");
+        builder.UseSetting("RateLimiting:IotTelemetryIngestPerIp:PermitLimit", "1000");
         // The password-reset outbox worker is driven explicitly by tests (PasswordResetDispatcher.SweepAsync).
         builder.UseSetting("Auth:PasswordReset:DispatchWorkerEnabled", "false");
 

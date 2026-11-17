@@ -14,8 +14,9 @@ class ScriptedModel:
         self.text = text
         self.calls = 0
 
-    def complete(self, messages, max_tokens, options=None):
+    def complete(self, messages, max_tokens, options=None, timeout_seconds=None):
         self.calls += 1
+        self.timeout_seconds = timeout_seconds
         self.options = options
         self.max_tokens = max_tokens
         self.system = messages[0]["content"]

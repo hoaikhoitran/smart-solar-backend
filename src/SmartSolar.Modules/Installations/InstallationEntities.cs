@@ -16,7 +16,9 @@ public sealed class InstallationProject
     public Guid SurveyRequestId { get; set; }
     public Guid CustomerUserId { get; set; }
     public Guid PropertySiteId { get; set; }
-    public Guid ManagerUserId { get; set; }
+
+    /// <summary>The Manager/Admin who created the project; null when the system created it because the contract became PAID with an agreed schedule.</summary>
+    public Guid? ManagerUserId { get; set; }
     public string Status { get; set; } = null!;
 
     /// <summary>Active operational zone of the site's commune (resolved at creation, refreshed on every assignment).</summary>
@@ -392,9 +394,10 @@ public static class InstallationErrorCodes
     public const string ReasonRequired = "INSTALLATION_REASON_REQUIRED";
     public const string AssignmentNotPending = "INSTALLATION_ASSIGNMENT_NOT_PENDING";
     public const string AssignmentNotAccepted = "INSTALLATION_ASSIGNMENT_NOT_ACCEPTED";
+    /// <summary>No longer returned since 2026-11-17 (starting is not tied to the scheduled dates); kept so clients that map it still compile.</summary>
     public const string TooEarlyToStart = "INSTALLATION_TOO_EARLY_TO_START";
 
-    /// <summary>The scheduled interval ended before the work started: the Manager must reschedule (409).</summary>
+    /// <summary>No longer returned since 2026-11-17: a start after the planned interval is allowed. Kept for client compatibility.</summary>
     public const string ScheduleExpired = "INSTALLATION_SCHEDULE_EXPIRED";
     public const string ChecklistIncomplete = "INSTALLATION_CHECKLIST_INCOMPLETE";
     public const string EvidenceRequired = "INSTALLATION_EVIDENCE_REQUIRED";

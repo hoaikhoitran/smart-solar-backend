@@ -101,3 +101,14 @@ ASSIGNED or COMPLETED); a capacity holder of a pending appointment cannot (403).
 Migration: the 11 selected Dev simulations were copied into `selected_simulation`; unselected historical
 results are no longer readable through the API (the old `solar_simulation` table is retained, see
 `guides/sql/business-rules-cleanup-draft.sql`).
+
+
+## Surface step optional (2026-11-17)
+
+The separate surface step (`PUT /api/pre-surveys/{id}/surface`: rectangle + obstacles) is **optional**. Submit never required it. A
+simulation without a saved surface now runs on a square of the pre-survey's declared **usable area** (`usableAreaM2`), without obstacles,
+with the declared tilt and azimuth; when the customer saved a surface, that surface is used as before. `SURFACE_NOT_DEFINED` (422) is now
+returned only when there is neither a saved surface nor a usable area, or when the square would exceed `SolarSimulation:Limits:MaxSurfaceSideM`
+(200 m). Without a saved surface, changing `usableAreaM2` makes existing simulations stale (geometry version +1). The `/surface` endpoints
+are unchanged (deprecated for new clients, kept for compatibility). The installation checklist item `STRUCTURAL_ASSESSMENT` is unrelated
+and still mandatory before an installation starts.

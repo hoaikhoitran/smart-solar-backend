@@ -56,7 +56,9 @@ public sealed class TechnicianJobHandlers(
                 job.TiltDegree, job.AzimuthDegree, job.HasObstruction, SurfaceObstacleSerializer.Deserialize(job.ObstaclesJson)?.Count ?? 0),
             job.SelectedSimulation,
             job.SelectedSimulation is { } s ? $"/api/pre-surveys/{job.PreSurveyId}/simulations/{s.SimulationId}" : null,
-            AppointmentStatuses.IsOverdue(a.Status, a.EndsAt, time.GetUtcNow())));
+            AppointmentStatuses.IsOverdue(a.Status, a.EndsAt, time.GetUtcNow()),
+            job.Source,
+            job.ContactName is null && job.ContactPhone is null ? null : new TechnicianJobContact(job.ContactName, job.ContactPhone)));
     }
 
     /// <summary>Open future appointments in the technician's active zones, each with an advisory canAccept + reason.</summary>

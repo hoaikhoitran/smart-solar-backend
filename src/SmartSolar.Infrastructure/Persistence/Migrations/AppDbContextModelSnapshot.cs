@@ -2221,7 +2221,7 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("revision");
 
-                    b.Property<Guid>("SalesUserId")
+                    b.Property<Guid?>("SalesUserId")
                         .HasColumnType("uuid")
                         .HasColumnName("sales_user_id");
 
@@ -2455,7 +2455,7 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         {
                             t.HasCheckConstraint("ck_file_reference_checksum_format", "(verified_checksum_sha256 IS NULL OR (length(verified_checksum_sha256) = 64 AND verified_checksum_sha256 = lower(verified_checksum_sha256))) AND (declared_checksum_sha256 IS NULL OR (length(declared_checksum_sha256) = 64 AND declared_checksum_sha256 = lower(declared_checksum_sha256)))");
 
-                            t.HasCheckConstraint("ck_file_reference_purpose", "purpose IN ('ONSITE_SURVEY_EVIDENCE', 'QUOTATION_DOCUMENT', 'CONTRACT_DOCUMENT', 'SIGNED_CONTRACT', 'INSTALLATION_EVIDENCE', 'KNOWLEDGE_DOCUMENT', 'PROJECT_DOCUMENT', 'SERVICE_EVIDENCE', 'PRODUCT_IMAGE', 'PACKAGE_IMAGE')");
+                            t.HasCheckConstraint("ck_file_reference_purpose", "purpose IN ('ONSITE_SURVEY_EVIDENCE', 'QUOTATION_DOCUMENT', 'CONTRACT_DOCUMENT', 'SIGNED_CONTRACT', 'INSTALLATION_EVIDENCE', 'KNOWLEDGE_DOCUMENT', 'PROJECT_DOCUMENT', 'SERVICE_EVIDENCE', 'PRODUCT_IMAGE', 'PACKAGE_IMAGE', 'PAYMENT_EVIDENCE')");
 
                             t.HasCheckConstraint("ck_file_reference_sizes", "declared_size_bytes > 0 AND (verified_size_bytes IS NULL OR verified_size_bytes > 0)");
 
@@ -3361,7 +3361,7 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("handover_at");
 
-                    b.Property<Guid>("ManagerUserId")
+                    b.Property<Guid?>("ManagerUserId")
                         .HasColumnType("uuid")
                         .HasColumnName("manager_user_id");
 
@@ -3461,6 +3461,164 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                             t.HasCheckConstraint("ck_installation_project_status", "status IN ('PENDING_ASSIGNMENT', 'PENDING_TECHNICIAN_ACCEPTANCE', 'SCHEDULED', 'IN_PROGRESS', 'PENDING_CUSTOMER_ACCEPTANCE', 'REWORK_REQUIRED', 'COMPLETED', 'CANCELLED')");
 
                             t.HasCheckConstraint("ck_installation_project_unassigned", "status <> 'PENDING_ASSIGNMENT' OR (responsible_technician_user_id IS NULL AND technician_accepted_at IS NULL)");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Installations.InstallationScheduleProposal", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("CancellationReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("cancellation_reason");
+
+                    b.Property<DateTimeOffset?>("CancelledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cancelled_at");
+
+                    b.Property<Guid?>("CancelledByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cancelled_by_user_id");
+
+                    b.Property<string>("ChangeReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("change_reason");
+
+                    b.Property<DateTimeOffset?>("ConfirmedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("confirmed_at");
+
+                    b.Property<Guid>("ContractId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("contract_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<string>("CustomerAgreementNote")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("customer_agreement_note");
+
+                    b.Property<string>("CustomerChangeRequestNote")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("customer_change_request_note");
+
+                    b.Property<DateTimeOffset?>("CustomerChangeRequestedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("customer_change_requested_at");
+
+                    b.Property<Guid>("CustomerUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("customer_user_id");
+
+                    b.Property<DateTimeOffset>("EndsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ends_at");
+
+                    b.Property<Guid?>("ProjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("project_id");
+
+                    b.Property<Guid>("PropertySiteId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("property_site_id");
+
+                    b.Property<Guid?>("ReplacesProposalId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("replaces_proposal_id");
+
+                    b.Property<string>("RescheduleDetail")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("reschedule_detail");
+
+                    b.Property<string>("RescheduleReasonCode")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("reschedule_reason_code");
+
+                    b.Property<DateTimeOffset?>("RescheduleRequiredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("reschedule_required_at");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<DateTimeOffset>("StartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("starts_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("SurveyRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("survey_request_id");
+
+                    b.Property<Guid>("TechnicianUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("technician_user_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CancelledByUserId");
+
+                    b.HasIndex("ContractId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_installation_schedule_proposal_one_live")
+                        .HasFilter("status IN ('PLANNED', 'CONFIRMED', 'RESCHEDULE_REQUIRED')");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("ProjectId");
+
+                    b.HasIndex("PropertySiteId");
+
+                    b.HasIndex("ReplacesProposalId");
+
+                    b.HasIndex("SurveyRequestId");
+
+                    b.HasIndex("CustomerUserId", "Status")
+                        .HasDatabaseName("ix_installation_schedule_proposal_customer_status");
+
+                    b.HasIndex("TechnicianUserId", "Status")
+                        .HasDatabaseName("ix_installation_schedule_proposal_technician_status");
+
+                    b.ToTable("installation_schedule_proposal", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_installation_schedule_proposal_cancelled", "(status = 'CANCELLED') = (cancelled_at IS NOT NULL) AND (status <> 'CANCELLED' OR cancellation_reason IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_installation_schedule_proposal_confirmed", "status <> 'CONFIRMED' OR (project_id IS NOT NULL AND confirmed_at IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_installation_schedule_proposal_interval", "ends_at > starts_at");
+
+                            t.HasCheckConstraint("ck_installation_schedule_proposal_reschedule", "status <> 'RESCHEDULE_REQUIRED' OR (reschedule_reason_code IS NOT NULL AND reschedule_required_at IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_installation_schedule_proposal_reschedule_reason", "reschedule_reason_code IS NULL OR reschedule_reason_code IN ('TECHNICIAN_UNAVAILABLE', 'INVALID_SCHEDULE', 'COVERAGE_CHANGED', 'PROJECT_NOT_ASSIGNABLE')");
+
+                            t.HasCheckConstraint("ck_installation_schedule_proposal_status", "status IN ('PLANNED', 'CONFIRMED', 'RESCHEDULE_REQUIRED', 'CANCELLED')");
                         });
                 });
 
@@ -4933,6 +5091,15 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(500)")
                         .HasColumnName("checkout_url");
 
+                    b.Property<string>("ConfirmationNote")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("confirmation_note");
+
+                    b.Property<Guid?>("ConfirmedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("confirmed_by_user_id");
+
                     b.Property<Guid?>("ContractId")
                         .HasColumnType("uuid")
                         .HasColumnName("contract_id");
@@ -4956,6 +5123,10 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasMaxLength(25)
                         .HasColumnType("character varying(25)")
                         .HasColumnName("description");
+
+                    b.Property<Guid?>("EvidenceFileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("evidence_file_id");
 
                     b.Property<DateTimeOffset>("ExpiresAt")
                         .HasColumnType("timestamp with time zone")
@@ -5020,12 +5191,16 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("ConfirmedByUserId");
+
                     b.HasIndex("ContractId")
                         .IsUnique()
                         .HasDatabaseName("ux_payment_attempt_one_payable")
                         .HasFilter("status IN ('PENDING', 'PROCESSING')");
 
                     b.HasIndex("CustomerUserId");
+
+                    b.HasIndex("EvidenceFileId");
 
                     b.HasIndex("OrderCode")
                         .IsUnique()
@@ -5047,6 +5222,10 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.ToTable("payment_attempt", null, t =>
                         {
                             t.HasCheckConstraint("ck_payment_attempt_amount", "amount > 0 AND currency = 'VND'");
+
+                            t.HasCheckConstraint("ck_payment_attempt_cash_confirmation", "provider <> 'CASH' OR status <> 'PAID' OR (confirmed_by_user_id IS NOT NULL AND provider_reference IS NOT NULL AND evidence_file_id IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_payment_attempt_cash_fields_only_for_cash", "provider = 'CASH' OR (confirmed_by_user_id IS NULL AND evidence_file_id IS NULL AND confirmation_note IS NULL)");
 
                             t.HasCheckConstraint("ck_payment_attempt_order_code", "order_code > 0 AND order_code < 9007199254740991");
 
@@ -5475,9 +5654,23 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(40)")
                         .HasColumnName("closure_reason_code");
 
-                    b.Property<Guid>("PreSurveyId")
+                    b.Property<string>("ContactName")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("contact_name");
+
+                    b.Property<string>("ContactPhone")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("contact_phone");
+
+                    b.Property<Guid?>("PreSurveyId")
                         .HasColumnType("uuid")
                         .HasColumnName("pre_survey_id");
+
+                    b.Property<Guid>("PropertySiteId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("property_site_id");
 
                     b.Property<string>("SalesNote")
                         .HasMaxLength(1000)
@@ -5487,6 +5680,14 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset?>("ScheduledAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("scheduled_at");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("PRE_SURVEY")
+                        .HasColumnName("source");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -5508,6 +5709,12 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.HasIndex("AssignedSaleId", "Status")
                         .HasDatabaseName("ix_survey_request_assigned_sale_status");
 
+                    b.HasIndex(new[] { "PropertySiteId" }, "ix_survey_request_property_site");
+
+                    b.HasIndex(new[] { "PropertySiteId" }, "ux_survey_request_one_open_direct_booking")
+                        .IsUnique()
+                        .HasFilter("source = 'DIRECT_BOOKING' AND status IN ('Pending', 'Scheduled')");
+
                     b.ToTable("survey_request", null, t =>
                         {
                             t.HasCheckConstraint("ck_survey_request_closed_fields", "status <> 'Closed' OR (closed_at IS NOT NULL AND closed_by_user_id IS NOT NULL AND closure_reason_code IS NOT NULL)");
@@ -5515,6 +5722,10 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                             t.HasCheckConstraint("ck_survey_request_closure_reason", "(closed_at IS NULL) = (closure_reason_code IS NULL) AND (closure_reason_code IS NULL OR closure_reason_code IN ('CUSTOMER_WITHDREW', 'NOT_FEASIBLE', 'CUSTOMER_DECLINED', 'NO_RESPONSE', 'OTHER'))");
 
                             t.HasCheckConstraint("ck_survey_request_closure_terminal", "closed_at IS NULL OR status IN ('Cancelled', 'Closed')");
+
+                            t.HasCheckConstraint("ck_survey_request_source", "source IN ('PRE_SURVEY', 'DIRECT_BOOKING')");
+
+                            t.HasCheckConstraint("ck_survey_request_source_pre_survey", "(source = 'PRE_SURVEY') = (pre_survey_id IS NOT NULL)");
 
                             t.HasCheckConstraint("ck_survey_request_status", "status IN ('Pending', 'Scheduled', 'Completed', 'Cancelled', 'Closed')");
                         });
@@ -5694,7 +5905,7 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("revision_requested_at");
 
-                    b.Property<Guid>("SalesUserId")
+                    b.Property<Guid?>("SalesUserId")
                         .HasColumnType("uuid")
                         .HasColumnName("sales_user_id");
 
@@ -5799,7 +6010,7 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
 
                             t.HasCheckConstraint("ck_quotation_issued_fields", "status IN ('DRAFT', 'CANCELLED') OR (issued_at IS NOT NULL AND valid_until IS NOT NULL AND customer_snapshot IS NOT NULL)");
 
-                            t.HasCheckConstraint("ck_quotation_origin", "origin IN ('SALES', 'AUTOMATIC')");
+                            t.HasCheckConstraint("ck_quotation_origin", "origin IN ('SALES', 'AUTOMATIC', 'TECHNICIAN')");
 
                             t.HasCheckConstraint("ck_quotation_status", "status IN ('DRAFT', 'ISSUED', 'ACCEPTED', 'REVISION_REQUESTED', 'SUPERSEDED', 'REJECTED', 'CANCELLED')");
 
@@ -7777,8 +7988,7 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
                         .WithMany()
                         .HasForeignKey("SalesUserId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("SmartSolar.Modules.Files.StoredFile", null)
                         .WithMany()
@@ -8069,8 +8279,7 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
                         .WithMany()
                         .HasForeignKey("ManagerUserId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("SmartSolar.Modules.Scheduling.Zones.OperationalZone", null)
                         .WithMany()
@@ -8095,6 +8304,69 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasForeignKey("SurveyRequestId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Installations.InstallationScheduleProposal", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CancelledByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_installation_schedule_proposal_cancelled_by");
+
+                    b.HasOne("SmartSolar.Modules.CustomerContracts.CustomerContract", null)
+                        .WithMany()
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_installation_schedule_proposal_contract");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_installation_schedule_proposal_created_by");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CustomerUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_installation_schedule_proposal_customer");
+
+                    b.HasOne("SmartSolar.Modules.Installations.InstallationProject", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_installation_schedule_proposal_project");
+
+                    b.HasOne("SmartSolar.Modules.PreSurvey.Entities.PropertySite", null)
+                        .WithMany()
+                        .HasForeignKey("PropertySiteId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_installation_schedule_proposal_property_site");
+
+                    b.HasOne("SmartSolar.Modules.Installations.InstallationScheduleProposal", null)
+                        .WithMany()
+                        .HasForeignKey("ReplacesProposalId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_installation_schedule_proposal_replaces");
+
+                    b.HasOne("SmartSolar.Modules.PreSurvey.Entities.SurveyRequest", null)
+                        .WithMany()
+                        .HasForeignKey("SurveyRequestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_installation_schedule_proposal_survey_request");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("TechnicianUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_installation_schedule_proposal_technician");
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.Installations.InstalledAsset", b =>
@@ -8409,6 +8681,12 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("SmartSolar.Modules.Payments.PaymentAttempt", b =>
                 {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("ConfirmedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_payment_attempt_confirmed_by");
+
                     b.HasOne("SmartSolar.Modules.CustomerContracts.CustomerContract", null)
                         .WithMany()
                         .HasForeignKey("ContractId")
@@ -8419,6 +8697,12 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasForeignKey("CustomerUserId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("SmartSolar.Modules.Files.StoredFile", null)
+                        .WithMany()
+                        .HasForeignKey("EvidenceFileId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_payment_attempt_evidence_file");
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.Payments.PaymentAttemptItem", b =>
@@ -8515,12 +8799,20 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.HasOne("SmartSolar.Modules.PreSurvey.Entities.PreSurvey", "PreSurvey")
                         .WithOne("SurveyRequest")
                         .HasForeignKey("SmartSolar.Modules.PreSurvey.Entities.SurveyRequest", "PreSurveyId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("SmartSolar.Modules.PreSurvey.Entities.PropertySite", "PropertySite")
+                        .WithMany()
+                        .HasForeignKey("PropertySiteId")
                         .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .IsRequired()
+                        .HasConstraintName("fk_survey_request_property_site");
 
                     b.Navigation("AssignedSale");
 
                     b.Navigation("PreSurvey");
+
+                    b.Navigation("PropertySite");
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.PreSurvey.Entities.SurveyRequestEvent", b =>
@@ -8583,8 +8875,7 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
                         .WithMany()
                         .HasForeignKey("SalesUserId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("SmartSolar.Modules.PreSurvey.Entities.SurveyRequest", null)
                         .WithMany()

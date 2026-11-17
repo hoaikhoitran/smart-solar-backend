@@ -44,7 +44,8 @@ public sealed class ContractDraftDiscardTests
         // Validation, ownership, staleness.
         Assert.Equal(ContractErrorCodes.DiscardReasonRequired, (await contracts.DiscardAsync(r.Survey.Sales.Id, draft.ContractId, draft.Revision, " ", None)).ErrorCode);
         Assert.Equal(400, OperationResultControllerBase.StatusFor(ContractErrorCodes.DiscardReasonRequired));
-        Assert.Equal(ContractErrorCodes.NotFound, (await contracts.DiscardAsync(otherSales.Id, draft.ContractId, draft.Revision, "x", None)).ErrorCode);
+        // 2026-11-17: discard is a Manager/Admin step enforced by the API roles; the handler only refuses unknown contracts.
+        Assert.Equal(ContractErrorCodes.NotFound, (await contracts.DiscardAsync(otherSales.Id, Guid.NewGuid(), draft.Revision, "x", None)).ErrorCode);
         Assert.Equal(ContractErrorCodes.StaleRevision, (await contracts.DiscardAsync(r.Survey.Sales.Id, draft.ContractId, draft.Revision + 1, "x", None)).ErrorCode);
 
         ctx.Clock.Now = ctx.Clock.Now.AddMinutes(3);

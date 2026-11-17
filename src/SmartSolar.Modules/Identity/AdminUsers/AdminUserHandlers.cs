@@ -9,6 +9,7 @@ using SmartSolar.Modules.Identity.Entities;
 using SmartSolar.Modules.Identity.Enums;
 using SmartSolar.Modules.Identity.Events;
 using SmartSolar.Modules.Identity.Options;
+using SmartSolar.Modules.Identity.PasswordRecovery;
 using SmartSolar.Modules.Identity.Security;
 
 namespace SmartSolar.Modules.Identity.AdminUsers;
@@ -42,7 +43,7 @@ public static class AdminAuditActions
 public sealed class AdminUserHandlers(
     IAdminUserStore store,
     SecureTokenFactory tokenFactory,
-    IIntegrationEventPublisher publisher,
+    PasswordResetDispatcher dispatcher,
     IEmailDeliveryStatus emailDelivery,
     AccountSetupOptions setupOptions,
     EmailVerificationOptions verificationOptions,
@@ -432,11 +433,24 @@ public sealed class AdminUserHandlers(
             _ => resetOptions.LifetimeMinutes,
         };
         var expiresAt = now.AddMinutes(lifetime);
-        store.AddActionToken(new AuthActionToken { Id = Guid.NewGuid(), UserId = user.Id, TokenHash = token.TokenHash, Type = type, ExpiresAt = expiresAt });
-        return new PendingLink(user.Id, user.Email, user.FullName, type, token.RawToken, expiresAt);
+        var tokenId = Guid.NewGuid();
+        store.AddActionToken(new AuthActionToken { Id = tokenId, UserId = user.Id, TokenHash = token.TokenHash, Type = type, ExpiresAt = expiresAt });
+        var baseUrl = type switch
+        {
+            AuthActionTokenType.AccountSetup => frontend.EffectiveAccountSetupUrl,
+            AuthActionTokenType.EmailVerification => frontend.EmailVerificationUrl,
+            _ => frontend.PasswordResetUrl,
+        };
+        // The link email is an outbox row of the same transaction as its token (audit INT-02): never lost to a broker or SMTP outage.
+        var dispatch = AuthLinkDispatches.Pending(user.Id, tokenId, user.Email, user.FullName, VerificationUrlBuilder.Build(baseUrl, token.RawToken), now, expiresAt);
+        store.AddLinkDispatch(dispatch);
+        return new PendingLink(user.Id, type, dispatch.Id, expiresAt);
     }
 
-    /// <summary>Publishes the link after commit. The raw token is only placed in the event, never logged or returned.</summary>
+    /// <summary>
+    /// One publish attempt after commit; the outbox worker retries a failed publish or SMTP send until the link expires, so a stored
+    /// link is reported as queued. The raw token is only placed in the outbox row and the event, never logged or returned.
+    /// </summary>
     private async Task<ActivationState> DeliverAsync(PendingLink link, CancellationToken cancellationToken)
     {
         var status = link.Type switch
@@ -452,32 +466,12 @@ public sealed class AdminUserHandlers(
                 "Email delivery is disabled in this environment, so the link was NOT sent. Enable RabbitMq and Email, then use send-password-reset to issue a new link.");
         }
 
-        try
+        if (!await dispatcher.TryPublishAsync(link.DispatchId, cancellationToken))
         {
-            object message = link.Type switch
-            {
-                AuthActionTokenType.AccountSetup => new AccountSetupRequestedEvent(link.UserId, link.Email, link.FullName,
-                    VerificationUrlBuilder.Build(frontend.EffectiveAccountSetupUrl, link.RawToken)),
-                AuthActionTokenType.EmailVerification => new EmailVerificationRequestedEvent(link.UserId, link.Email, link.FullName,
-                    VerificationUrlBuilder.Build(frontend.EmailVerificationUrl, link.RawToken)),
-                _ => new PasswordResetRequestedEvent(link.UserId, link.Email, link.FullName,
-                    VerificationUrlBuilder.Build(frontend.PasswordResetUrl, link.RawToken)),
-            };
-            switch (message)
-            {
-                case AccountSetupRequestedEvent e: await publisher.PublishAsync(e, cancellationToken); break;
-                case EmailVerificationRequestedEvent e: await publisher.PublishAsync(e, cancellationToken); break;
-                case PasswordResetRequestedEvent e: await publisher.PublishAsync(e, cancellationToken); break;
-            }
-            return new ActivationState(status, EmailDeliveryStates.Queued, link.ExpiresAt, "A one-time link was queued for delivery to the account's email address.");
+            // Stored in the outbox; the worker retries. The URL carries the raw token, so only the user id is logged.
+            logger.LogWarning("Account link for user {UserId} is stored and will be retried by the outbox.", link.UserId);
         }
-        catch (Exception ex)
-        {
-            // The URL carries the raw token, so only the user id is logged.
-            logger.LogError(ex, "Failed to publish account link for user {UserId}.", link.UserId);
-            return new ActivationState(status, EmailDeliveryStates.PublishFailed, link.ExpiresAt,
-                "The link could not be queued. Use send-password-reset to try again.");
-        }
+        return new ActivationState(status, EmailDeliveryStates.Queued, link.ExpiresAt, "A one-time link was queued for delivery to the account's email address.");
     }
 
     private void Audit(Guid target, Guid actor, string action, string? detail, DateTimeOffset now)
@@ -496,7 +490,7 @@ public sealed class AdminUserHandlers(
 
     private static string? Truncate(string? value, int max) => value is null ? null : value.Length <= max ? value : value[..max];
 
-    private sealed record PendingLink(Guid UserId, string Email, string FullName, AuthActionTokenType Type, string RawToken, DateTimeOffset ExpiresAt);
+    private sealed record PendingLink(Guid UserId, AuthActionTokenType Type, Guid DispatchId, DateTimeOffset ExpiresAt);
 
     private sealed record Outcome<T>(T? Value, string? Code, string? Message, object? Details = null)
     {

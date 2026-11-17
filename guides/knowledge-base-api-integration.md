@@ -43,3 +43,23 @@ Always display `notice` and the citations.
 | rag-admin-read / register ★ / publish | 60 / 10 / 10 per min | knowledge admin |
 | rag-admin-reindex ★ | 3 per 10 min | reindex / retry / reindex-stale |
 | rag-admin-config ★ | 10 per min | configuration draft / validate / activate / rollback / delete |
+
+
+## Chat reliability (2026-11-17)
+
+* New error codes on `POST /api/chat/messages` (nothing is stored and the quota reservation is released in every case):
+
+  | HTTP | `error.code` | Meaning / client action |
+  |---|---|---|
+  | 504 | `RAG_TIMEOUT` | No answer within `Rag:RequestTimeoutSeconds` (60 s). Offer "try again"; a shorter question is faster. |
+  | 503 | `RAG_BUSY` | Every generation slot of the RAG service is in use (the local model answers one question at a time). Retry after a few seconds. |
+  | 503 | `RAG_SERVICE_UNAVAILABLE` | RAG service or model unreachable / failed. |
+  | 429 | `RAG_TOO_MANY_CONCURRENT_REQUESTS`, `RAG_QUOTA_EXCEEDED` | unchanged |
+
+* `clientMessageId` now also makes the **first** question of a conversation idempotent: resend it with the same `clientMessageId` and
+  no `sessionId` (the response with the new session id was lost) and the stored exchange is returned — no second session, no second
+  generation. Ids are compared per user.
+* The API sends the RAG service `deadlineSeconds` (its own wait minus 1 s). The service does not queue or start a generation the API will
+  no longer wait for and cuts the model call at that deadline, so an abandoned request no longer holds the single generation slot.
+* Each answer logs `Chat answer timings: prepare=…ms rag=…ms (retrieval=…ms generation=…ms) persist=…ms total=…ms` (no question text),
+  the per-stage breakdown used to read latency on the VPS.

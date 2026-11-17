@@ -60,8 +60,9 @@ public interface IPaymentUnitOfWork : ITransactionalUnitOfWork
     Task<IReadOnlyList<PaymentEvent>> GetEventsAsync(Guid contractId, CancellationToken cancellationToken);
     Task<bool> WebhookSeenAsync(string payloadSha256, CancellationToken cancellationToken);
 
-    /// <summary>Contract SIGNED → PAID (conditional); false when it was not SIGNED.</summary>
-    Task<bool> TryMarkContractPaidAsync(Guid contractId, DateTimeOffset now, CancellationToken cancellationToken);
+    /// <summary>Contract SIGNED → PAID (conditional); false when it was not SIGNED. The event's actor is <paramref name="actorUserId"/> (cash
+    /// confirmation) or the customer (verified online payment).</summary>
+    Task<bool> TryMarkContractPaidAsync(Guid contractId, DateTimeOffset now, CancellationToken cancellationToken, Guid? actorUserId = null, string? detail = null);
     Task<bool> IsContractPaidAsync(Guid contractId, CancellationToken cancellationToken);
 
     Task<IReadOnlyList<PaymentAttemptItem>> GetItemsAsync(Guid attemptId, bool track, CancellationToken cancellationToken);

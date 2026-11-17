@@ -26,6 +26,8 @@ public static class InstallationWorkflowModuleExtensions
 
         services.AddScoped<SmartSolar.Modules.CustomerContracts.IContractUnitOfWork, ContractUnitOfWork>();
         services.AddScoped<SmartSolar.Modules.CustomerContracts.ContractHandlers>();
+        // Customer acceptance drafts the contract in the same transaction (same scoped AppDbContext).
+        services.AddScoped<SmartSolar.Modules.Quotations.IAcceptedQuotationContracts>(sp => sp.GetRequiredService<SmartSolar.Modules.CustomerContracts.ContractHandlers>());
         services.AddScoped<SmartSolar.Modules.CustomerContracts.ContractDocumentHandlers>();
 
         var payments = ConfigurationBinding.Bind<SmartSolar.Modules.Payments.PaymentOptions>(configuration, SmartSolar.Modules.Payments.PaymentOptions.SectionName);
@@ -51,11 +53,16 @@ public static class InstallationWorkflowModuleExtensions
         services.AddScoped<SmartSolar.Modules.Installations.IInstallationUnitOfWork, InstallationUnitOfWork>();
         services.AddScoped<SmartSolar.Modules.Installations.InstallationSchedulePlanner>();
         services.AddScoped<SmartSolar.Modules.Installations.InstallationHandlers>();
+        // Technician-agreed installation dates; confirmed after payment (follow-up of PaymentService + sweep worker).
+        services.AddScoped<SmartSolar.Modules.Installations.InstallationScheduleHandlers>();
+        services.AddScoped<SmartSolar.Modules.Installations.IContractPaidFollowUp>(sp => sp.GetRequiredService<SmartSolar.Modules.Installations.InstallationScheduleHandlers>());
         services.AddScoped<SmartSolar.Modules.Installations.InstallationEvidenceHandlers>();
         services.AddScoped<SmartSolar.Modules.Installations.EnergyMonitoringHandlers>();
 
         if (configuration.GetValue("Payments:ReconciliationWorkerEnabled", true))
             services.AddHostedService<Background.PaymentReconciliationWorker>();
+        if (configuration.GetValue("Installation:ScheduleWorkerEnabled", true))
+            services.AddHostedService<Background.InstallationScheduleWorker>();
 
         return services;
     }

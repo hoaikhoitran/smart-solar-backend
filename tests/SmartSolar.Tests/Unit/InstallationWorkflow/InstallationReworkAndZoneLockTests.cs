@@ -169,21 +169,24 @@ public sealed class InstallationReworkAndZoneLockTests
     // ------------------------------------------------------------------ L2 expired interval, started work pins the technician
 
     [Fact]
-    public async Task An_installation_cannot_start_after_its_scheduled_interval_ended()
+    public async Task An_installation_can_start_after_its_scheduled_interval_ended_once_the_documents_are_complete()
     {
         var ctx = InstallationWorkflowTestContext.Create();
         await using var _ = ctx;
         var (_, project, tech, _) = await ScheduledAsync(ctx);
         ctx.Clock.Now = At(17, 0, Wed).ToUniversalTime();                  // the Wed 08:00–17:00 interval just ended
 
-        var started = await ctx.Installations().StartProjectAsync(tech, project.ProjectId, None);
+        // Not blocked by time any more: only the documents decide.
+        Assert.Equal(InstallationErrorCodes.ChecklistIncomplete, (await ctx.Installations().StartProjectAsync(tech, project.ProjectId, None)).ErrorCode);
+        Assert.Equal(InstallationErrorCodes.ChecklistIncomplete, (await ctx.Installations().GetForTechnicianAsync(tech, project.ProjectId, None)).Value!.StartBlockedReason);
 
-        Assert.Equal(InstallationErrorCodes.ScheduleExpired, started.ErrorCode);
-        Assert.Equal(409, OperationResultControllerBase.StatusFor(started.ErrorCode!));
+        await SatisfyPrerequisitesAsync(ctx, project.ProjectId);
+        ctx.Clock.Now = At(9, 0, Wed).AddDays(2).ToUniversalTime();         // two days after the planned interval
         var view = (await ctx.Installations().GetForTechnicianAsync(tech, project.ProjectId, None)).Value!;
-        Assert.False(view.CanStart);
-        Assert.Equal(InstallationErrorCodes.ScheduleExpired, view.StartBlockedReason);
-        Assert.Equal(InstallationStatuses.Scheduled, (await ctx.Db.InstallationProjects.AsNoTracking().SingleAsync()).Status);
+        Assert.True(view.CanStart);
+        var started = await ctx.Installations().StartProjectAsync(tech, project.ProjectId, None);
+        Assert.True(started.Succeeded, started.Message);
+        Assert.Equal(InstallationStatuses.InProgress, (await ctx.Db.InstallationProjects.AsNoTracking().SingleAsync()).Status);
     }
 
     [Theory]

@@ -2,7 +2,6 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using SmartSolar.Api.Contracts.InstallationWorkflow;
-using SmartSolar.Api.Contracts.Scheduling;
 using SmartSolar.Api.Extensions;
 using SmartSolar.Modules.Identity.Constants;
 using SmartSolar.Modules.Quotations;
@@ -11,42 +10,95 @@ using SmartSolar.Modules.Common.Features;
 namespace SmartSolar.Api.Controllers;
 
 /// <summary>
-/// Sales: quotations for the survey requests they own. Catalog prices without a discount are issued by Sales; a discount, a reduced or a
-/// zero price needs a Manager approval of exactly that pricing first. Managers/Admins may read.
+/// Technician: the quotation of a survey the caller completed, built like a cart of catalog items (2026-11-17 simplified flow). Prices,
+/// tax and totals always come from the backend; there is no price, discount or tax input. Requests of other technicians answer 404.
+/// </summary>
+[ApiController]
+[Route("api/technician")]
+[Authorize(Roles = RoleCodes.Technician)]
+[RequireFeature(FeatureOptions.InstallationWorkflow)]
+public sealed class TechnicianQuotationsController(QuotationHandlers handlers) : OperationResultControllerBase
+{
+    /// <summary>Creates the DRAFT cart for the completed survey (or returns the technician's existing draft).</summary>
+    [HttpPost("survey-requests/{surveyRequestId:guid}/quotation")]
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationView>), StatusCodes.Status201Created)]
+    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
+    public async Task<IActionResult> Create(Guid surveyRequestId, [FromBody] TechnicianCartCreateRequest? request, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user
+            ? Respond(await handlers.CreateCartAsync(user, surveyRequestId, request?.Notes, cancellationToken), StatusCodes.Status201Created)
+            : UnauthorizedFailure();
+
+    [HttpGet("survey-requests/{surveyRequestId:guid}/quotations")]
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<IReadOnlyList<QuotationView>>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.QuotationReadPolicy)]
+    public async Task<IActionResult> List(Guid surveyRequestId, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await handlers.ListForTechnicianAsync(user, surveyRequestId, cancellationToken)) : UnauthorizedFailure();
+
+    [HttpGet("quotations/{quotationId:guid}")]
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.QuotationReadPolicy)]
+    public async Task<IActionResult> Get(Guid quotationId, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await handlers.GetForTechnicianAsync(user, quotationId, cancellationToken)) : UnauthorizedFailure();
+
+    /// <summary>Adds a catalog product (its catalog price is used); the same product again increases its quantity.</summary>
+    [HttpPost("quotations/{quotationId:guid}/lines")]
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
+    public async Task<IActionResult> AddLine(Guid quotationId, [FromBody] CartLineRequest request, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (request.ProductId is not { } productId || productId == Guid.Empty) return Invalid("productId", "'productId' is required.");
+        if (request.Revision is not { } revision) return Invalid("revision", "'revision' is required.");
+        return Respond(await handlers.AddCartLineAsync(user, quotationId, revision, productId, request.Quantity, cancellationToken));
+    }
+
+    [HttpPut("quotations/{quotationId:guid}/lines/{lineId:guid}")]
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
+    public async Task<IActionResult> UpdateLine(Guid quotationId, Guid lineId, [FromBody] CartLineQuantityRequest request, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (request.Revision is not { } revision) return Invalid("revision", "'revision' is required.");
+        return Respond(await handlers.UpdateCartLineAsync(user, quotationId, lineId, revision, request.Quantity, cancellationToken));
+    }
+
+    [HttpDelete("quotations/{quotationId:guid}/lines/{lineId:guid}")]
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
+    public async Task<IActionResult> RemoveLine(Guid quotationId, Guid lineId, [FromQuery] int? revision, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (revision is not { } expected) return Invalid("revision", "'revision' is required.");
+        return Respond(await handlers.RemoveCartLineAsync(user, quotationId, lineId, expected, cancellationToken));
+    }
+
+    /// <summary>Re-prices every line from the catalog (snapshot), computes the totals and sends the quotation to the customer.</summary>
+    [HttpPost("quotations/{quotationId:guid}/issue")]
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
+    public async Task<IActionResult> Issue(Guid quotationId, [FromBody] RevisionRequest request, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await handlers.IssueCartAsync(user, quotationId, request.Revision, cancellationToken)) : UnauthorizedFailure();
+
+    /// <summary>New draft version answering the customer's revision request (or rejection) of an issued quotation.</summary>
+    [HttpPost("quotations/{quotationId:guid}/revisions")]
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationView>), StatusCodes.Status201Created)]
+    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
+    public async Task<IActionResult> CreateRevision(Guid quotationId, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await handlers.CreateCartRevisionAsync(user, quotationId, cancellationToken), StatusCodes.Status201Created) : UnauthorizedFailure();
+}
+
+/// <summary>
+/// Staff read access to quotations: Manager/Admin read every quotation; Sales (consult-only since 2026-11-17) reads the quotations of the
+/// requests it owns. Every legacy Sales write endpoint (manual create/edit/issue, automatic generation, review queue, pricing approval) answers
+/// 410 ENDPOINT_RETIRED: quotations are built by the surveying technician.
 /// </summary>
 [ApiController]
 [Route("api")]
 [Authorize(Roles = $"{RoleCodes.Sales},{RoleCodes.Manager},{RoleCodes.Admin}")]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
-public sealed class SalesQuotationsController(QuotationHandlers handlers, QuotationOptions options) : OperationResultControllerBase
+public sealed class SalesQuotationsController(QuotationHandlers handlers) : OperationResultControllerBase
 {
-    [HttpPost("survey-requests/{surveyRequestId:guid}/quotations")]
-    [Authorize(Roles = RoleCodes.Sales)]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
-    public async Task<IActionResult> Create(Guid surveyRequestId, [FromBody] QuotationHeaderRequest request, CancellationToken cancellationToken)
-    {
-        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
-        if (!TryHeader(request, out var header, out var error)) return error!;
-        return Respond(await handlers.CreateAsync(user, surveyRequestId, header!, cancellationToken), StatusCodes.Status201Created);
-    }
-
-    /// <summary>
-    /// Runs (or repeats — idempotent) the automatic STANDARD quotation from the completed survey's bill of materials; normally it already
-    /// ran when the technician completed the survey. Sales owner or Manager/Admin. Returns the outcome and the quotation, if any.
-    /// </summary>
-    [HttpPost("survey-requests/{surveyRequestId:guid}/quotations/generate")]
-    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<AutomaticQuotationResult>), StatusCodes.Status200OK)]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
-    public async Task<IActionResult> Generate(Guid surveyRequestId, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await handlers.GenerateForStaffAsync(user, IsManager(), surveyRequestId, cancellationToken)) : UnauthorizedFailure();
-
-    /// <summary>The exception queue: AUTOMATIC drafts whose pricing needs Sales (see each quotation's pricingBasis.issues).</summary>
-    [HttpGet("quotations/pending-review")]
-    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<IReadOnlyList<QuotationView>>), StatusCodes.Status200OK)]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationReadPolicy)]
-    public async Task<IActionResult> PendingReview(CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Ok(SmartSolar.Api.Contracts.ApiResponse<IReadOnlyList<QuotationView>>.Success(
-            await handlers.ListPendingReviewAsync(user, IsManager(), cancellationToken), HttpContext.GetTraceId())) : UnauthorizedFailure();
+    private const string CartRoutes = "Technician cart: POST /api/technician/survey-requests/{surveyRequestId}/quotation, …/quotations/{id}/lines, …/issue, …/revisions";
 
     [HttpGet("survey-requests/{surveyRequestId:guid}/quotations")]
     [EnableRateLimiting(RateLimitingExtensions.QuotationReadPolicy)]
@@ -58,135 +110,79 @@ public sealed class SalesQuotationsController(QuotationHandlers handlers, Quotat
     public async Task<IActionResult> Get(Guid quotationId, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await handlers.GetForSalesAsync(user, IsManager(), quotationId, cancellationToken)) : UnauthorizedFailure();
 
+    // ------------------------------------------------------------------ retired (410)
+
+    [HttpPost("survey-requests/{surveyRequestId:guid}/quotations")]
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    public IActionResult Create(Guid surveyRequestId) => Retired(CartRoutes);
+
+    [HttpPost("survey-requests/{surveyRequestId:guid}/quotations/generate")]
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    public IActionResult Generate(Guid surveyRequestId) => Retired(CartRoutes);
+
+    [HttpGet("quotations/pending-review")]
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    public IActionResult PendingReview() => Retired("GET /api/survey-requests/{surveyRequestId}/quotations (read) — no review queue exists any more");
+
     [HttpPut("quotations/{quotationId:guid}")]
-    [Authorize(Roles = RoleCodes.Sales)]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
-    public async Task<IActionResult> Update(Guid quotationId, [FromBody] QuotationHeaderRequest request, CancellationToken cancellationToken)
-    {
-        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
-        if (request.Revision is not { } revision) return Invalid("revision", "'revision' is required.");
-        if (!TryHeader(request, out var header, out var error)) return error!;
-        return Respond(await handlers.UpdateHeaderAsync(user, quotationId, revision, header!, cancellationToken));
-    }
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    public IActionResult Update(Guid quotationId) => Retired(CartRoutes);
 
     [HttpPost("quotations/{quotationId:guid}/lines")]
-    [Authorize(Roles = RoleCodes.Sales)]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
-    public async Task<IActionResult> AddLine(Guid quotationId, [FromBody] QuotationLineRequest request, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user
-            ? Respond(await handlers.AddLineAsync(user, quotationId, request.Revision,
-                new QuotationLineInput(request.ProductId, request.Name, request.Unit, request.Quantity, request.UnitPrice, request.Description), cancellationToken))
-            : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    public IActionResult AddLine(Guid quotationId) => Retired(CartRoutes);
 
     [HttpPut("quotations/{quotationId:guid}/lines/{lineId:guid}")]
-    [Authorize(Roles = RoleCodes.Sales)]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
-    public async Task<IActionResult> UpdateLine(Guid quotationId, Guid lineId, [FromBody] QuotationLineUpdateRequest request, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user
-            ? Respond(await handlers.UpdateLineAsync(user, quotationId, lineId, request.Revision, request.Quantity, request.UnitPrice, request.Description, cancellationToken))
-            : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    public IActionResult UpdateLine(Guid quotationId, Guid lineId) => Retired(CartRoutes);
 
     [HttpDelete("quotations/{quotationId:guid}/lines/{lineId:guid}")]
-    [Authorize(Roles = RoleCodes.Sales)]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
-    public async Task<IActionResult> RemoveLine(Guid quotationId, Guid lineId, [FromQuery] int revision, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await handlers.RemoveLineAsync(user, quotationId, lineId, revision, cancellationToken)) : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    public IActionResult RemoveLine(Guid quotationId, Guid lineId) => Retired(CartRoutes);
 
     [HttpPost("quotations/{quotationId:guid}/issue")]
-    [Authorize(Roles = RoleCodes.Sales)]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
-    public async Task<IActionResult> Issue(Guid quotationId, [FromBody] IssueQuotationRequest request, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await handlers.IssueAsync(user, quotationId, request.Revision, cancellationToken, request.ReviewNote)) : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    public IActionResult Issue(Guid quotationId) => Retired(CartRoutes);
 
-    /// <summary>
-    /// The on-site survey was amended after this DRAFT was made (surveyChanged = true): after reviewing the lines, Sales re-bases the
-    /// draft on the current survey version with a reason. Required before such a draft can be issued.
-    /// </summary>
     [HttpPost("quotations/{quotationId:guid}/confirm-survey-version")]
-    [Authorize(Roles = RoleCodes.Sales)]
-    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationView>), StatusCodes.Status200OK)]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
-    public async Task<IActionResult> ConfirmSurveyVersion(Guid quotationId, [FromBody] ConfirmSurveyVersionRequest request, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user
-            ? Respond(await handlers.ConfirmSurveyVersionAsync(user, quotationId, request.Revision, request.Reason, cancellationToken))
-            : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    public IActionResult ConfirmSurveyVersion(Guid quotationId) => Retired("The technician's cart is re-based on the current survey when it is issued");
 
-    /// <summary>
-    /// Asks a Manager to approve the draft's discount / reduced / zero prices (see pricingApproval.adjustments). The request names the
-    /// exact current pricing; any later pricing edit needs a new request.
-    /// </summary>
     [HttpPost("quotations/{quotationId:guid}/pricing-approval-request")]
-    [Authorize(Roles = RoleCodes.Sales)]
-    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationView>), StatusCodes.Status200OK)]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
-    public async Task<IActionResult> RequestPricingApproval(Guid quotationId, [FromBody] PricingApprovalRequest request, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user
-            ? Respond(await handlers.RequestPricingApprovalAsync(user, quotationId, request.Revision, request.Reason, cancellationToken))
-            : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    public IActionResult RequestPricingApproval(Guid quotationId) => Retired("None: quotations use catalog prices only (no discount or price exception)");
 
-    /// <summary>New draft version copied from an issued quotation or one the customer sent back.</summary>
     [HttpPost("quotations/{quotationId:guid}/revisions")]
-    [Authorize(Roles = RoleCodes.Sales)]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
-    public async Task<IActionResult> CreateRevision(Guid quotationId, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await handlers.CreateRevisionAsync(user, quotationId, cancellationToken), StatusCodes.Status201Created) : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    public IActionResult CreateRevision(Guid quotationId) => Retired("POST /api/technician/quotations/{quotationId}/revisions");
 
-    /// <summary>Links the FE-generated quotation PDF (a verified QUOTATION_DOCUMENT file).</summary>
     [HttpPut("quotations/{quotationId:guid}/document")]
-    [Authorize(Roles = RoleCodes.Sales)]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
-    public async Task<IActionResult> AttachDocument(Guid quotationId, [FromBody] FileReferenceRequest request, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await handlers.AttachDocumentAsync(user, quotationId, request.FileId, cancellationToken)) : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    public IActionResult AttachDocument(Guid quotationId) => Retired("None: the quotation view carries every line and total for the FE to render");
 
     private bool IsManager() => IsInRole(RoleCodes.Manager) || IsInRole(RoleCodes.Admin);
-
-    private bool TryHeader(QuotationHeaderRequest r, out QuotationHeaderInput? header, out IActionResult? error)
-    {
-        header = null;
-        error = null;
-        DateTimeOffset? validUntil = null;
-        if (r.ValidUntil is not null)
-        {
-            if (!IsoTimestamp.TryParse(r.ValidUntil, out var parsed)) { error = Invalid("validUntil", "'validUntil' must be ISO 8601 with an offset."); return false; }
-            validUntil = parsed;
-        }
-        header = new QuotationHeaderInput(r.LaborCost, r.TransportCost, r.OtherServiceCost, r.DiscountAmount, r.TaxRatePercent ?? options.DefaultTaxRatePercent,
-            validUntil, r.Terms, r.Notes);
-        return true;
-    }
 }
 
-/// <summary>
-/// Manager: approves or rejects pricing exceptions (discounts, prices below the catalog reference, zero prices) of quotation drafts. Only
-/// the Manager role decides (the approved role matrix names no other approver); the Sales owner never approves their own quotation.
-/// </summary>
+/// <summary>Retired (2026-11-17): pricing exceptions no longer exist; quotations use catalog prices only. Both endpoints answer 410.</summary>
 [ApiController]
 [Route("api/manager/quotations")]
 [Authorize(Roles = RoleCodes.Manager)]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
-public sealed class ManagerQuotationApprovalsController(QuotationHandlers handlers) : OperationResultControllerBase
+public sealed class ManagerQuotationApprovalsController : OperationResultControllerBase
 {
-    /// <summary>Drafts whose current pricing waits for a decision.</summary>
     [HttpGet("pricing-approvals")]
-    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<IReadOnlyList<QuotationView>>), StatusCodes.Status200OK)]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationReadPolicy)]
-    public async Task<IActionResult> Pending(CancellationToken cancellationToken)
-        => CurrentUserId() is not null
-            ? Ok(Contracts.ApiResponse<IReadOnlyList<QuotationView>>.Success(await handlers.ListPendingPricingApprovalsAsync(cancellationToken), HttpContext.GetTraceId()))
-            : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    public IActionResult Pending() => Retired("None: quotations use catalog prices only (no discount or price exception)");
 
     [HttpPost("{quotationId:guid}/pricing-approval")]
-    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationView>), StatusCodes.Status200OK)]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
-    public async Task<IActionResult> Decide(Guid quotationId, [FromBody] PricingApprovalDecisionRequest request, CancellationToken cancellationToken)
-    {
-        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
-        if (request.Approve is not { } approve) return Invalid("approve", "'approve' (true or false) is required.");
-        return Respond(await handlers.DecidePricingApprovalAsync(user, quotationId, request.Revision, approve, request.Reason, cancellationToken));
-    }
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    public IActionResult Decide(Guid quotationId) => Retired("None: quotations use catalog prices only (no discount or price exception)");
 }
 
-/// <summary>Customer: own quotations (drafts are never visible), acceptance or revision request.</summary>
+/// <summary>
+/// Customer: own quotations (drafts are never visible) and the decision on an issued one: ACCEPT (the contract draft is created automatically
+/// from the accepted snapshot), REJECT, or REQUEST_REVISION (the technician answers with a new version).
+/// </summary>
 [ApiController]
 [Route("api/customers/me/quotations")]
 [Authorize(Roles = RoleCodes.Customer)]
@@ -203,6 +199,7 @@ public sealed class CustomerQuotationsController(QuotationHandlers handlers) : O
     public async Task<IActionResult> Get(Guid quotationId, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await handlers.GetForCustomerAsync(user, quotationId, cancellationToken)) : UnauthorizedFailure();
 
+    /// <summary>Accepts the issued quotation; the contract DRAFT is created in the same transaction (exactly one per quotation).</summary>
     [HttpPost("{quotationId:guid}/accept")]
     [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
     public async Task<IActionResult> Accept(Guid quotationId, CancellationToken cancellationToken)

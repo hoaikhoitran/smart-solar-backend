@@ -403,7 +403,7 @@ public sealed class InstallationLifecycleE2ETests
 
         var first = (await payments.CreateOrGetAttemptAsync(j.CustomerId, signed.ContractId, None)).Value!;
         j.Ctx.PayOs.Links[first.OrderCode] = ("EXPIRED", 0, null);
-        j.Ctx.Clock.Now = first.ExpiresAt.AddMinutes(1);
+        j.Ctx.Clock.Now = first.ExpiresAt!.Value.AddMinutes(1);
         Assert.Equal(InstallationErrorCodes.ContractNotPaid, (await j.Ctx.Installations().CreateProjectAsync(manager.Id, signed.ContractId, None)).ErrorCode);
 
         var second = (await payments.CreateOrGetAttemptAsync(j.CustomerId, signed.ContractId, None)).Value!;

@@ -13,8 +13,8 @@ namespace SmartSolar.Tests.Unit.PreSurvey;
 /// </summary>
 public sealed class PreSurveyConcurrencyTests
 {
-    private static UpdatePreSurveyCommand UpdateOf(Guid userId, Guid preSurveyId, decimal tilt = 20m, decimal azimuth = 180m)
-        => new(userId, preSurveyId, 150m, 100m, tilt, azimuth, true);
+    private static UpdatePreSurveyCommand UpdateOf(Guid userId, Guid preSurveyId, decimal tilt = 20m, decimal azimuth = 180m, decimal usable = 100m)
+        => new(userId, preSurveyId, 150m, usable, tilt, azimuth, true);
 
     [Fact]
     public async Task Update_that_loses_the_race_to_submit_is_rejected_and_stores_nothing()
@@ -104,11 +104,11 @@ public sealed class PreSurveyConcurrencyTests
         var site = await ctx.SeedPropertySiteAsync(customer.Id);
         var draft = await ctx.SeedPreSurveyAsync(site.Id);
 
-        await ctx.UpdatePreSurveyHandler().HandleAsync(UpdateOf(user.Id, draft.Id, tilt: 15m, azimuth: 180m), CancellationToken.None);
+        await ctx.UpdatePreSurveyHandler().HandleAsync(UpdateOf(user.Id, draft.Id, tilt: 15m, azimuth: 180m, usable: 90m), CancellationToken.None);
         ctx.Db.ChangeTracker.Clear();
         var unchanged = await ctx.Db.PreSurveys.AsNoTracking().SingleAsync();
 
-        await ctx.UpdatePreSurveyHandler().HandleAsync(UpdateOf(user.Id, draft.Id, tilt: 15m, azimuth: 200m), CancellationToken.None);
+        await ctx.UpdatePreSurveyHandler().HandleAsync(UpdateOf(user.Id, draft.Id, tilt: 15m, azimuth: 200m, usable: 90m), CancellationToken.None);
         ctx.Db.ChangeTracker.Clear();
         var changed = await ctx.Db.PreSurveys.AsNoTracking().SingleAsync();
 
@@ -116,6 +116,28 @@ public sealed class PreSurveyConcurrencyTests
         Assert.Equal(0, unchanged.GeometryVersion);
         Assert.Equal(2, changed.Revision);
         Assert.Equal(1, changed.GeometryVersion);
+    }
+
+    [Fact]
+    public async Task Without_a_saved_surface_changing_the_usable_area_makes_simulations_stale_and_with_one_it_does_not()
+    {
+        await using var ctx = new PreSurveyTestContext();
+        var user = await ctx.SeedUserAsync();
+        var customer = await ctx.SeedCustomerAsync(user.Id);
+        var site = await ctx.SeedPropertySiteAsync(customer.Id);
+        var draft = await ctx.SeedPreSurveyAsync(site.Id);   // usable 90 m², no surface
+
+        await ctx.UpdatePreSurveyHandler().HandleAsync(UpdateOf(user.Id, draft.Id, tilt: 15m, azimuth: 180m, usable: 80m), CancellationToken.None);
+        ctx.Db.ChangeTracker.Clear();
+        Assert.Equal(1, (await ctx.Db.PreSurveys.AsNoTracking().SingleAsync()).GeometryVersion);   // the simulated surface depends on it
+
+        var withSurface = await ctx.Db.PreSurveys.SingleAsync();
+        (withSurface.SurfaceLengthM, withSurface.SurfaceWidthM) = (10m, 8m);
+        await ctx.Db.SaveChangesAsync();
+        ctx.Db.ChangeTracker.Clear();
+        await ctx.UpdatePreSurveyHandler().HandleAsync(UpdateOf(user.Id, draft.Id, tilt: 15m, azimuth: 180m, usable: 70m), CancellationToken.None);
+        ctx.Db.ChangeTracker.Clear();
+        Assert.Equal(1, (await ctx.Db.PreSurveys.AsNoTracking().SingleAsync()).GeometryVersion);   // the saved surface is what is simulated
     }
 
     [Fact]

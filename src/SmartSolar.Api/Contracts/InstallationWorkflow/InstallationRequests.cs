@@ -39,3 +39,14 @@ public sealed record CompletionReportRequest(string? CompletionReport, int? Expe
 
 /// <summary>decision: ACCEPT or REQUEST_REWORK (reason required).</summary>
 public sealed record AcceptanceDecisionRequest(string? Decision, string? Reason);
+
+/// <summary>
+/// The installation date the technician agreed with the customer. <c>technicianUserId</c> is used only for a Manager/Admin; <c>reason</c> is
+/// required to change an existing schedule; <c>expectedRevision</c> = the live schedule's revision (optional).
+/// </summary>
+public sealed record InstallationScheduleRequest(DateTimeOffset? StartsAt, DateTimeOffset? EndsAt, string? CustomerAgreementNote, string? Reason,
+    int? ExpectedRevision, Guid? TechnicianUserId = null);
+
+public sealed record InstallationScheduleReasonRequest(string? Reason);
+
+public sealed record InstallationScheduleChangeRequest(string? Note);

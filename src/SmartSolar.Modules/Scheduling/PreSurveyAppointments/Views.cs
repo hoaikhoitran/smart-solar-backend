@@ -73,13 +73,14 @@ public sealed record CustomerAppointmentView(
 
 public sealed record CustomerSurveyRequestView(
     Guid SurveyRequestId,
-    Guid PreSurveyId,
+    Guid? PreSurveyId,
     Guid PropertySiteId,
     string PropertyName,
     string Status,
     DateTimeOffset SubmittedAt,
     DateTimeOffset? ScheduledAt,
-    CustomerAppointmentView? Appointment);
+    CustomerAppointmentView? Appointment,
+    string Source = SmartSolar.Modules.PreSurvey.Entities.SurveyRequestSources.PreSurvey);
 
 public sealed record CustomerAppointmentHistoryItem(Guid AppointmentId, DateTimeOffset StartsAt, DateTimeOffset EndsAt, string Status, DateTimeOffset BookedAt);
 
@@ -195,7 +196,12 @@ public sealed record TechnicianJobView(
     TechnicianJobPreSurvey PreSurvey,
     SelectedSimulationSummary? SelectedSimulation,
     string? SimulationDetailPath,
-    bool IsOverdue = false);
+    bool IsOverdue = false,
+    string Source = SmartSolar.Modules.PreSurvey.Entities.SurveyRequestSources.PreSurvey,
+    TechnicianJobContact? OnSiteContact = null);
+
+/// <summary>Who meets the technician when it is not the account holder (direct booking); null = the customer above.</summary>
+public sealed record TechnicianJobContact(string? Name, string? Phone);
 
 public sealed record TechnicianJobCustomer(string FullName, string? Phone, string? Email);
 
@@ -204,7 +210,7 @@ public sealed record TechnicianJobProperty(
     decimal? Latitude, decimal? Longitude, string? InstallationSurfaceType, string? SurfaceMaterial);
 
 public sealed record TechnicianJobPreSurvey(
-    Guid PreSurveyId, decimal? TotalAreaM2, decimal? UsableAreaM2, decimal? SurfaceLengthM, decimal? SurfaceWidthM,
+    Guid? PreSurveyId, decimal? TotalAreaM2, decimal? UsableAreaM2, decimal? SurfaceLengthM, decimal? SurfaceWidthM,
     decimal? SurfaceTiltDegree, decimal? SurfaceAzimuthDegree, bool? HasObstruction, int ObstacleCount);
 
 /// <summary>

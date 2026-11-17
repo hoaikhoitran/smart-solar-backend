@@ -40,7 +40,8 @@ public sealed class QuotationConfiguration : IEntityTypeConfiguration<Quotation>
         builder.Property(x => x.PreviousQuotationId).HasColumnName("previous_quotation_id");
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(30).IsRequired();
         builder.Property(x => x.CustomerUserId).HasColumnName("customer_user_id").IsRequired();
-        builder.Property(x => x.SalesUserId).HasColumnName("sales_user_id").IsRequired();
+        // Nullable since 2026-11-17: TECHNICIAN quotations have no Sales owner (legacy rows keep theirs).
+        builder.Property(x => x.SalesUserId).HasColumnName("sales_user_id").IsRequired(false);
         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
         foreach (var (property, column) in new (System.Linq.Expressions.Expression<Func<Quotation, decimal>>, string)[]
                  {

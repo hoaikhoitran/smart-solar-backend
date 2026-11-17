@@ -32,7 +32,7 @@ class RecordingModel(ExtractiveChatModel):
         self.max_tokens = []
         self.system = []
 
-    def complete(self, messages, max_tokens, options=None):
+    def complete(self, messages, max_tokens, options=None, timeout_seconds=None):
         self.options.append(options)
         self.max_tokens.append(max_tokens)
         self.system.append(messages[0]["content"])

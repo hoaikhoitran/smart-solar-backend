@@ -45,9 +45,20 @@ public sealed class InstallationWorkflowTestContext : IAsyncDisposable
     public SmartSolar.Modules.Quotations.QuotationOptions QuotationOptions { get; } = new();
     public SmartSolar.Modules.Quotations.QuotationHandlers Quotations(AppDbContext? db = null) => new(new QuotationUnitOfWork(db ?? Db), Files(db), QuotationOptions, Clock);
 
-    /// <summary>The production wiring: completing the survey runs the automatic quotation.</summary>
-    public OnSiteSurveyHandlers OnSiteWithAutomaticQuotation(AppDbContext? db = null)
-        => new(new OnSiteSurveyUnitOfWork(db ?? Db), Files(db), Scheduling.OnSiteOptions, Scheduling.Policies, Clock, Quotations(db));
+    /// <summary>
+    /// LEGACY (retired 2026-11-17): completing the survey no longer generates a quotation in production. Tests that cover the retired automatic
+    /// quotation code (still present for legacy data, unreachable from the API) get the old behaviour through this explicit shim.
+    /// </summary>
+    public LegacyAutomaticQuotationSurvey OnSiteWithAutomaticQuotation(AppDbContext? db = null)
+        => new(new OnSiteSurveyHandlers(new OnSiteSurveyUnitOfWork(db ?? Db), Files(db), Scheduling.OnSiteOptions, Scheduling.Policies, Clock, Quotations(db)), Quotations(db));
+
+    /// <summary>The production wiring of the simplified flow: acceptance drafts the contract in the same transaction.</summary>
+    public SmartSolar.Modules.Quotations.QuotationHandlers QuotationsWithContracts(AppDbContext? db = null)
+        => new(new QuotationUnitOfWork(db ?? Db), Files(db), QuotationOptions, Clock, Contracts(db));
+
+    /// <summary>The production wiring of payments, including cash evidence verification.</summary>
+    public SmartSolar.Modules.Payments.PaymentService PaymentsWithCash(AppDbContext? db = null) => new(new PaymentUnitOfWork(db ?? Db), PayOs.Gateway(), PaymentOptions, Clock,
+        NullLogger<SmartSolar.Modules.Payments.PaymentService>.Instance, orderCodes: OrderCodes, files: Files(db));
 
     public SmartSolar.Modules.CustomerContracts.ContractHandlers Contracts(AppDbContext? db = null) => new(new ContractUnitOfWork(db ?? Db), Files(db), Clock);
     public FakePayOsServer PayOs { get; } = new();
@@ -71,6 +82,24 @@ public sealed class InstallationWorkflowTestContext : IAsyncDisposable
             Scheduling.Assignments(scheduling));
         return new(new InstallationUnitOfWork(db ?? Db), scheduling, planner, Files(db), Scheduling.Calendar, InstallationOptions, Clock);
     }
+
+    /// <summary>Technician-agreed installation schedules (production wiring: confirmation through <see cref="Installations"/>).</summary>
+    public SmartSolar.Modules.Installations.InstallationScheduleHandlers Schedules(AppDbContext? db = null)
+    {
+        var scheduling = SchedulingWithInstallations(db);
+        var planner = new SmartSolar.Modules.Installations.InstallationSchedulePlanner(Scheduling.Eligibility(scheduling), Scheduling.Calendar, InstallationOptions,
+            Scheduling.Assignments(scheduling));
+        return new(new InstallationUnitOfWork(db ?? Db), scheduling, planner, Installations(db), Scheduling.Calendar, Clock,
+            NullLogger<SmartSolar.Modules.Installations.InstallationScheduleHandlers>.Instance);
+    }
+
+    /// <summary>Production payment wiring: cash evidence verification and the post-PAID schedule confirmation.</summary>
+    public SmartSolar.Modules.Payments.PaymentService PaymentsWithSchedule(AppDbContext? db = null) => new(new PaymentUnitOfWork(db ?? Db), PayOs.Gateway(), PaymentOptions,
+        Clock, NullLogger<SmartSolar.Modules.Payments.PaymentService>.Instance, orderCodes: OrderCodes, files: Files(db), paidFollowUp: Schedules(db));
+
+    /// <summary>Option B: direct survey booking (same booking rules as a pre-survey request).</summary>
+    public SmartSolar.Modules.Scheduling.PreSurveyAppointments.DirectSurveyBookingHandler DirectBooking()
+        => new(Scheduling.UnitOfWork, Scheduling.Book(), Clock);
 
     /// <summary>Survey self-acceptance over <paramref name="db"/> that sees installation assignments.</summary>
     public SmartSolar.Modules.Scheduling.PreSurveyAppointments.TechnicianJobHandlers JobsWithInstallations(AppDbContext? db = null)

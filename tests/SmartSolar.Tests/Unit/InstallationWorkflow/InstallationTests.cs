@@ -62,10 +62,10 @@ public sealed class InstallationTests
     /// The Manager satisfies every still-pending required prerequisite and every mandatory one (EVN, PCCC, structural) not yet satisfied
     /// with a verified project document, as production requires before work can start.
     /// </summary>
-    internal static async Task SatisfyPrerequisitesAsync(InstallationWorkflowTestContext ctx, Guid projectId)
+    internal static async Task SatisfyPrerequisitesAsync(InstallationWorkflowTestContext ctx, Guid projectId, Guid? managerUserId = null)
     {
         var installs = ctx.Installations();
-        var manager = (await ctx.Db.InstallationProjects.AsNoTracking().SingleAsync(p => p.Id == projectId)).ManagerUserId;
+        var manager = managerUserId ?? (await ctx.Db.InstallationProjects.AsNoTracking().SingleAsync(p => p.Id == projectId)).ManagerUserId!.Value;
         foreach (var item in (await installs.GetForManagerAsync(projectId, None)).Value!.Checklist
                      .Where(i => (i.IsRequired && i.Status == ChecklistStatuses.Pending) || (DefaultInstallationPlan.IsMandatory(i.Code) && i.Status != ChecklistStatuses.Satisfied)))
         {
@@ -479,7 +479,7 @@ public sealed class InstallationTests
     // ------------------------------------------------------------------ execution
 
     [Fact]
-    public async Task Start_is_gated_by_the_scheduled_date_and_the_required_checklist_and_repeating_it_changes_nothing()
+    public async Task Start_is_gated_by_the_required_checklist_only_and_repeating_it_changes_nothing()
     {
         var ctx = InstallationWorkflowTestContext.Create();
         await using var _ = ctx;
@@ -487,7 +487,8 @@ public sealed class InstallationTests
         var installs = ctx.Installations();
         var item = project.Checklist.Single(i => i.Code == "GRID_CONNECTION_APPROVAL");
 
-        Assert.Equal(InstallationErrorCodes.TooEarlyToStart, (await installs.StartProjectAsync(tech, project.ProjectId, None)).ErrorCode);
+        // Before the scheduled day the only reason is the checklist (the dates no longer block a start).
+        Assert.Equal(InstallationErrorCodes.ChecklistIncomplete, (await installs.StartProjectAsync(tech, project.ProjectId, None)).ErrorCode);
         var required = (await installs.UpdateChecklistItemAsync(paid.ManagerId, project.ProjectId, item.ItemId, project.Revision,
             new ChecklistUpdate(true, "PENDING", null, "EVN approval needed above 3 kWp"), None)).Value!;
         ctx.Clock.Now = At(8, 30, Wed).ToUniversalTime();
@@ -537,6 +538,55 @@ public sealed class InstallationTests
         var again = (await installs.StartProjectAsync(tech, project.ProjectId, None)).Value!;
         Assert.Equal(started.Revision, again.Revision);
         Assert.Single((await installs.GetForManagerAsync(project.ProjectId, None)).Value!.Events, e => e.EventType == InstallationEventTypes.ProjectStarted);
+    }
+
+    [Fact]
+    public async Task With_every_prerequisite_satisfied_the_technician_starts_before_the_scheduled_day_and_can_start_matches_the_api()
+    {
+        var ctx = InstallationWorkflowTestContext.Create();
+        await using var _ = ctx;
+        var (_, project, tech, _) = await ScheduledAsync(ctx);   // Wed 08:00–17:00; the clock is the Monday before
+        await SatisfyPrerequisitesAsync(ctx, project.ProjectId);
+        var installs = ctx.Installations();
+
+        var view = (await installs.GetForTechnicianAsync(tech, project.ProjectId, None)).Value!;
+        Assert.Equal((true, (string?)null), (view.CanStart, view.StartBlockedReason));
+        var started = await installs.StartProjectAsync(tech, project.ProjectId, None);
+        Assert.True(started.Succeeded, started.Message);
+        Assert.Equal(InstallationStatuses.InProgress, started.Value!.Status);
+        var stored = await ctx.Db.InstallationProjects.AsNoTracking().SingleAsync();
+        // The planned dates are kept for scheduling; the real start is recorded separately. No evidence, asset or report was needed.
+        Assert.Equal((At(8, 0, Wed).ToUniversalTime(), ctx.Clock.GetUtcNow()), (stored.ScheduledStartsAt!.Value.ToUniversalTime(), stored.StartedAt!.Value.ToUniversalTime()));
+        Assert.Empty(started.Value.Evidence);
+        Assert.Empty(started.Value.Assets);
+        Assert.Single((await installs.GetForManagerAsync(project.ProjectId, None)).Value!.Events, e => e.EventType == InstallationEventTypes.ProjectStarted);
+        Assert.Single(await ctx.Db.AfterSalesNotifications.AsNoTracking()
+            .Where(n => n.RecipientUserId == stored.CustomerUserId && n.Type == SmartSolar.Modules.Common.Notifications.CustomerNotificationTypes.InstallationStarted).ToListAsync());
+        // The assignment keeps its planned interval and stays ACCEPTED.
+        var assignment = await ctx.Db.InstallationAssignments.AsNoTracking().SingleAsync(a => a.ProjectId == project.ProjectId);
+        Assert.Equal((AssignmentStatuses.Accepted, At(8, 0, Wed).ToUniversalTime()), (assignment.Status, assignment.StartsAt.ToUniversalTime()));
+    }
+
+    [Fact]
+    public async Task Start_stays_blocked_for_a_pending_assignment_and_for_another_technician()
+    {
+        var ctx = InstallationWorkflowTestContext.Create();
+        await using var _ = ctx;
+        var paid = await PaidContractAsync(ctx);
+        var technician = await ctx.Scheduling.SeedTechnicianAsync("Installer", BinhTan);
+        var other = await ctx.Scheduling.SeedTechnicianAsync("Other", BinhTan);
+        var installs = ctx.Installations();
+        var project = (await installs.CreateProjectAsync(paid.ManagerId, paid.ContractId, None)).Value!;
+        var assigned = (await installs.AssignAsync(paid.ManagerId, project.ProjectId, Assign(technician.Id, At(8, 0, Wed), At(17, 0, Wed), project.Revision), None)).Value!;
+        await SatisfyPrerequisitesAsync(ctx, project.ProjectId);
+
+        // Assignment not accepted yet: refused, and canStart says so.
+        Assert.Equal(InstallationErrorCodes.AssignmentNotAccepted, (await installs.StartProjectAsync(technician.Id, project.ProjectId, None)).ErrorCode);
+        Assert.Equal(InstallationErrorCodes.AssignmentNotAccepted, (await installs.GetForTechnicianAsync(technician.Id, project.ProjectId, None)).Value!.StartBlockedReason);
+        // Another technician never sees the project.
+        Assert.Equal(InstallationErrorCodes.ProjectNotFound, (await installs.StartProjectAsync(other.Id, project.ProjectId, None)).ErrorCode);
+        Assert.Equal(InstallationStatuses.PendingTechnicianAcceptance, (await ctx.Db.InstallationProjects.AsNoTracking().SingleAsync()).Status);
+        Assert.Equal(InstallationStatuses.PendingTechnicianAcceptance, assigned.Status);
     }
 
     [Fact]
@@ -598,7 +648,7 @@ public sealed class InstallationTests
         var differs = await installs.ReportCompletionAsync(tech, project.ProjectId, "All panels installed and commissioned.", null, None);
         Assert.Equal(InstallationErrorCodes.SubstitutionApprovalRequired, differs.ErrorCode);
         Assert.Contains("\"InstalledQuantity\":13", JsonSerializer.Serialize(differs.Details));
-        var manager = (await ctx.Db.InstallationProjects.AsNoTracking().SingleAsync(p => p.Id == project.ProjectId)).ManagerUserId;
+        var manager = (await ctx.Db.InstallationProjects.AsNoTracking().SingleAsync(p => p.Id == project.ProjectId)).ManagerUserId!.Value;
         var revision = (await installs.GetForManagerAsync(project.ProjectId, None)).Value!.Revision;
         Assert.Equal(InstallationErrorCodes.ReasonRequired, (await installs.ApproveSubstitutionAsync(manager, project.ProjectId, revision, " ", None)).ErrorCode);
         var approved = (await installs.ApproveSubstitutionAsync(manager, project.ProjectId, revision, "One spare panel to fill the roof row", None)).Value!;

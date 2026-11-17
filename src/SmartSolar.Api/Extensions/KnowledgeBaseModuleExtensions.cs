@@ -35,6 +35,16 @@ public static class KnowledgeBaseModuleExtensions
         services.AddScoped<SmartSolar.Modules.KnowledgeBase.IKnowledgeUnitOfWork, KnowledgeUnitOfWork>();
         services.AddScoped<SmartSolar.Modules.KnowledgeBase.KnowledgeDocumentHandlers>();
         services.AddScoped<SmartSolar.Modules.KnowledgeBase.KnowledgeIngestionService>();
+        // Deterministic configuration advisor used by the chat (read-only catalog / own site / PVGIS; same tax and loss settings as quotations and simulations).
+        services.AddSingleton(new SmartSolar.Modules.KnowledgeBase.Advisor.SolarAdvisorOptions
+        {
+            TaxRatePercent = configuration.GetValue("Quotation:DefaultTaxRatePercent", 8m),
+            SystemLossPercent = configuration.GetValue("SolarSimulation:DefaultSystemLossPercent", 14m),
+            ProviderTimeoutSeconds = configuration.GetValue("Rag:AdvisorProviderTimeoutSeconds", 8),
+        });
+        services.AddSingleton<SmartSolar.Modules.KnowledgeBase.Advisor.SolarYieldCache>();
+        services.AddScoped<SmartSolar.Modules.KnowledgeBase.Advisor.ISolarAdvisorDataSource, SolarAdvisorDataSource>();
+        services.AddScoped<SmartSolar.Modules.KnowledgeBase.Advisor.SolarAdvisorService>();
         services.AddScoped<SmartSolar.Modules.KnowledgeBase.ChatService>();
         if (rag.IngestionWorkerEnabled)
             services.AddHostedService<Background.KnowledgeIngestionWorker>();

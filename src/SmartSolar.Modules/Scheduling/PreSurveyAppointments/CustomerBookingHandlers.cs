@@ -698,5 +698,5 @@ public sealed class CustomerSurveyRequestQueries(ISchedulingUnitOfWork unitOfWor
     private CustomerSurveyRequestView Map(CustomerSurveyRequestRow r, SchedulingPolicySnapshot policy, DateTimeOffset now) => new(
         r.SurveyRequestId, r.PreSurveyId, r.PropertySiteId, r.PropertyName, CustomerViews.Status(r.Status), r.SubmittedAt,
         r.ScheduledAt is { } s ? TimeZoneInfo.ConvertTime(s, calendar.TimeZone) : null,
-        r.ActiveAppointment is { } a ? CustomerViews.Appointment(a, r.AssignedTechnicianName, calendar, policy, now) : null);
+        r.ActiveAppointment is { } a ? CustomerViews.Appointment(a, r.AssignedTechnicianName, calendar, policy, now) : null, r.Source);
 }

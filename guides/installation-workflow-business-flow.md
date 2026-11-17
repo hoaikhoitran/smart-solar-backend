@@ -4,7 +4,8 @@ The Installation Flow starts where Flow 1 ends (a technician has **accepted** �
 and finishes with a handed-over installation:
 
 ```
-on-site survey → quotation → contract (hand-signed PDF) → PayOS payment (100%) → installation → handover
+on-site survey → technician cart quotation → customer accepts (contract draft created) → Manager/Admin contract
+→ hand-signed PDF confirmed → payment 100 % (ONLINE PayOS or CASH confirmed by Manager/Admin) → installation → handover
 ```
 
 > **Status: code complete, database PENDING_MANUAL_MIGRATION.** Every Installation Flow / knowledge base endpoint answers
@@ -12,9 +13,10 @@ on-site survey → quotation → contract (hand-signed PDF) → PayOS payment (1
 > `guides/sql/installation-workflow-and-knowledge-base-schema-review.sql` has been reviewed and applied. See
 > [installation-workflow-and-knowledge-base-database-plan.md](installation-workflow-and-knowledge-base-database-plan.md).
 
-Roles: **Customer**, **Sales** (owner of the survey request since the Flow 1 claim), **Technician**,
-**Manager**, **Admin**. Every state change is optimistic-concurrency protected (`revision`) and writes
-an audit event.
+Roles: **Customer**, **Technician** (surveys and builds the quotation cart), **Manager** / **Admin** (contract, signature
+confirmation, cash confirmation, installation project), **Sales** (consult-only since 2026-11-17: reads the quotations and contracts
+of the requests it owns, no commercial step). Every state change is optimistic-concurrency protected (`revision`) and writes
+an audit event. Full redesign, state machines and API mapping: [simplified-commercial-flow.md](simplified-commercial-flow.md).
 
 ---
 
@@ -31,49 +33,53 @@ an audit event.
 
 Statuses: `DRAFT → IN_PROGRESS → COMPLETED`.
 
-## 2. Quotation (Sales, self-issued)
+## 2. Quotation (technician cart)
 
-* Created only for a survey request whose on-site survey is **COMPLETED**, by the owning Sales.
-* Lines reference catalog products (name/unit/price **snapshotted**) or are custom lines; labour,
-  transport and other service costs, discount, tax (default 8 %, applied after discount).
-  VND amounts are rounded to whole đồng, midpoint away from zero. Discount ≤ subtotal.
-* `issue` freezes the version. A new version (`revisions`) supersedes the previous one when issued.
-  One DRAFT and one live (ISSUED/ACCEPTED) version per survey request at most (DB unique indexes).
-* Customer: **accept** or **request revision** (reason required). Accept and revision-request race
-  safely: exactly one wins.
+* Only the technician who **COMPLETED** the on-site survey builds it; NOT_FEASIBLE surveys get no quotation. No Sales owner is needed.
+* Each line is an active VND catalog product (equipment or catalog service item) at its **catalog price**; nobody enters a price,
+  discount or tax rate. A product without a catalog price is refused. Tax = `Quotation:DefaultTaxRatePercent`, no discount.
+  VND amounts are rounded to whole đồng, midpoint away from zero.
+* `issue` re-reads every price from the catalog (snapshot), computes the totals and freezes the version; later catalog changes never
+  alter it. One DRAFT and one live (ISSUED/ACCEPTED) version per survey request at most (DB unique indexes).
+* Customer: **accept**, **reject** or **request revision** (reason required). The technician answers a revision request (or a
+  rejection) with a new version, which supersedes the previous ISSUED / REVISION_REQUESTED one when issued. An accepted quotation is final.
+* Completing a survey no longer generates a quotation automatically; the Sales manual quotation, the pending-review queue and the
+  Manager pricing approval are retired (410).
 
-Statuses: `DRAFT → ISSUED → ACCEPTED | REVISION_REQUESTED`, any older version → `SUPERSEDED`.
+Statuses: `DRAFT → ISSUED → ACCEPTED | REJECTED | REVISION_REQUESTED`, older versions → `SUPERSEDED`, request closed → `CANCELLED`.
 
-## 3. Contract (hand-signed PDF)
+## 3. Contract (hand-signed PDF, Manager/Admin)
 
-1. Sales creates the contract from the **ACCEPTED** quotation (pricing snapshot copied), edits terms, `issue`s it.
-   Issuing computes a **canonical hash** of the contract content.
-2. Sales generates the official PDF outside the system, uploads it (`CONTRACT_DOCUMENT`), and attaches it
-   with the canonical hash — the API refuses a PDF attached to a different content version.
-3. `publish` → **AWAITING_SIGNATURE**. The customer downloads, signs by hand, scans, uploads
-   (`SIGNED_CONTRACT`) and submits it together with the SHA-256 of the official PDF they signed.
-4. Review by the owning Sales or a Manager: **approve → SIGNED**, **reject (reason) → SIGNATURE_REJECTED**
-   (the customer can resubmit). Double approval applies once.
-5. Changes after issue are **amendments**: a new contract version supersedes the old one.
+1. Accepting the quotation creates the contract **DRAFT** in the same transaction (pricing and customer snapshot copied, default
+   installation warranty) — exactly one per quotation.
+2. Manager/Admin enter the terms (and warranty), `issue` it (canonical hash), upload the official PDF (`CONTRACT_DOCUMENT`) and attach
+   it with the canonical hash — the API refuses a PDF attached to a different content version — then `publish` → **AWAITING_SIGNATURE**.
+3. The customer downloads, signs by hand, scans, uploads (`SIGNED_CONTRACT`) and submits it with the SHA-256 of the official PDF.
+4. Manager/Admin confirm the signature: **approve → SIGNED**, **reject (reason) → SIGNATURE_REJECTED** (the customer resubmits).
+5. Changes after issue are **amendments**: a new contract version supersedes the old one (not after PAID).
 
-Statuses: `DRAFT → ISSUED → AWAITING_SIGNATURE → UNDER_REVIEW → SIGNED | SIGNATURE_REJECTED → … → PAID`; replaced versions `SUPERSEDED`.
+Statuses: `DRAFT → ISSUED → AWAITING_SIGNATURE → UNDER_REVIEW → SIGNED | SIGNATURE_REJECTED → … → PAID`; replaced versions
+`SUPERSEDED`, discarded drafts `DISCARDED`.
 
-## 4. Payment — PayOS, one 100 % payment
+## 4. Payment — one 100 % payment, ONLINE (PayOS) or CASH
 
-* Only a **SIGNED** contract can be paid; amount = contract total (VND, whole units, ≤ 10 billion).
-* `POST …/payments` is idempotent: it returns the live link if one exists, otherwise creates a new
-  attempt (unique `orderCode`, 15 min expiry). At most 5 new attempts per contract per 10 minutes
-  (counted in the database before each new attempt — not atomic, but concurrent creations are bounded by
-  the one-payable-attempt unique index) plus the HTTP rate limit.
-* **The return URL is never trusted.** Payment is confirmed only by (a) a PayOS webhook whose
-  HMAC-SHA256 signature verifies, or (b) server-to-server reconciliation (`GET /v2/payment-requests/{id}`),
-  which also runs on customer status polls (throttled) and every minute in the background.
-* Confirmation is atomic: amount must match **exactly** → attempt PAID **and** contract SIGNED → PAID
-  in one transaction. A mismatch → `REVIEW_REQUIRED`; money received for an already-paid contract →
-  `REFUND_REQUIRED` (both visible to staff, nothing automatic).
+* Only a **SIGNED** contract can be paid; amount = contract total (VND, whole units). One method at a time: an online link and a
+  cash choice share the same "one payable attempt per contract" unique index.
+* **ONLINE:** `POST …/payments` is idempotent: it returns the live link if one exists, otherwise creates a new attempt (unique
+  `orderCode`, 15 min expiry). At most 5 new attempts per contract per 10 minutes plus the HTTP rate limit. **The return URL is never
+  trusted.** Payment is confirmed only by a PayOS webhook whose HMAC-SHA256 signature verifies, or by server-to-server reconciliation
+  (customer polls, throttled, and every minute in the background).
+* **CASH:** `POST …/payments/cash` records the customer's choice (`AWAITING_CASH_CONFIRMATION`); it is not a payment and the contract
+  stays SIGNED. An open online link is checked with PayOS first (paid → the contract is paid; still open → the customer must cancel it).
+  Only a Manager/Admin confirms the cash: who (the caller), when (now), the **exact** contract amount, a unique receipt reference and a
+  verified `PAYMENT_EVIDENCE` file. Then attempt PAID **and** contract SIGNED → PAID in one transaction; a second confirmation is refused.
+  The customer may withdraw the cash choice (`…/payments/cancel`) before it is confirmed.
+* Online money that does not match (`REVIEW_REQUIRED`) or arrives for an already-paid contract — e.g. a late transfer after cash
+  (`REFUND_REQUIRED`) — opens a refund record for a Manager; nothing is refunded automatically and nothing is settled twice.
 * Duplicate webhooks are deduplicated by payload SHA-256; webhook + reconciliation races confirm once.
 
-Attempt statuses: `PENDING`, `PROCESSING`, `PAID`, `CANCELLED`, `EXPIRED`, `FAILED`, `REVIEW_REQUIRED`, `REFUND_REQUIRED`.
+Attempt statuses: `PENDING`, `PROCESSING`, `PAID`, `CANCELLED`, `EXPIRED`, `FAILED`, `REVIEW_REQUIRED`, `REFUND_REQUIRED`
+(`method`: `ONLINE` or `CASH`).
 
 ## 5. Installation
 
@@ -100,7 +106,7 @@ CANCELLED ◀── Manager cancel (only from PENDING_ASSIGNMENT, PENDING_TECHNI
 | IN_PROGRESS, REWORK_REQUIRED | reassign / reschedule (Manager/Admin, reason) | unchanged | the new assignment is `PENDING`; the new technician must accept before any further work |
 | PENDING_TECHNICIAN_ACCEPTANCE | accept (assigned technician) | SCHEDULED | repeat accept is a no-op; refused after the assigned interval ended |
 | PENDING_TECHNICIAN_ACCEPTANCE | decline (assigned technician, reason) | PENDING_ASSIGNMENT | assignment `DECLINED`, reason visible to the Manager; an accepted job cannot be declined |
-| SCHEDULED | start (responsible technician) | IN_PROGRESS | accepted assignment; local date ≥ scheduled start date; before the scheduled end (afterwards `409 INSTALLATION_SCHEDULE_EXPIRED`: the Manager must reschedule); every required checklist item SATISFIED or NOT_APPLICABLE; repeat is a no-op |
+| SCHEDULED | start (responsible technician) | IN_PROGRESS | accepted assignment; every mandatory prerequisite (EVN, PCCC, structural assessment) SATISFIED (or exempted under an approved rule with a document) and every other required item not PENDING; repeat is a no-op. **Since 2026-11-17 the scheduled dates do not block the start** (before the planned day or after the planned interval is allowed); they stay for planning. No evidence, asset or report is needed to start |
 | IN_PROGRESS, REWORK_REQUIRED | completion report (responsible technician) | PENDING_CUSTOMER_ACCEPTANCE | report ≤ 8000 chars; ≥ 1 evidence photo of the **current round**; ≥ 1 PANEL and ≥ 1 INVERTER row (a lot by quantity or a serialised device; `Installation:RequirePanelAndInverterAssets`, exposed to the technician as `requiresPanelAndInverterAssets`); `INSTALLATION_ASSETS_REQUIRED` names the missing types in `details.missing` |
 | PENDING_CUSTOMER_ACCEPTANCE | ACCEPT (customer owner) | COMPLETED | completion + handover recorded; assignment `COMPLETED`; repeat accept is a no-op |
 | PENDING_CUSTOMER_ACCEPTANCE | REQUEST_REWORK (customer owner, reason) | REWORK_REQUIRED | the next round starts: new evidence is required for the next report |

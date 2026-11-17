@@ -1,10 +1,9 @@
 using Microsoft.Extensions.Logging;
-using SmartSolar.Modules.Common.Messaging;
 using SmartSolar.Modules.Identity.Contracts.Persistence;
 using SmartSolar.Modules.Identity.Entities;
 using SmartSolar.Modules.Identity.Enums;
-using SmartSolar.Modules.Identity.Events;
 using SmartSolar.Modules.Identity.Options;
+using SmartSolar.Modules.Identity.PasswordRecovery;
 
 namespace SmartSolar.Modules.Identity.EmailVerification;
 
@@ -12,7 +11,7 @@ public sealed class ResendVerificationHandler
 {
     private readonly IIdentityUnitOfWork _unitOfWork;
     private readonly EmailVerificationTokenFactory _tokenFactory;
-    private readonly IIntegrationEventPublisher _publisher;
+    private readonly PasswordResetDispatcher _dispatcher;
     private readonly EmailVerificationOptions _verificationOptions;
     private readonly FrontendOptions _frontendOptions;
     private readonly ILogger<ResendVerificationHandler> _logger;
@@ -20,14 +19,14 @@ public sealed class ResendVerificationHandler
     public ResendVerificationHandler(
         IIdentityUnitOfWork unitOfWork,
         EmailVerificationTokenFactory tokenFactory,
-        IIntegrationEventPublisher publisher,
+        PasswordResetDispatcher dispatcher,
         EmailVerificationOptions verificationOptions,
         FrontendOptions frontendOptions,
         ILogger<ResendVerificationHandler> logger)
     {
         _unitOfWork = unitOfWork;
         _tokenFactory = tokenFactory;
-        _publisher = publisher;
+        _dispatcher = dispatcher;
         _verificationOptions = verificationOptions;
         _frontendOptions = frontendOptions;
         _logger = logger;
@@ -74,38 +73,28 @@ public sealed class ResendVerificationHandler
         var verificationToken = _tokenFactory.Create();
         var now = DateTimeOffset.UtcNow;
 
+        var tokenId = Guid.NewGuid();
+        var expiresAt = now.AddMinutes(_verificationOptions.LifetimeMinutes);
         _unitOfWork.AddAuthActionToken(new AuthActionToken
         {
-            Id = Guid.NewGuid(),
+            Id = tokenId,
             UserId = user.UserId,
             TokenHash = verificationToken.TokenHash,
             Type = AuthActionTokenType.EmailVerification,
-            ExpiresAt = now.AddMinutes(_verificationOptions.LifetimeMinutes)
+            ExpiresAt = expiresAt
         });
 
-        return new PendingVerification(user.UserId, user.Email, user.FullName, verificationToken.RawToken);
+        // Outbox row of the same transaction (audit INT-02); the replaced token's pending row is removed with it (cascade).
+        var dispatch = AuthLinkDispatches.Pending(user.UserId, tokenId, user.Email, user.FullName,
+            VerificationUrlBuilder.Build(_frontendOptions.EmailVerificationUrl, verificationToken.RawToken), now, expiresAt);
+        _unitOfWork.AddPasswordResetDispatch(dispatch);
+
+        return new PendingVerification(dispatch.Id);
     }
 
-    private async Task PublishAsync(PendingVerification pending, CancellationToken cancellationToken)
-    {
-        try
-        {
-            await _publisher.PublishAsync(
-                new EmailVerificationRequestedEvent(
-                    pending.UserId,
-                    pending.Email,
-                    pending.FullName,
-                    VerificationUrlBuilder.Build(_frontendOptions.EmailVerificationUrl, pending.RawToken)),
-                cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(
-                ex,
-                "Failed to publish email verification event for user {UserId}.",
-                pending.UserId);
-        }
-    }
+    /// <summary>One publish attempt after the commit; on failure the outbox worker retries until the token expires.</summary>
+    private Task PublishAsync(PendingVerification pending, CancellationToken cancellationToken)
+        => _dispatcher.TryPublishAsync(pending.DispatchId, cancellationToken);
 
-    private sealed record PendingVerification(Guid UserId, string Email, string FullName, string RawToken);
+    private sealed record PendingVerification(Guid DispatchId);
 }

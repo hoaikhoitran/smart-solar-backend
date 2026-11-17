@@ -183,6 +183,8 @@ public sealed class AdminUserStore(AppDbContext db, bool includeInstallationAssi
 
     public void AddActionToken(AuthActionToken token) => db.AuthActionTokens.Add(token);
 
+    public void AddLinkDispatch(SmartSolar.Modules.Identity.PasswordRecovery.PasswordResetDispatch dispatch) => db.PasswordResetDispatches.Add(dispatch);
+
     public void AddAudit(UserAccountAuditEntry entry) => db.UserAccountAuditEntries.Add(entry);
 
     public Task<T> ExecuteInTransactionAsync<T>(Func<CancellationToken, Task<(T Result, bool Commit)>> work, CancellationToken cancellationToken)

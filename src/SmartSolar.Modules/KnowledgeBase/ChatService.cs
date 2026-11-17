@@ -14,7 +14,9 @@ public sealed record CitationView(int Rank, Guid DocumentId, string DocumentTitl
 public sealed record ChatMessageView(Guid MessageId, string Role, string Content, string Status, DateTimeOffset CreatedAt, IReadOnlyList<CitationView> Citations,
     bool Withheld = false);
 
-public sealed record ChatAnswerView(Guid SessionId, ChatMessageView Question, ChatMessageView Answer, bool Grounded, string Notice);
+/// <param name="Advisor">The structured configuration advice when the question was answered by the deterministic advisor (null otherwise).</param>
+public sealed record ChatAnswerView(Guid SessionId, ChatMessageView Question, ChatMessageView Answer, bool Grounded, string Notice,
+    Advisor.SolarAdvisorView? Advisor = null);
 
 public sealed record ChatSessionView(Guid SessionId, string Title, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
 
@@ -56,12 +58,19 @@ public static class KnowledgeAudiences
 /// version) come from the effective admin configuration, read per request; the quota estimate follows the same values.
 /// The model only produces text; it can never change contracts, payments or any data.
 /// </summary>
+/// <para>
+/// Configuration advice (2026-11-17): questions about what to install (roof m², budget, kWh/month, "bao nhiêu tấm / kWp", which inverter) are
+/// answered by the deterministic <see cref="Advisor.SolarAdvisorService"/> from ACTIVE catalog data, the caller's own site / simulation and
+/// PVGIS — never by the model, which is not called for them (no Ollama cost). Missing essentials are asked for; values given in earlier user
+/// turns of the session are reused. The advisor only reads; it never creates a quotation, contract, payment or appointment.
+/// </para>
 public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClient rag, RagOptions options, IRagConfigurationProvider configuration, TimeProvider time,
-    ILogger<ChatService> logger)
+    ILogger<ChatService> logger, Advisor.SolarAdvisorService? advisor = null)
 {
     /// <summary>Without dependency injection: the effective configuration is read from the same unit of work, uncached.</summary>
-    public ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClient rag, RagOptions options, TimeProvider time, ILogger<ChatService> logger)
-        : this(unitOfWork, rag, options, EffectiveRagConfigurationProvider.Uncached(unitOfWork, options, time), time, logger)
+    public ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClient rag, RagOptions options, TimeProvider time, ILogger<ChatService> logger,
+        Advisor.SolarAdvisorService? advisor = null)
+        : this(unitOfWork, rag, options, EffectiveRagConfigurationProvider.Uncached(unitOfWork, options, time), time, logger, advisor)
     {
     }
 
@@ -73,14 +82,24 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
     public const string Notice = "Câu trả lời được tạo tự động từ tài liệu đã công bố và có thể chưa đầy đủ; không thay thế tư vấn kỹ thuật hoặc điều khoản hợp đồng.";
 
     public async Task<OperationResult<ChatAnswerView>> AskAsync(Guid userId, Guid? sessionId, string question, string? clientMessageId, CancellationToken cancellationToken,
-        KnowledgeAudience audience = KnowledgeAudience.Customer)
+        KnowledgeAudience audience = KnowledgeAudience.Customer, Advisor.SolarAdvisorInput? advisorInput = null)
     {
         question = question?.Trim() ?? "";
         if (question.Length == 0 || question.Length > options.MaxQuestionCharacters)
             return OperationResult<ChatAnswerView>.Fail(KnowledgeErrorCodes.MessageTooLong, $"Questions must be 1–{options.MaxQuestionCharacters} characters.");
         if (clientMessageId is { Length: > 64 }) return OperationResult<ChatAnswerView>.Fail(CommonErrorCodes.ValidationFailed, "clientMessageId must be at most 64 characters.");
 
+        var clock = System.Diagnostics.Stopwatch.StartNew();
         ChatSession? session = null;
+        if (sessionId is null && clientMessageId is not null
+            && await unitOfWork.FindUserMessageByClientIdAsync(userId, clientMessageId, cancellationToken) is { } retriedFirst
+            && await unitOfWork.FindReplyAsync(retriedFirst.Id, cancellationToken) is { } firstReply)
+        {
+            // A retried FIRST question (the client did not receive the new session id): the stored exchange, not a second session and a
+            // second generation.
+            return OperationResult<ChatAnswerView>.Ok(await AnswerViewAsync(retriedFirst.SessionId, retriedFirst, firstReply, cancellationToken,
+                await VisibleDocumentsAsync(audience, cancellationToken), audience));
+        }
         if (sessionId is { } id)
         {
             session = await unitOfWork.FindSessionAsync(id, cancellationToken);
@@ -115,7 +134,39 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
                 history = previous.Where(m => m.Status != ChatMessageStatuses.Failed && !View(m, previousCitations, visible, audience).Withheld)
                     .Select(m => new RagHistoryTurn(m.Role, m.Content)).ToList();
             }
+            // ---- configuration advice: deterministic tools, no model call
+            if (advisor is not null)
+            {
+                var extracted = Advisor.SolarAdvisorTextExtractor.Extract(question);
+                Advisor.SolarAdvisorInput? earlier = null;
+                foreach (var turn in history.Where(h => h.Role == ChatRoles.User))
+                    earlier = Advisor.SolarAdvisorTextExtractor.Extract(turn.Content).Over(earlier);
+                var followUp = (extracted.TiltDegree is not null || extracted.AzimuthDegree is not null) && earlier?.HasSizingInput == true;
+                if (advisorInput is not null || Advisor.SolarAdvisorTextExtractor.IsAdvisorQuestion(question, extracted) || followUp)
+                {
+                    var merged = (advisorInput ?? new Advisor.SolarAdvisorInput()).Over(extracted.Over(earlier));
+                    Advisor.SolarAdvisorView advice;
+                    try
+                    {
+                        advice = await advisor.AdviseAsync(userId, merged, cancellationToken);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        logger.LogWarning(ex, "Solar advisor failed (the knowledge chat is unaffected).");
+                        return OperationResult<ChatAnswerView>.Fail(KnowledgeErrorCodes.AdvisorUnavailable,
+                            "The configuration advisor is temporarily unavailable. Please try again later; other questions still work.");
+                    }
+                    var advisorMs = clock.ElapsedMilliseconds;
+                    var stored = await PersistAsync(userId, session, question, clientMessageId, Advisor.SolarAdvisorRenderer.Render(advice), true, [],
+                        new Dictionary<Guid, RagAllowedVersion>(), new RagAnswerResult(true, null, null, true, [], 0, 0, "solar-advisor", 0, 0), audience, cancellationToken);
+                    logger.LogInformation("Chat advisor answer: status={Status} advisor={AdvisorMs}ms (provider={ProviderMs}ms) total={TotalMs}ms; no model call.",
+                        advice.Status, advisorMs, advice.ProviderMs, clock.ElapsedMilliseconds);
+                    return stored.Succeeded ? OperationResult<ChatAnswerView>.Ok(stored.Value! with { Advisor = advice }) : stored;
+                }
+            }
+
             var allowed = await AllowedAsync(audience, cancellationToken);
+            var prepareMs = clock.ElapsedMilliseconds;
 
             RagAnswerResult result;
             if (allowed.Count == 0)
@@ -146,10 +197,17 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
                     result = new RagAnswerResult(false, "timeout", null, false, [], 0, 0, null, 0, 0);
                 }
             }
+            var ragMs = clock.ElapsedMilliseconds - prepareMs;
             if (!result.Reached)
             {
-                logger.LogWarning("RAG answer unavailable: {Error}.", result.Error);
-                return OperationResult<ChatAnswerView>.Fail(KnowledgeErrorCodes.ServiceUnavailable, "The assistant is temporarily unavailable. Please try again later.");
+                logger.LogWarning("RAG answer unavailable: {Error} (prepare={PrepareMs}ms, rag={RagMs}ms).", result.Error, prepareMs, ragMs);
+                return result.Error switch
+                {
+                    "timeout" => OperationResult<ChatAnswerView>.Fail(KnowledgeErrorCodes.Timeout,
+                        "The assistant took too long to answer. Please try again; a shorter question is usually faster."),
+                    "busy" => OperationResult<ChatAnswerView>.Fail(KnowledgeErrorCodes.Busy, "The assistant is answering other questions. Please try again in a moment."),
+                    _ => OperationResult<ChatAnswerView>.Fail(KnowledgeErrorCodes.ServiceUnavailable, "The assistant is temporarily unavailable. Please try again later."),
+                };
             }
             input = result.PromptTokens;
             output = result.CompletionTokens;
@@ -160,7 +218,12 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
             var grounded = result.Grounded && !string.IsNullOrWhiteSpace(result.Answer) && citations.Count > 0 && citations.Count == result.Citations.Count;
             var answerText = grounded ? result.Answer!.Trim() : InsufficientAnswer;
 
-            return await PersistAsync(userId, session, question, clientMessageId, answerText, grounded, grounded ? citations : [], stillAllowed, result, audience, cancellationToken);
+            var persisted = await PersistAsync(userId, session, question, clientMessageId, answerText, grounded, grounded ? citations : [], stillAllowed, result, audience, cancellationToken);
+            // Where the time went (no question text): API preparation (session, history, quota, allowed documents), the RAG call (of which
+            // the service's retrieval and generation), and storing the exchange.
+            logger.LogInformation("Chat answer timings: prepare={PrepareMs}ms rag={RagMs}ms (retrieval={RetrievalMs}ms generation={GenerationMs}ms) persist={PersistMs}ms total={TotalMs}ms grounded={Grounded}.",
+                prepareMs, ragMs, result.RetrievalMs, result.GenerationMs, clock.ElapsedMilliseconds - prepareMs - ragMs, clock.ElapsedMilliseconds, grounded);
+            return persisted;
         }
         finally
         {

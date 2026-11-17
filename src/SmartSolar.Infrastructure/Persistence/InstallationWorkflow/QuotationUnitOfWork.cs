@@ -13,7 +13,7 @@ public sealed class QuotationUnitOfWork(AppDbContext db) : TransactionalUnitOfWo
             .Where(s => s.Id == surveyRequestId)
             .Select(s => new
             {
-                s.Id, s.AssignedSaleId, s.Status, User = s.PreSurvey.Property.Customer.User, Property = s.PreSurvey.Property,
+                s.Id, s.AssignedSaleId, s.Status, User = s.PropertySite.Customer.User, Property = s.PropertySite,
             })
             .Select(x => new
             {
@@ -41,7 +41,7 @@ public sealed class QuotationUnitOfWork(AppDbContext db) : TransactionalUnitOfWo
             .FirstOrDefaultAsync(cancellationToken);
         if (report is null) return null;
         var simulationId = await Db.SurveyRequests.AsNoTracking().Where(s => s.Id == surveyRequestId)
-            .Select(s => s.PreSurvey.SelectedSimulationId).FirstOrDefaultAsync(cancellationToken);
+            .Select(s => s.PreSurvey!.SelectedSimulationId).FirstOrDefaultAsync(cancellationToken);
         return new QuotationSurveyBasis(report.Id, report.Status, report.Version, report.InstallationFeasibility, report.BillOfMaterialsJson,
             report.TechnicianUserId, simulationId);
     }
@@ -136,7 +136,7 @@ public sealed class QuotationUnitOfWork(AppDbContext db) : TransactionalUnitOfWo
     public async Task<SalesRequestState?> GetRequestStateAsync(Guid surveyRequestId, CancellationToken cancellationToken)
     {
         var row = await Db.SurveyRequests.AsNoTracking().Where(s => s.Id == surveyRequestId)
-            .Select(s => new { s.Id, CustomerUserId = s.PreSurvey.Property.Customer.User.Id, s.AssignedSaleId, s.Status })
+            .Select(s => new { s.Id, CustomerUserId = s.PropertySite.Customer.User.Id, s.AssignedSaleId, s.Status })
             .FirstOrDefaultAsync(cancellationToken);
         if (row is null) return null;
         var feasibility = await Db.OnSiteSurveyReports.AsNoTracking().Where(r => r.SurveyRequestId == surveyRequestId)

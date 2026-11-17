@@ -97,10 +97,10 @@ public sealed class CreateSimulationHandler
             return CreateSimulationResult.Fail(CreateSimulationOutcome.SourceChanged, SimulationErrorCodes.SourceChanged);
         }
 
-        var obstacles = SurfaceObstacleSerializer.Deserialize(source.ObstaclesJson);
-        if (source.SurfaceLengthM is not { } length || source.SurfaceWidthM is not { } width
-            || source.SurfaceTiltDegree is not { } surfaceTilt || source.SurfaceAzimuthDegree is not { } surfaceAzimuthRaw
-            || obstacles is null)
+        // The separate surface step (PUT …/surface: rectangle + obstacles) is optional since 2026-11-17. Without it the layout uses the
+        // declared usable area of the pre-survey as a square surface without obstacles, with the declared tilt and azimuth.
+        var surface = EffectiveSurface(source, _options.Limits.MaxSurfaceSideM);
+        if (surface is not var (length, width, obstacles) || source.SurfaceTiltDegree is not { } surfaceTilt || source.SurfaceAzimuthDegree is not { } surfaceAzimuthRaw)
         {
             return CreateSimulationResult.Fail(CreateSimulationOutcome.SurfaceNotDefined, SimulationErrorCodes.SurfaceNotDefined);
         }
@@ -734,5 +734,17 @@ public sealed class CreateSimulationHandler
                 D3(p.LowEdgeClearanceM),
                 D3(p.HighEdgeHeightM))).ToList(),
             frame);
+    }
+    /// <summary>
+    /// The surface the layout runs on: the saved surface when the customer defined one (dimensions + obstacles), otherwise a square of the
+    /// declared usable area without obstacles (null when there is neither, or when that square would exceed the maximum surface side).
+    /// </summary>
+    public static (decimal Length, decimal Width, IReadOnlyList<SurfaceObstacle> Obstacles)? EffectiveSurface(SimulationSource source, decimal maxSideM)
+    {
+        if (source.SurfaceLengthM is { } length && source.SurfaceWidthM is { } width)
+            return SurfaceObstacleSerializer.Deserialize(source.ObstaclesJson) is { } saved ? (length, width, saved) : null;
+        if (source.DeclaredUsableAreaM2 is not > 0) return null;
+        var side = Math.Round((decimal)Math.Sqrt((double)source.DeclaredUsableAreaM2.Value), 3, MidpointRounding.ToZero);
+        return side > 0 && side <= maxSideM ? (side, side, Array.Empty<SurfaceObstacle>()) : null;
     }
 }

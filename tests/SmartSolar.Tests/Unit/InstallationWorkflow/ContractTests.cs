@@ -77,7 +77,7 @@ public sealed class ContractTests
 
         Assert.Equal(ContractErrorCodes.QuotationNotAccepted, (await c.CreateAsync(s.Sales.Id, issued.QuotationId, null, CancellationToken.None)).ErrorCode);
         await ctx.Quotations().AcceptAsync(s.Request.Customer.Id, issued.QuotationId, CancellationToken.None);
-        Assert.Equal(ContractErrorCodes.NotFound, (await c.CreateAsync(Guid.NewGuid(), issued.QuotationId, null, CancellationToken.None)).ErrorCode);
+        Assert.Equal(ContractErrorCodes.NotFound, (await c.CreateAsync(s.Sales.Id, Guid.NewGuid(), null, CancellationToken.None)).ErrorCode);
         Assert.True((await c.CreateAsync(s.Sales.Id, issued.QuotationId, null, CancellationToken.None)).Succeeded);
         Assert.Equal(ContractErrorCodes.AlreadyExists, (await c.CreateAsync(s.Sales.Id, issued.QuotationId, null, CancellationToken.None)).ErrorCode);
     }
@@ -147,8 +147,12 @@ public sealed class ContractTests
         Assert.Equal(SignatureOutcomes.Pending, again.Submissions[1].Outcome);
     }
 
+    /// <summary>
+    /// 2026-11-17: the signature review is a Manager/Admin step enforced by the API roles (see SimplifiedCommercialFlowEndpointsTests); the handler
+    /// keeps the state rules: unknown contract 404, a single decision per submission.
+    /// </summary>
     [Fact]
-    public async Task Only_the_owning_sales_or_a_manager_reviews_and_double_approval_is_rejected()
+    public async Task A_manager_reviews_the_signature_and_double_approval_is_rejected()
     {
         var ctx = InstallationWorkflowTestContext.Create();
         await using var _ = ctx;
@@ -157,9 +161,7 @@ public sealed class ContractTests
         var c = ctx.Contracts();
 
         Assert.Equal(ContractErrorCodes.NotFound,
-            (await c.ReviewAsync(Guid.NewGuid(), false, under.ContractId, under.Revision, ReviewDecision.Approve, null, CancellationToken.None)).ErrorCode);
-        Assert.Equal(ContractErrorCodes.NotFound,
-            (await c.ReviewAsync(r.Survey.Request.Customer.Id, false, under.ContractId, under.Revision, ReviewDecision.Approve, null, CancellationToken.None)).ErrorCode);
+            (await c.ReviewAsync(r.Survey.Sales.Id, true, Guid.NewGuid(), under.Revision, ReviewDecision.Approve, null, CancellationToken.None)).ErrorCode);
         var managerUser = await ctx.Scheduling.Inner.SeedUserAsync("Manager");
         var manager = await c.ReviewAsync(managerUser.Id, true, under.ContractId, under.Revision, ReviewDecision.Approve, null, CancellationToken.None);
         Assert.Equal(ContractStatuses.Signed, manager.Value!.Status);

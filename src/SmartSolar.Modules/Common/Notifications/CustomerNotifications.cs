@@ -25,6 +25,11 @@ public static class CustomerNotificationTypes
     public const string ContractSigned = "CONTRACT_SIGNED";
     public const string ContractSignatureRejected = "CONTRACT_SIGNATURE_REJECTED";
     public const string InstallationScheduled = "INSTALLATION_SCHEDULED";
+    /// <summary>The technician recorded the installation date agreed with the customer (PLANNED; confirmed only after payment).</summary>
+    public const string InstallationSchedulePlanned = "INSTALLATION_SCHEDULE_PLANNED";
+    public const string InstallationScheduleChanged = "INSTALLATION_SCHEDULE_CHANGED";
+    public const string InstallationScheduleRescheduleRequired = "INSTALLATION_SCHEDULE_RESCHEDULE_REQUIRED";
+    public const string InstallationScheduleCancelled = "INSTALLATION_SCHEDULE_CANCELLED";
     public const string InstallationStarted = "INSTALLATION_STARTED";
     public const string InstallationAcceptanceRequired = "INSTALLATION_ACCEPTANCE_REQUIRED";
     public const string InstallationReworkRequired = "INSTALLATION_REWORK_REQUIRED";

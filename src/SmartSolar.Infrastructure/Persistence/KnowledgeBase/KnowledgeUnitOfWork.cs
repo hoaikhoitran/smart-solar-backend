@@ -88,12 +88,24 @@ public sealed class KnowledgeUnitOfWork(AppDbContext db) : TransactionalUnitOfWo
 
     public async Task<IReadOnlyList<ChatMessage>> GetMessagesAsync(Guid sessionId, int? lastCount, CancellationToken cancellationToken)
     {
-        var all = (await Db.ChatMessages.AsNoTracking().Where(m => m.SessionId == sessionId).ToListAsync(cancellationToken)).OrderBy(m => m.CreatedAt).ToList();
-        return lastCount is { } n ? all.TakeLast(n).ToList() : all;
+        var query = Db.ChatMessages.AsNoTracking().Where(m => m.SessionId == sessionId);
+        if (lastCount is { } n)
+        {
+            // Only the last n are read (a long session no longer loads every message for each new question).
+            var last = await query.OrderByDescending(m => m.CreatedAt).ThenByDescending(m => m.Id).Take(Math.Max(0, n)).ToListAsync(cancellationToken);
+            last.Reverse();
+            return last;
+        }
+        return (await query.ToListAsync(cancellationToken)).OrderBy(m => m.CreatedAt).ToList();
     }
 
     public Task<ChatMessage?> FindMessageByClientIdAsync(Guid sessionId, string clientMessageId, CancellationToken cancellationToken)
         => Db.ChatMessages.AsNoTracking().FirstOrDefaultAsync(m => m.SessionId == sessionId && m.ClientMessageId == clientMessageId, cancellationToken);
+
+    public Task<ChatMessage?> FindUserMessageByClientIdAsync(Guid userId, string clientMessageId, CancellationToken cancellationToken)
+        => Db.ChatMessages.AsNoTracking()
+            .Where(m => m.ClientMessageId == clientMessageId && Db.ChatSessions.Any(s => s.Id == m.SessionId && s.UserId == userId))
+            .FirstOrDefaultAsync(cancellationToken);
 
     public Task<ChatMessage?> FindReplyAsync(Guid userMessageId, CancellationToken cancellationToken)
         => Db.ChatMessages.AsNoTracking().FirstOrDefaultAsync(m => m.ReplyToMessageId == userMessageId, cancellationToken);
