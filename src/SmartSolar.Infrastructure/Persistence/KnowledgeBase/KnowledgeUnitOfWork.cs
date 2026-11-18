@@ -12,6 +12,14 @@ public sealed partial class KnowledgeUnitOfWork(AppDbContext db) : Transactional
         => (await Db.KnowledgeDocuments.AsNoTracking().Where(d => (status == null || d.Status == status) && (category == null || d.Category == category)).ToListAsync(cancellationToken))
             .OrderByDescending(d => d.UpdatedAt).ToList();
 
+    public async Task<(IReadOnlyList<KnowledgeDocument> Rows, int Total)> PageDocumentsAsync(string? status, string? category, int skip, int take,
+        CancellationToken cancellationToken)
+    {
+        var query = Db.KnowledgeDocuments.AsNoTracking().Where(d => (status == null || d.Status == status) && (category == null || d.Category == category));
+        var total = await query.CountAsync(cancellationToken);
+        return (await query.OrderByDescending(d => d.UpdatedAt).ThenByDescending(d => d.Id).Skip(skip).Take(take).ToListAsync(cancellationToken), total);
+    }
+
     public Task<KnowledgeDocumentVersion?> FindVersionAsync(Guid versionId, bool track, CancellationToken cancellationToken)
         => (track ? Db.KnowledgeDocumentVersions : Db.KnowledgeDocumentVersions.AsNoTracking()).FirstOrDefaultAsync(v => v.Id == versionId, cancellationToken);
 

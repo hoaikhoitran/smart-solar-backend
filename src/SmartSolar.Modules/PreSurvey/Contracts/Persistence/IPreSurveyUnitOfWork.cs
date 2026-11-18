@@ -74,4 +74,10 @@ public interface IPreSurveyUnitOfWork
     /// <summary>One page of that customer's pre-surveys (optionally one status), by UpdatedAt or CreatedAt, and the total count.</summary>
     Task<(IReadOnlyList<CustomerPreSurveyListItem> Items, int Total)> ListCustomerPreSurveysAsync(
         Guid userId, Enums.PreSurveyStatus? status, bool sortByCreatedAt, bool ascending, int skip, int take, CancellationToken cancellationToken);
+
+    /// <summary>One page of the unclaimed queue (oldest submission first, id tie-breaker) and its total.</summary>
+    Task<(IReadOnlyList<GetPendingSurveyRequests.PendingSurveyRequestItem> Rows, int Total)> PagePendingSurveyRequestsAsync(int skip, int take, CancellationToken cancellationToken);
+
+    /// <summary>One page of the Sales user's own requests (newest claim first, id tie-breaker) and its total.</summary>
+    Task<(IReadOnlyList<GetMySurveyRequests.MySurveyRequestItem> Rows, int Total)> PageSurveyRequestsBySaleAsync(Guid saleUserId, int skip, int take, CancellationToken cancellationToken);
 }

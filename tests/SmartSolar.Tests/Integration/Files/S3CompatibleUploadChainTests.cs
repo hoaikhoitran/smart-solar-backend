@@ -148,7 +148,12 @@ public sealed class S3CompatibleUploadChainTests
         var key = FileUploadUrlService.NewObjectKey(FilePolicies.ByPurpose[FilePurposes.OnSiteSurveyEvidence], technician, FilePolicies.Jpeg);
         var expiring = await c.Signer.CreateUploadUrlAsync(new StorageObjectLocation(Bucket, key), FilePolicies.Jpeg, TimeSpan.FromSeconds(1), None);
         Assert.Equal(StorageUrlStatus.Signed, expiring.Status);
-        await Task.Delay(TimeSpan.FromSeconds(2));
+        // Expiry is decided by the storage server's clock, not the test host's: a fixed host-side sleep made this check depend on the drift
+        // between macOS and the Docker VM (it failed once in a long full run). Read the signed validity from the URL itself, check that the
+        // requested 1 s lifetime is what was signed, and wait (bounded) until the SERVER's own clock is past it. The assertion is unchanged.
+        var (signedAt, lifetime) = SignedValidity(expiring.Url!);
+        Assert.InRange(lifetime.TotalSeconds, 1, 2);
+        await WaitUntilServerClockPassesAsync(c, signedAt + lifetime);
         using var late = new HttpRequestMessage(HttpMethod.Put, expiring.Url) { Content = new ByteArrayContent(FakeStorageObjectVerifier.JpegBytes) };
         late.Content.Headers.ContentType = new MediaTypeHeaderValue(FilePolicies.Jpeg);
         Assert.Equal(HttpStatusCode.Forbidden, (await c.Http.SendAsync(late)).StatusCode);
@@ -164,6 +169,33 @@ public sealed class S3CompatibleUploadChainTests
         using var answer = await c.Http.SendAsync(preflight);
         Assert.True(answer.Headers.TryGetValues("Access-Control-Allow-Origin", out var allowed), $"preflight {(int)answer.StatusCode} without Access-Control-Allow-Origin");
         Assert.Contains(allowed, o => o == "*" || string.Equals(o, c.Origin, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>X-Amz-Date and X-Amz-Expires of a SigV4 presigned URL.</summary>
+    private static (DateTimeOffset SignedAt, TimeSpan Lifetime) SignedValidity(string url)
+    {
+        var query = System.Web.HttpUtility.ParseQueryString(new Uri(url).Query);
+        var signedAt = DateTimeOffset.ParseExact(query["X-Amz-Date"]!, "yyyyMMdd'T'HHmmss'Z'", System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.AssumeUniversal);
+        return (signedAt, TimeSpan.FromSeconds(int.Parse(query["X-Amz-Expires"]!, System.Globalization.CultureInfo.InvariantCulture)));
+    }
+
+    /// <summary>
+    /// Polls the storage server's own clock (the <c>Date</c> header, whole seconds) until it is strictly after <paramref name="expiresAt"/>.
+    /// Fails after 30 s rather than asserting on a link the server may still consider valid.
+    /// </summary>
+    private static async Task WaitUntilServerClockPassesAsync(Chain c, DateTimeOffset expiresAt)
+    {
+        var endpoint = Environment.GetEnvironmentVariable(S3FactAttribute.Variable)!.Split('|')[0].Trim().TrimEnd('/');
+        var giveUp = DateTimeOffset.UtcNow.AddSeconds(30);
+        while (true)
+        {
+            using var probe = await c.Http.GetAsync($"{endpoint}/minio/health/live");
+            if (probe.Headers.Date is { } serverNow && serverNow > expiresAt.AddSeconds(1)) return;
+            if (DateTimeOffset.UtcNow > giveUp)
+                Assert.Fail($"The storage server's clock ({probe.Headers.Date:O}) did not pass the link expiry {expiresAt:O} within 30 s.");
+            await Task.Delay(TimeSpan.FromMilliseconds(250));
+        }
     }
 
     [S3Fact]

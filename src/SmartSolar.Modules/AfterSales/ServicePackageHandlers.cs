@@ -17,7 +17,9 @@ public sealed record PackageInput(string? Kind, string? Name, string? Descriptio
 /// Packages to buy for one installation contract. When <see cref="IncludeContract"/> is true the SIGNED contract is paid in the same
 /// PayOS checkout (its amount stays a separate line; the contract total itself never changes).
 /// </summary>
-public sealed record PurchaseInput(Guid ContractId, Guid? MaintenancePackageId, Guid? DisasterPackageId, bool IncludeContract);
+/// <param name="PaymentMethod">ONLINE (PayOS, default) or CASH (a pending cash attempt confirmed by a Manager/Admin): with the SIGNED contract
+/// (one cash payment for the installation and the packages) or, for a PAID contract, the packages alone.</param>
+public sealed record PurchaseInput(Guid ContractId, Guid? MaintenancePackageId, Guid? DisasterPackageId, bool IncludeContract, string? PaymentMethod = null);
 
 public sealed record PurchaseView(PaymentAttemptView Checkout, IReadOnlyList<Guid> SubscriptionIds);
 
@@ -242,6 +244,9 @@ public sealed class ServicePackageHandlers(
     /// </summary>
     public async Task<OperationResult<PurchaseView>> PurchaseAsync(Guid customerUserId, PurchaseInput input, CancellationToken cancellationToken)
     {
+        var method = string.IsNullOrWhiteSpace(input.PaymentMethod) ? PaymentMethods.Online : input.PaymentMethod.Trim().ToUpperInvariant();
+        if (method is not (PaymentMethods.Online or PaymentMethods.Cash))
+            return OperationResult<PurchaseView>.Fail(AfterSalesErrorCodes.ValidationFailed, "'paymentMethod' must be ONLINE or CASH.");
         var contract = await data.GetContractAsync(input.ContractId, cancellationToken);
         if (contract is null || contract.CustomerUserId != customerUserId)
             return OperationResult<PurchaseView>.Fail(AfterSalesErrorCodes.ProjectNotFound, "Contract was not found.");
@@ -273,6 +278,11 @@ public sealed class ServicePackageHandlers(
                 return OperationResult<PurchaseView>.Fail(AfterSalesErrorCodes.TermOverlap, "A renewal of this kind is already purchased.");
             if (existing.Any(s => s.Kind == package.Kind && s.Status == SubscriptionStatuses.AwaitingPayment && s.CheckoutExpiresAt > now))
                 return OperationResult<PurchaseView>.Fail(PaymentErrorCodes.CheckoutInProgress, "A payment for this kind of package is already in progress.");
+            // A pending cash choice has no online deadline: it blocks a second order of the same kind until it is confirmed or withdrawn.
+            foreach (var waiting in existing.Where(s => s.Kind == package.Kind && s.Status == SubscriptionStatuses.AwaitingPayment && s.CurrentPaymentAttemptId is not null))
+                if (await data.FindPaymentAttemptAsync(waiting.CurrentPaymentAttemptId!.Value, cancellationToken) is { Provider: PaymentProviders.Cash } cash
+                    && PaymentStatuses.Payable.Contains(cash.Status))
+                    return OperationResult<PurchaseView>.Fail(PaymentErrorCodes.CashSelected, "Cash payment was already chosen for this kind of package.");
         }
 
         var expiresAt = now.AddMinutes((await policies.GetAsync(cancellationToken)).Get(AfterSalesSettingKeys.CheckoutExpiryMinutes));
@@ -286,7 +296,7 @@ public sealed class ServicePackageHandlers(
         var items = subscriptions.Select(s => new CheckoutItem(
             s.Kind == ServicePackageKinds.Maintenance ? PaymentItemTypes.MaintenancePackage : PaymentItemTypes.DisasterPackage, s.Id, null, s.Price)).ToList();
 
-        var checkout = await payments.CreateCheckoutAsync(customerUserId, input.IncludeContract ? input.ContractId : null, items, expiresAt, (attemptId, _) =>
+        Func<Guid, CancellationToken, Task<string?>> reserve = (attemptId, _) =>
         {
             // Created in the same transaction as the checkout: no unpaid order exists without its payment, and vice versa.
             foreach (var subscription in subscriptions)
@@ -297,7 +307,10 @@ public sealed class ServicePackageHandlers(
                     $"{subscription.PackageName}: {subscription.Price:0} VND, {subscription.DurationMonths} months", now);
             }
             return Task.FromResult<string?>(null);
-        }, cancellationToken);
+        };
+        var checkout = method == PaymentMethods.Cash
+            ? await payments.CreateCashCheckoutAsync(customerUserId, input.IncludeContract ? input.ContractId : null, items, reserve, cancellationToken)
+            : await payments.CreateCheckoutAsync(customerUserId, input.IncludeContract ? input.ContractId : null, items, expiresAt, reserve, cancellationToken);
         return checkout.Succeeded
             ? OperationResult<PurchaseView>.Ok(new PurchaseView(checkout.Value!, subscriptions.Select(s => s.Id).ToList()))
             : checkout.As<PurchaseView>();

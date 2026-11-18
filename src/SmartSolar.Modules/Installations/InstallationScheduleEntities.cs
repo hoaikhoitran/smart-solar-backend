@@ -99,4 +99,53 @@ public static class InstallationScheduleErrorCodes
     public const string StaleRevision = "INSTALLATION_SCHEDULE_STALE_REVISION";
     public const string NotLive = "INSTALLATION_SCHEDULE_NOT_LIVE";
     public const string CoverageUnavailable = "INSTALLATION_SCHEDULE_COVERAGE_UNAVAILABLE";
+    /// <summary>No offer with that id for the caller (404).</summary>
+    public const string OfferNotFound = "INSTALLATION_SLOT_OFFER_NOT_FOUND";
+    /// <summary>The offer was already selected or withdrawn (409).</summary>
+    public const string OfferNotOpen = "INSTALLATION_SLOT_OFFER_NOT_OPEN";
+    /// <summary>The offered interval is no longer possible (passed, technician busy or ineligible, taken by another customer) (409).</summary>
+    public const string OfferUnavailable = "INSTALLATION_SLOT_OFFER_UNAVAILABLE";
+}
+
+/// <summary>
+/// An installation interval the responsible technician offers to the customer (2026-11-18): the technician consults the backend's availability
+/// for the contract, publishes 1–5 intervals, and the customer selects one in the portal. An offer holds no capacity; it is re-checked when the
+/// customer looks at it and again, under the contract and technician locks, when the customer selects it. Selecting records the normal PLANNED
+/// <see cref="InstallationScheduleProposal"/> (so payment confirmation, rescheduling and history are unchanged) and withdraws the other open
+/// offers of the contract. Publishing a new set withdraws the previous open offers. Rows are never deleted.
+/// </summary>
+public sealed class InstallationSlotOffer
+{
+    public Guid Id { get; set; }
+    public Guid ContractId { get; set; }
+    public Guid TechnicianUserId { get; set; }
+    public DateTimeOffset StartsAt { get; set; }
+    public DateTimeOffset EndsAt { get; set; }
+
+    /// <summary>One of <see cref="InstallationSlotOfferStatuses"/>.</summary>
+    public string Status { get; set; } = null!;
+
+    /// <summary>Optional note of the technician shown to the customer (≤ 500).</summary>
+    public string? Note { get; set; }
+    public Guid CreatedByUserId { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
+
+    public DateTimeOffset? SelectedAt { get; set; }
+    /// <summary>The PLANNED schedule the selection created.</summary>
+    public Guid? SelectedScheduleId { get; set; }
+
+    public DateTimeOffset? WithdrawnAt { get; set; }
+    public string? WithdrawnReason { get; set; }
+
+    public int Revision { get; set; }
+}
+
+public static class InstallationSlotOfferStatuses
+{
+    public const string Open = "OPEN";
+    public const string Selected = "SELECTED";
+    public const string Withdrawn = "WITHDRAWN";
+
+    public static readonly IReadOnlyList<string> All = [Open, Selected, Withdrawn];
 }

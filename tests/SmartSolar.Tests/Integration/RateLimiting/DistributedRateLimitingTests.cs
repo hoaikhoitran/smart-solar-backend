@@ -181,6 +181,14 @@ public sealed class DistributedRateLimitingTests
         var user = Guid.NewGuid();
         var clients = new[] { CatalogEndpointsTests.ClientFor(first, RoleCodes.Customer, user), CatalogEndpointsTests.ClientFor(second, RoleCodes.Customer, user) };
 
+        // The counter's fixed 1-minute window is aligned on the Redis clock (floor(TIME / window)). This test is about two replicas sharing ONE
+        // window, not about the boundary, so start the six asks (a few seconds, cold start included) with at least 20 s left in the window.
+        await using var redis = await StackExchange.Redis.ConnectionMultiplexer.ConnectAsync(RedisFactAttribute.ConnectionString!);
+        var server = redis.GetServer(redis.GetEndPoints()[0]);
+        var windowMs = (long)TimeSpan.FromMinutes(1).TotalMilliseconds;
+        var leftMs = windowMs - (new DateTimeOffset(await server.TimeAsync(), TimeSpan.Zero).ToUnixTimeMilliseconds() % windowMs);
+        if (leftMs < 20_000) await Task.Delay(TimeSpan.FromMilliseconds(leftMs + 200));
+
         var statuses = new List<HttpStatusCode>();
         var elapsed = new List<long>();
         for (var i = 0; i < 6; i++)
@@ -192,8 +200,6 @@ public sealed class DistributedRateLimitingTests
 
         // Evidence for a failure: one counter key per fixed window, so a split count means the asks crossed a
         // window boundary, and a single key at 6 with an extra OK means a replica fell back to its local window.
-        await using var redis = await StackExchange.Redis.ConnectionMultiplexer.ConnectAsync(RedisFactAttribute.ConnectionString!);
-        var server = redis.GetServer(redis.GetEndPoints()[0]);
         var counters = new List<string>();
         foreach (var key in server.Keys(pattern: instance + "*ratelimit*")) counters.Add($"{key}={await redis.GetDatabase().StringGetAsync(key)}");
         var evidence = $"statuses=[{string.Join(", ", statuses.Select((s, i) => $"{(int)s} in {elapsed[i]} ms"))}]; redis=[{string.Join(", ", counters)}]";

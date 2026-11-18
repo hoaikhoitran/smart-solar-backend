@@ -33,8 +33,18 @@ public sealed class SchemaReadiness(ISchemaMigrationProbe probe, ILogger<SchemaR
         try
         {
             if (_ready || time.GetUtcNow() - _checkedAt < RecheckInterval) return _ready;
-            _checkedAt = time.GetUtcNow();
-            var pending = await probe.GetPendingMigrationsAsync(cancellationToken);
+            // The check time is stamped only once the probe has answered (2026-11-18 fix): stamping it before let every request that arrived
+            // during the first, in-flight check see "checked just now, not ready" and answer 503 SCHEMA_NOT_READY (Retry-After 30 s) although the
+            // schema was current. Concurrent callers now wait on the gate and get the real answer.
+            IReadOnlyList<string>? pending;
+            try
+            {
+                pending = await probe.GetPendingMigrationsAsync(cancellationToken);
+            }
+            finally
+            {
+                _checkedAt = time.GetUtcNow();
+            }
             if (pending is null)
             {
                 _ready = true;

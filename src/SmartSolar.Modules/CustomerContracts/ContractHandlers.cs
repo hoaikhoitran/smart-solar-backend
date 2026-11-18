@@ -373,7 +373,40 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
     {
         var contract = await unitOfWork.FindAsync(contractId, false, cancellationToken);
         if (contract is null || contract.CustomerUserId != customerUserId || !ContractStatuses.CustomerVisible.Contains(contract.Status)) return NotFound();
-        var verified = await files.RequireVerifiedAsync([fileId], FilePurposes.SignedContract, customerUserId, cancellationToken);
+        return await SubmitSignedAsync(customerUserId, contractId, fileId, officialDocumentSha256, null, cancellationToken);
+    }
+
+    /// <summary>
+    /// Paper contract (2026-11-18): the customer signs the printed official PDF in person and the Sales owner of the request (or a
+    /// Manager/Admin) uploads the scan of that physically signed paper (a VERIFIED SIGNED_CONTRACT PDF the staff member registered). Same rules
+    /// as the customer's own submission: only AWAITING_SIGNATURE / SIGNATURE_REJECTED versions, the scan must be of the current official PDF
+    /// (its SHA-256), every submission is kept as history, and the contract only moves to UNDER_REVIEW — a Manager/Admin still confirms the
+    /// signature (SIGNED). Uploading never makes the contract signed by itself. Sales of another request (or none) gets 404.
+    /// </summary>
+    /// <param name="signedOn">The local date written on the paper contract (optional, recorded in the contract history; not in the future).</param>
+    /// <param name="note">Optional note recorded in the contract history (e.g. where it was signed), at most 300 characters.</param>
+    public async Task<OperationResult<ContractView>> SubmitPaperSignedDocumentAsync(Guid staffUserId, bool isManager, Guid contractId, Guid fileId,
+        string officialDocumentSha256, DateOnly? signedOn, string? note, CancellationToken cancellationToken)
+    {
+        var contract = await unitOfWork.FindAsync(contractId, false, cancellationToken);
+        if (contract is null || (!isManager && await unitOfWork.GetAssignedSaleAsync(contract.SurveyRequestId, cancellationToken) != staffUserId)) return NotFound();
+        if (note is { Length: > 300 })
+            return OperationResult<ContractView>.Fail(CommonErrorCodes.ValidationFailed, "One or more fields are invalid.",
+                new Dictionary<string, string[]> { ["note"] = ["At most 300 characters."] });
+        // One day of tolerance: the date is the local date on the paper, the clock is UTC.
+        if (signedOn is { } day && day > DateOnly.FromDateTime(time.GetUtcNow().UtcDateTime.AddDays(1)))
+            return OperationResult<ContractView>.Fail(CommonErrorCodes.ValidationFailed, "One or more fields are invalid.",
+                new Dictionary<string, string[]> { ["signedOn"] = ["The signing date cannot be in the future."] });
+        var detail = $"paper contract scan uploaded by staff {staffUserId}"
+                     + (signedOn is { } d ? $"; signed on {d:yyyy-MM-dd}" : "")
+                     + (string.IsNullOrWhiteSpace(note) ? "" : $"; {note.Trim()}");
+        return await SubmitSignedAsync(staffUserId, contractId, fileId, officialDocumentSha256, detail, cancellationToken);
+    }
+
+    private async Task<OperationResult<ContractView>> SubmitSignedAsync(Guid submitterUserId, Guid contractId, Guid fileId, string officialDocumentSha256,
+        string? detail, CancellationToken cancellationToken)
+    {
+        var verified = await files.RequireVerifiedAsync([fileId], FilePurposes.SignedContract, submitterUserId, cancellationToken);
         if (!verified.Succeeded) return verified.As<ContractView>();
         var file = verified.Value![0];
 
@@ -388,12 +421,12 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
             unitOfWork.AddSubmission(new ContractSignatureSubmission
             {
                 Id = Guid.NewGuid(), ContractId = c.Id, FileId = fileId, FileSha256 = file.ChecksumSha256!, OfficialDocumentSha256 = c.OfficialDocumentSha256!,
-                SubmittedByUserId = customerUserId, SubmittedAt = now, Outcome = SignatureOutcomes.Pending,
+                SubmittedByUserId = submitterUserId, SubmittedAt = now, Outcome = SignatureOutcomes.Pending,
             });
             c.SignedDocumentFileId = fileId;
             c.SignedDocumentSha256 = file.ChecksumSha256;
             c.SignedSubmittedAt = now;
-            Move(c, ContractStatuses.UnderReview, customerUserId, now, null);
+            Move(c, ContractStatuses.UnderReview, submitterUserId, now, detail);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
     }

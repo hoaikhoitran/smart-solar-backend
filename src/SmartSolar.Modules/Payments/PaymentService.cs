@@ -17,6 +17,14 @@ public sealed class PaymentOptions
     public int MaxAttemptsPerTenMinutes { get; set; } = 5;
     /// <summary>Status queries reconcile with the provider at most this often per attempt.</summary>
     public int ReconcileThrottleSeconds { get; set; } = 20;
+    /// <summary>Background reconciliation tick (seconds). With <see cref="ReconcileAfterSeconds"/> it bounds how late a payment whose webhook was lost is
+    /// confirmed: worst case ≈ tick + re-check age + provider call (default 30 + 60 s, below the 2-minute NFR).</summary>
+    public int ReconciliationIntervalSeconds { get; set; } = 30;
+    /// <summary>A payable online attempt is asked again once its last reconciliation is older than this (seconds).</summary>
+    public int ReconcileAfterSeconds { get; set; } = 60;
+    /// <summary>Attempts reconciled per batch; a tick drains every due attempt batch by batch (bounded by <see cref="MaxBatchesPerTick"/>).</summary>
+    public int ReconcileBatchSize { get; set; } = 25;
+    public int MaxBatchesPerTick { get; set; } = 20;
     public string ReturnUrl { get; set; } = "";
     public string CancelUrl { get; set; } = "";
 }
@@ -42,6 +50,12 @@ public sealed record ContractPaymentView(Guid ContractId, string ContractStatus,
     IReadOnlyList<PaymentAttemptView> Attempts, IReadOnlyList<PaymentEventView>? History, string PaymentState = ContractPaymentStates.NotPayable);
 
 public sealed record WebhookResult(bool Accepted, string Outcome);
+
+/// <summary>One line of a checkout (the item it pays and whether it was applied).</summary>
+public sealed record PaymentLineView(string ItemType, decimal Amount, string Status, Guid? ContractId, Guid? SubscriptionId, Guid? QuotationId);
+
+/// <summary>A payment attempt as staff see it, with its customer and lines.</summary>
+public sealed record StaffPaymentAttemptView(PaymentAttemptView Attempt, Guid CustomerUserId, IReadOnlyList<PaymentLineView> Lines);
 
 /// <summary>
 /// Full payment of a signed contract through the provider. Rules:
@@ -237,11 +251,129 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
     }
 
     /// <summary>
+    /// CASH for a combined checkout (2026-11-18): the customer pays the SIGNED contract and the selected packages together in cash. One CASH
+    /// attempt carries the CONTRACT line (the contract total, never changed) and one line per package, so the total is the sum of its lines and
+    /// every line stays traceable. It takes the contract's single payable slot (no online link and no other cash choice can run at the same time),
+    /// holds no deadline (a Manager/Admin confirms the receipt of the exact total with <see cref="ConfirmCashAsync"/>, which settles every line in
+    /// the same transaction) and is withdrawn with <see cref="CancelCurrentAsync"/>. <paramref name="reserveItems"/> runs in the creating
+    /// transaction (the package orders are stored with it).
+    /// </summary>
+    public async Task<OperationResult<PaymentAttemptView>> CreateCashCheckoutAsync(Guid customerUserId, Guid? contractId, IReadOnlyList<CheckoutItem> items,
+        Func<Guid, CancellationToken, Task<string?>> reserveItems, CancellationToken cancellationToken)
+    {
+        if (contractId is null) return await CreateItemsCashCheckoutAsync(customerUserId, items, reserveItems, cancellationToken);
+        var contract = await unitOfWork.GetContractAsync(contractId.Value, cancellationToken);
+        if (contract is null || contract.CustomerUserId != customerUserId)
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ContractNotFound, "Contract was not found.");
+        if (contract.Status == "PAID") return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid.");
+        if (contract.Status != "SIGNED")
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ContractNotSigned, "Payment opens after the signed contract is approved.");
+        if (settlement is null)
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ProviderNotConfigured, "Package lines cannot be settled in this environment.");
+        var lines = new List<PaymentAttemptItem>
+        {
+            new() { Id = Guid.NewGuid(), ItemType = PaymentItemTypes.Contract, ContractId = contractId.Value, Amount = contract.TotalAmount, Status = PaymentItemStatuses.Pending },
+        };
+        lines.AddRange(items.Select(i => new PaymentAttemptItem
+        {
+            Id = Guid.NewGuid(), ItemType = i.ItemType, SubscriptionId = i.SubscriptionId, QuotationId = i.QuotationId, Amount = i.Amount, Status = PaymentItemStatuses.Pending,
+        }));
+        var total = lines.Sum(l => l.Amount);
+        if (contract.Currency != "VND" || items.Count == 0 || lines.Any(l => l.Amount <= 0 || decimal.Truncate(l.Amount) != l.Amount) || total > options.MaxAmountVnd)
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AmountNotSupported, $"A checkout must contain whole VND amounts with a total up to {options.MaxAmountVnd:N0}.");
+
+        // Same rule as choosing cash for the contract alone: an open online link is asked first; an existing cash choice must be withdrawn first.
+        foreach (var live in (await unitOfWork.ListAttemptsAsync(contractId.Value, cancellationToken)).Where(a => PaymentStatuses.Payable.Contains(a.Status)))
+        {
+            if (live.Provider == PaymentProviders.Cash)
+                return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CashSelected,
+                    "Cash payment was already chosen for this contract. Cancel that choice first to add packages to the cash payment.");
+            var settled = await ReconcileAsync(live.Id, force: true, cancellationToken);
+            if (settled?.Status == PaymentStatuses.Paid) return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid.");
+            if (settled is not null && PaymentStatuses.Payable.Contains(settled.Status))
+                return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CheckoutInProgress,
+                    "An online payment is in progress. Cancel it first (its status is checked with the payment provider) to pay in cash.");
+        }
+
+        return await InsertCashAttemptAsync(customerUserId, contractId, lines, reserveItems, cancellationToken);
+    }
+
+    /// <summary>
+    /// CASH for after-sales items without a contract line (2026-11-18): a repair / maintenance quotation, or packages of an already PAID contract.
+    /// The item reservation (same transaction) is what keeps one live checkout per item; the attempt holds no deadline of its own, the items' own
+    /// rules (quotation expiry) are checked again at confirmation.
+    /// </summary>
+    private async Task<OperationResult<PaymentAttemptView>> CreateItemsCashCheckoutAsync(Guid customerUserId, IReadOnlyList<CheckoutItem> items,
+        Func<Guid, CancellationToken, Task<string?>> reserveItems, CancellationToken cancellationToken)
+    {
+        if (settlement is null)
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ProviderNotConfigured, "After-sales lines cannot be settled in this environment.");
+        var lines = items.Select(i => new PaymentAttemptItem
+        {
+            Id = Guid.NewGuid(), ItemType = i.ItemType, SubscriptionId = i.SubscriptionId, QuotationId = i.QuotationId, Amount = i.Amount, Status = PaymentItemStatuses.Pending,
+        }).ToList();
+        if (lines.Count == 0 || lines.Any(l => l.Amount <= 0 || decimal.Truncate(l.Amount) != l.Amount) || lines.Sum(l => l.Amount) > options.MaxAmountVnd)
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AmountNotSupported, $"A checkout must contain whole VND amounts with a total up to {options.MaxAmountVnd:N0}.");
+        return await InsertCashAttemptAsync(customerUserId, null, lines, reserveItems, cancellationToken);
+    }
+
+    private async Task<OperationResult<PaymentAttemptView>> InsertCashAttemptAsync(Guid customerUserId, Guid? contractId, List<PaymentAttemptItem> lines,
+        Func<Guid, CancellationToken, Task<string?>> reserveItems, CancellationToken cancellationToken)
+    {
+        var total = lines.Sum(l => l.Amount);
+        var now = time.GetUtcNow();
+        var created = new PaymentAttempt
+        {
+            Id = Guid.NewGuid(), ContractId = contractId, CustomerUserId = customerUserId, Provider = PaymentProviders.Cash, Amount = total, Currency = "VND",
+            Status = PaymentStatuses.Pending, ExpiresAt = now.AddYears(1), CreatedAt = now, UpdatedAt = now,
+        };
+        string? refused = null;
+        for (var tries = 1; ; tries++)
+        {
+            AssignOrderCode(created, now);
+            try
+            {
+                await unitOfWork.ExecuteInTransactionAsync<bool>(async token =>
+                {
+                    refused = await reserveItems(created.Id, token);
+                    if (refused is not null) return (false, false);
+                    unitOfWork.AddAttempt(created);
+                    foreach (var line in lines)
+                    {
+                        line.PaymentAttemptId = created.Id;
+                        unitOfWork.AddItem(line);
+                    }
+                    AddEvent(created, "CASH_SELECTED", null, PaymentStatuses.Pending, PaymentSources.Customer,
+                        "awaiting cash confirmation; " + string.Join(", ", lines.Select(l => $"{l.ItemType} {l.Amount:0}")), now);
+                    await unitOfWork.SaveChangesAsync(token);
+                    return (true, true);
+                }, cancellationToken);
+                break;
+            }
+            catch (PersistenceConflictException ex) when (IsOrderCodeCollision(ex) && tries < OrderCodeTries)
+            {
+            }
+            catch (PersistenceConflictException)
+            {
+                return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CheckoutInProgress, "Another payment for these items started meanwhile.");
+            }
+        }
+        return refused is not null
+            ? OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CheckoutInProgress, refused)
+            : OperationResult<PaymentAttemptView>.Ok(View(created));
+    }
+
+    /// <summary>
     /// Cancels an after-sales checkout link of the customer (the quotation was rejected or superseded, or the package cancelled). When the
     /// provider reports it already paid, it is confirmed instead (money is never ignored). Returns the attempt as it ends up.
     /// </summary>
     public async Task<PaymentAttempt?> CancelAttemptAsync(Guid attemptId, string reason, CancellationToken cancellationToken)
     {
+        // A cash choice has no provider link: withdrawing it is a local, conditional transition (a confirmation that won stays PAID).
+        if (await unitOfWork.FindAttemptAsync(attemptId, false, cancellationToken) is { Provider: PaymentProviders.Cash } cashChoice)
+            return PaymentStatuses.Payable.Contains(cashChoice.Status)
+                ? await TransitionAsync(attemptId, PaymentStatuses.Cancelled, PaymentSources.System, Truncate(reason, 300), cancellationToken) ?? cashChoice
+                : cashChoice;
         var settled = await ReconcileAsync(attemptId, force: true, cancellationToken);
         if (settled is null || !PaymentStatuses.Payable.Contains(settled.Status)) return settled;
         if (await gateway.CancelPaymentLinkAsync(settled.OrderCode, reason, cancellationToken) is not (GatewayCallStatus.Succeeded or GatewayCallStatus.NotConfigured))
@@ -435,10 +567,18 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
             .FirstOrDefault(a => a.Provider == PaymentProviders.Cash && a.Status == PaymentStatuses.Pending);
         if (cash is null)
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CashNotSelected, "The customer has not chosen cash payment for this contract (or it was cancelled).");
-        if (input.Amount != cash.Amount || input.Amount != contract.TotalAmount)
+        // The amount due is the cash attempt's total: the contract alone, or the contract line plus its package lines (combined cash checkout).
+        var cashLines = await unitOfWork.GetItemsAsync(cash.Id, false, cancellationToken);
+        var contractLine = cashLines.Where(i => i.ItemType == PaymentItemTypes.Contract).Sum(i => i.Amount);
+        var consistent = cashLines.Count == 0
+            ? cash.Amount == contract.TotalAmount
+            : contractLine == contract.TotalAmount && cashLines.Sum(i => i.Amount) == cash.Amount;
+        if (!consistent || input.Amount != cash.Amount)
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CashAmountMismatch,
-                $"The confirmed amount must be exactly the contract total {contract.TotalAmount:0} VND; partial or over-payments are not recorded.",
-                new { expected = contract.TotalAmount, received = input.Amount });
+                $"The confirmed amount must be exactly the amount due {cash.Amount:0} VND; partial or over-payments are not recorded.",
+                new { expected = cash.Amount, received = input.Amount, contractAmount = contract.TotalAmount, packagesAmount = cash.Amount - contract.TotalAmount });
+        if (cashLines.Any(i => i.ItemType != PaymentItemTypes.Contract) && settlement is null)
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ProviderNotConfigured, "Package lines cannot be settled in this environment.");
         if (files is null)
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ProviderNotConfigured, "Cash confirmation needs file verification, which is not configured.");
         var evidence = await files.RequireVerifiedAsync([input.EvidenceFileId], Files.FilePurposes.PaymentEvidence, staffUserId, cancellationToken);
@@ -470,7 +610,16 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
                 attempt.ConfirmationNote = Truncate(input.Note?.Trim(), 500);
                 attempt.UpdatedAt = now;
                 attempt.Revision++;
-                foreach (var item in await unitOfWork.GetItemsAsync(attempt.Id, true, token)) item.Status = PaymentItemStatuses.Settled;
+                // The contract line is settled by the contract's SIGNED → PAID step above; package lines by the after-sales settlement (each once).
+                var items = await unitOfWork.GetItemsAsync(attempt.Id, true, token);
+                foreach (var item in items.Where(i => i.ItemType == PaymentItemTypes.Contract)) item.Status = PaymentItemStatuses.Settled;
+                var others = items.Where(i => i.ItemType != PaymentItemTypes.Contract).ToList();
+                if (others.Count > 0)
+                {
+                    if (await settlement!.CashSettlementProblemAsync(attempt, others, now, token) is { } problem)
+                        return (OperationResult<PaymentAttempt>.Fail(PaymentErrorCodes.CashItemNotPayable, problem), false);
+                    await settlement.SettleAsync(attempt, others, now, now, token);
+                }
                 AddEvent(attempt, "CASH_CONFIRMED", from, PaymentStatuses.Paid, PaymentSources.Staff, $"by {staffUserId}; receipt {receipt}; amount {input.Amount:0}", now);
                 await unitOfWork.SaveChangesAsync(token);
                 return (OperationResult<PaymentAttempt>.Ok(attempt), true);
@@ -488,6 +637,111 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
             // A concurrent confirmation or cancellation of the same attempt won.
             var now = await unitOfWork.FindAttemptAsync(cash.Id, false, cancellationToken);
             return now?.Status == PaymentStatuses.Paid
+                ? OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This cash payment was already confirmed.")
+                : OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CashNotSelected, "The cash choice changed meanwhile. Reload and try again.");
+        }
+    }
+
+    /// <summary>
+    /// Staff list of payment attempts (Manager/Admin; also the Admin dashboard detail): filters in SQL, newest first, paged, each with its item lines
+    /// (one extra query for the page). <paramref name="method"/> ONLINE/CASH, <paramref name="status"/> a payment status.
+    /// </summary>
+    public async Task<Common.Paging.PagedResult<StaffPaymentAttemptView>> PageForStaffAsync(PaymentAttemptFilter filter, Common.Paging.PageRequest page,
+        CancellationToken cancellationToken)
+    {
+        var (rows, total) = await unitOfWork.PageAttemptsAsync(filter, page.Skip, page.PageSize, cancellationToken);
+        var lines = (await unitOfWork.GetItemsForAttemptsAsync(rows.Select(r => r.Id).ToList(), cancellationToken)).ToLookup(l => l.PaymentAttemptId);
+        return page.Result(rows.Select(a => new StaffPaymentAttemptView(View(a, staff: true), a.CustomerUserId,
+            lines[a.Id].Select(l => new PaymentLineView(l.ItemType, l.Amount, l.Status, l.ContractId, l.SubscriptionId, l.QuotationId)).ToList())).ToList(), total);
+    }
+
+    /// <summary>
+    /// A Manager/Admin records cash for one CASH attempt identified by its id (2026-11-18): the generic route for after-sales cash (repair /
+    /// maintenance quotation, packages of a PAID contract). A contract attempt is delegated to <see cref="ConfirmCashAsync"/> (same rules). Without a
+    /// contract: exact attempt amount, unique receipt, VERIFIED evidence of the confirming staff member, every line still payable now (quotation not
+    /// expired, item waiting for this attempt) — checked again inside the transaction, so nothing is recorded for an item that can no longer be
+    /// applied — then the attempt is PAID and every line settled once (the request moves on as after a verified PayOS payment).
+    /// </summary>
+    public async Task<OperationResult<PaymentAttemptView>> ConfirmCashAttemptAsync(Guid staffUserId, Guid attemptId, CashConfirmation input, CancellationToken cancellationToken)
+    {
+        var attempt = await unitOfWork.FindAttemptAsync(attemptId, false, cancellationToken);
+        if (attempt is null || attempt.Provider != PaymentProviders.Cash)
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AttemptNotFound, "Cash payment was not found.");
+        if (attempt.ContractId is { } contractId)
+        {
+            // The contract route confirms the contract's pending cash choice: it must be this attempt (not a newer or an older one).
+            if (attempt.Status == PaymentStatuses.Paid) return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This cash payment was already confirmed.");
+            if (attempt.Status != PaymentStatuses.Pending)
+                return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CashNotSelected, "The cash choice was cancelled or withdrawn.");
+            return await ConfirmCashAsync(staffUserId, contractId, input, cancellationToken);
+        }
+
+        var errors = new Dictionary<string, string[]>();
+        if (input.Amount <= 0 || decimal.Truncate(input.Amount) != input.Amount) errors["amount"] = ["A positive whole VND amount is required."];
+        var receipt = input.ReceiptReference?.Trim();
+        if (string.IsNullOrEmpty(receipt) || receipt.Length > 100) errors["receiptReference"] = ["A receipt reference of at most 100 characters is required."];
+        if (input.EvidenceFileId == Guid.Empty) errors["evidenceFileId"] = ["The receipt evidence file is required."];
+        if (input.Note is { Length: > 500 }) errors["note"] = ["At most 500 characters."];
+        if (errors.Count > 0) return OperationResult<PaymentAttemptView>.Fail(CommonErrorCodes.ValidationFailed, "One or more fields are invalid.", errors);
+        if (attempt.Status == PaymentStatuses.Paid) return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This cash payment was already confirmed.");
+        if (attempt.Status != PaymentStatuses.Pending)
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CashNotSelected, "The cash choice was cancelled or withdrawn.");
+        if (input.Amount != attempt.Amount)
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CashAmountMismatch,
+                $"The confirmed amount must be exactly the amount due {attempt.Amount:0} VND; partial or over-payments are not recorded.",
+                new { expected = attempt.Amount, received = input.Amount });
+        if (files is null || settlement is null)
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ProviderNotConfigured, "Cash confirmation is not configured in this environment.");
+        var evidence = await files.RequireVerifiedAsync([input.EvidenceFileId], Files.FilePurposes.PaymentEvidence, staffUserId, cancellationToken);
+        if (!evidence.Succeeded) return evidence.As<PaymentAttemptView>();
+
+        try
+        {
+            var outcome = await unitOfWork.ExecuteInTransactionAsync<OperationResult<PaymentAttempt>>(async token =>
+            {
+                var tracked = await unitOfWork.FindAttemptAsync(attemptId, true, token);
+                if (tracked is null || tracked.Status != PaymentStatuses.Pending)
+                    return (tracked?.Status == PaymentStatuses.Paid
+                        ? OperationResult<PaymentAttempt>.Fail(PaymentErrorCodes.AlreadyPaid, "This cash payment was already confirmed.")
+                        : OperationResult<PaymentAttempt>.Fail(PaymentErrorCodes.CashNotSelected, "The cash choice was cancelled meanwhile."), false);
+                var now = time.GetUtcNow();
+                var items = await unitOfWork.GetItemsAsync(tracked.Id, true, token);
+                if (await settlement.CashSettlementProblemAsync(tracked, items, now, token) is { } problem)
+                {
+                    // A concurrent confirmation of this same attempt may have committed between our read and this check (its item is now PAID):
+                    // report that, not a misleading "not payable". Nothing is written either way.
+                    var committed = await unitOfWork.FindAttemptAsync(attemptId, false, token);
+                    return (committed?.Status == PaymentStatuses.Paid
+                        ? OperationResult<PaymentAttempt>.Fail(PaymentErrorCodes.AlreadyPaid, "This cash payment was already confirmed.")
+                        : OperationResult<PaymentAttempt>.Fail(PaymentErrorCodes.CashItemNotPayable, problem), false);
+                }
+                var from = tracked.Status;
+                tracked.Status = PaymentStatuses.Paid;
+                tracked.AmountPaid = input.Amount;
+                tracked.PaidAt = now;
+                tracked.ProviderReference = receipt;
+                tracked.ProviderTransactionAt = now;
+                tracked.ConfirmedByUserId = staffUserId;
+                tracked.EvidenceFileId = input.EvidenceFileId;
+                tracked.ConfirmationNote = Truncate(input.Note?.Trim(), 500);
+                tracked.UpdatedAt = now;
+                tracked.Revision++;
+                await settlement.SettleAsync(tracked, items, now, now, token);
+                AddEvent(tracked, "CASH_CONFIRMED", from, PaymentStatuses.Paid, PaymentSources.Staff, $"by {staffUserId}; receipt {receipt}; amount {input.Amount:0}", now);
+                await unitOfWork.SaveChangesAsync(token);
+                return (OperationResult<PaymentAttempt>.Ok(tracked), true);
+            }, cancellationToken);
+            return outcome.Succeeded ? OperationResult<PaymentAttemptView>.Ok(View(outcome.Value!, staff: true)) : outcome.As<PaymentAttemptView>();
+        }
+        catch (PersistenceConflictException ex) when (ex.Kind == PersistenceConflictException.UniqueViolation
+                                                     && (ex.Constraint?.Contains("provider_reference", StringComparison.Ordinal) ?? false))
+        {
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CashReceiptDuplicate, "This receipt reference was already used for another cash payment.");
+        }
+        catch (PersistenceConflictException)
+        {
+            var current = await unitOfWork.FindAttemptAsync(attemptId, false, cancellationToken);
+            return current?.Status == PaymentStatuses.Paid
                 ? OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This cash payment was already confirmed.")
                 : OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CashNotSelected, "The cash choice changed meanwhile. Reload and try again.");
         }
@@ -550,6 +804,24 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
     }
 
     /// <summary>Asks the provider for the attempt's real state and applies it. Throttled unless <paramref name="force"/>.</summary>
+    /// <summary>
+    /// One background reconciliation pass: every payable ONLINE attempt whose last check is older than <see cref="PaymentOptions.ReconcileAfterSeconds"/>,
+    /// batch by batch (each batch re-reads the due list, so attempts settled meanwhile are skipped). Returns the number of attempts asked.
+    /// </summary>
+    public async Task<int> ReconcileDueAsync(CancellationToken cancellationToken)
+    {
+        var asked = 0;
+        var batch = Math.Clamp(options.ReconcileBatchSize, 1, 500);
+        for (var round = 0; round < Math.Clamp(options.MaxBatchesPerTick, 1, 1000); round++)
+        {
+            var due = await unitOfWork.ListAttemptsToReconcileAsync(time.GetUtcNow().AddSeconds(-Math.Clamp(options.ReconcileAfterSeconds, 10, 3600)), batch, cancellationToken);
+            foreach (var id in due) await ReconcileAsync(id, force: true, cancellationToken);
+            asked += due.Count;
+            if (due.Count < batch) break;
+        }
+        return asked;
+    }
+
     public async Task<PaymentAttempt?> ReconcileAsync(Guid attemptId, bool force, CancellationToken cancellationToken)
     {
         var attempt = await unitOfWork.FindAttemptAsync(attemptId, false, cancellationToken);

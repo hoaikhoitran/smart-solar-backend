@@ -241,6 +241,16 @@ public sealed class KnowledgeDocumentHandlers(IKnowledgeUnitOfWork unitOfWork, F
         return list;
     }
 
+    /// <summary>One page of documents (SQL paging; latest update first). Each row is built like the list (bounded by the page size).</summary>
+    public async Task<Common.Paging.PagedResult<KnowledgeDocumentView>> PageAsync(string? status, string? category, Common.Paging.PageRequest page,
+        CancellationToken cancellationToken)
+    {
+        var (rows, total) = await unitOfWork.PageDocumentsAsync(status, category, page.Skip, page.PageSize, cancellationToken);
+        var list = new List<KnowledgeDocumentView>();
+        foreach (var d in rows) list.Add(await ViewAsync(d.Id, false, cancellationToken));
+        return page.Result(list, total);
+    }
+
     public async Task<OperationResult<KnowledgeDocumentView>> GetAsync(Guid documentId, CancellationToken cancellationToken)
         => await unitOfWork.FindDocumentAsync(documentId, false, cancellationToken) is null
             ? OperationResult<KnowledgeDocumentView>.Fail(KnowledgeErrorCodes.DocumentNotFound, "Document was not found.")

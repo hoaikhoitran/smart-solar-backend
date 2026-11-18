@@ -23,6 +23,8 @@ public sealed class PostgresIotMonitoringTests
     private const string BookingMigration = "20261117092018_DirectBookingAndInstallationSchedule";
     private const string CompatibilityMigration = "20261117101818_SurveyRequestSiteCompatibility";
     private const string CostMigration = "20261117131913_CloudRagCostControl";
+    private const string SlotOfferMigration = "20261117171006_InstallationSlotOffers";
+    private const string TechnicianQuotationMigration = "20261117185657_AfterSalesTechnicianQuotation";
 
     /// <summary>Two real handed-over-style journeys (paid contract + project) for two different customers.</summary>
     private static async Task<(Guid ProjectA, Guid CustomerA, Guid ProjectB, Guid CustomerB, Guid Manager)> TwoProjectsAsync(InstallationWorkflowTestContext w)
@@ -117,13 +119,13 @@ public sealed class PostgresIotMonitoringTests
         Assert.False(await TableExistsAsync(database, "iot_device_binding"));
         Assert.False(await TableExistsAsync(database, "iot_telemetry_reading"));
         Assert.False(await TableExistsAsync(database, "password_reset_dispatch"));
-        Assert.Equal([IotMigration, OutboxMigration, CommercialMigration, BookingMigration, CompatibilityMigration, CostMigration], await db.Database.GetPendingMigrationsAsync());
+        Assert.Equal([IotMigration, OutboxMigration, CommercialMigration, BookingMigration, CompatibilityMigration, CostMigration, SlotOfferMigration, TechnicianQuotationMigration], await db.Database.GetPendingMigrationsAsync());
 
         await db.Database.MigrateAsync();
         Assert.Empty(await db.Database.GetPendingMigrationsAsync());
         Assert.True(await TableExistsAsync(database, "iot_telemetry_reading"));
         Assert.True(await TableExistsAsync(database, "password_reset_dispatch"));
-        Assert.Equal(CostMigration, (await db.Database.GetAppliedMigrationsAsync()).Last());
+        Assert.Equal(TechnicianQuotationMigration, (await db.Database.GetAppliedMigrationsAsync()).Last());
     }
 
     private static async Task<string?> SqlStateAsync(PostgresTestDatabase database, string sql)

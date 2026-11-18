@@ -64,10 +64,12 @@ public sealed class CustomerSurveyRequestsController(
     }
 
     [HttpGet]
+    [EnableRateLimiting(RateLimitingExtensions.PortalReadPolicy)]
     public async Task<IActionResult> List(CancellationToken cancellationToken)
         => CurrentUserId() is { } userId ? Ok(await queries.ListAsync(userId, cancellationToken)) : UnauthorizedFailure();
 
     [HttpGet("{surveyRequestId:guid}")]
+    [EnableRateLimiting(RateLimitingExtensions.PortalReadPolicy)]
     public async Task<IActionResult> Get(Guid surveyRequestId, CancellationToken cancellationToken)
         => CurrentUserId() is { } userId ? Respond(await queries.GetAsync(userId, surveyRequestId, cancellationToken)) : UnauthorizedFailure();
 

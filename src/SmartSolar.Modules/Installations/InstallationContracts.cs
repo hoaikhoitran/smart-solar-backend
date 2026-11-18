@@ -44,6 +44,14 @@ public interface IInstallationUnitOfWork : ITransactionalUnitOfWork, IInAppNotif
     /// <summary>PLANNED proposals whose start has passed while the contract is not PAID yet.</summary>
     Task<IReadOnlyList<Guid>> ListExpiredPlannedProposalIdsAsync(DateTimeOffset nowUtc, int limit, CancellationToken cancellationToken);
 
+    /// <summary>Offers of the contract (null status = any), oldest start first.</summary>
+    Task<IReadOnlyList<InstallationSlotOffer>> ListSlotOffersAsync(Guid contractId, string? status, bool track, CancellationToken cancellationToken);
+    Task<InstallationSlotOffer?> FindSlotOfferAsync(Guid offerId, bool track, CancellationToken cancellationToken);
+
+    /// <summary>Live schedules (PLANNED / CONFIRMED / RESCHEDULE_REQUIRED) of the technician on other contracts overlapping [startsAt, endsAt).</summary>
+    Task<IReadOnlyList<InstallationScheduleProposal>> ListOverlappingLiveProposalsAsync(Guid technicianUserId, Guid exceptContractId, DateTimeOffset startsAt,
+        DateTimeOffset endsAt, CancellationToken cancellationToken);
+
     /// <summary>Row lock on the contract (PostgreSQL only): serialises every schedule write and confirmation of one contract.</summary>
     Task LockContractAsync(Guid contractId, CancellationToken cancellationToken);
 
@@ -53,6 +61,12 @@ public interface IInstallationUnitOfWork : ITransactionalUnitOfWork, IInAppNotif
     Task<IReadOnlyList<PaidContractSource>> ListPaidContractsWithoutProjectAsync(CancellationToken cancellationToken);
     Task<InstallationProject?> FindProjectAsync(Guid projectId, bool track, CancellationToken cancellationToken);
     Task<IReadOnlyList<InstallationProject>> ListProjectsAsync(string? status, CancellationToken cancellationToken);
+
+    /// <summary>One page of projects (newest first, id as tie-breaker), status filtered in SQL, with the total.</summary>
+    Task<(IReadOnlyList<InstallationProject> Rows, int Total)> PageProjectsAsync(string? status, int skip, int take, CancellationToken cancellationToken);
+
+    /// <summary>One page of schedules (newest first, id as tie-breaker), status filtered in SQL, with the total.</summary>
+    Task<(IReadOnlyList<InstallationScheduleProposal> Rows, int Total)> PageProposalsAsync(string? status, int skip, int take, CancellationToken cancellationToken);
 
     /// <summary>Projects where the technician has a current (PENDING/ACCEPTED) or COMPLETED assignment.</summary>
     Task<IReadOnlyList<InstallationProject>> ListForTechnicianAsync(Guid technicianUserId, CancellationToken cancellationToken);

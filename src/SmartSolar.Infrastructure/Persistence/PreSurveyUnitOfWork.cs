@@ -140,36 +140,43 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
                 return true;
             });
     }
+    /// <summary>"Unclaimed" queue: every open (not withdrawn or closed) request without a commercial owner, whatever its scheduling state.</summary>
+    private IQueryable<SurveyRequest> PendingRequests()
+        => _db.SurveyRequests.AsNoTracking()
+            .Where(x => x.Status != SurveyRequestStatus.Cancelled && x.Status != SurveyRequestStatus.Closed && x.AssignedSaleId == null);
+
+    private IQueryable<PendingSurveyRequestItem> PendingItems(IQueryable<SurveyRequest> requests)
+        => requests.Select(x => new PendingSurveyRequestItem(
+            x.Id,
+            x.PreSurveyId,
+            x.PropertySite.Customer.User.FullName,
+            x.PropertySite.Name,
+            x.PropertySite.Province,
+            x.PropertySite.District,
+            x.PropertySite.InstallationSurfaceType,
+            x.PreSurvey!.TotalAreaM2,
+            x.PreSurvey!.UsableAreaM2,
+            x.SubmittedAt,
+            x.PropertySite.Ward,
+            _db.AdministrativeCommunes.Where(c => c.Code == x.PropertySite.CommuneCode).Select(c => c.Name).FirstOrDefault(),
+            null));
+
     public async Task<IReadOnlyList<PendingSurveyRequestItem>>
     GetPendingSurveyRequestsAsync(
         CancellationToken cancellationToken)
     {
-        var rows = await _db.SurveyRequests
-            .AsNoTracking()
-            // "Unclaimed" queue: every open (not withdrawn or closed) request without a commercial owner, whatever its scheduling state.
-            .Where(x =>
-                x.Status != SurveyRequestStatus.Cancelled &&
-                x.Status != SurveyRequestStatus.Closed &&
-                x.AssignedSaleId == null)
-            .OrderBy(x => x.SubmittedAt)
-            .Select(x => new PendingSurveyRequestItem(
-                x.Id,
-                x.PreSurveyId,
-                x.PropertySite.Customer.User.FullName,
-                x.PropertySite.Name,
-                x.PropertySite.Province,
-                x.PropertySite.District,
-                x.PropertySite.InstallationSurfaceType,
-                x.PreSurvey!.TotalAreaM2,
-                x.PreSurvey!.UsableAreaM2,
-                x.SubmittedAt,
-                x.PropertySite.Ward,
-                _db.AdministrativeCommunes.Where(c => c.Code == x.PropertySite.CommuneCode).Select(c => c.Name).FirstOrDefault(),
-                null))
-            .ToListAsync(cancellationToken);
+        var rows = await PendingItems(PendingRequests().OrderBy(x => x.SubmittedAt)).ToListAsync(cancellationToken);
         // Unclaimed queue: the appointment summary without technician details.
         var appointments = await ActiveAppointmentsAsync(rows.Select(r => r.SurveyRequestId).ToList(), includeTechnician: false, cancellationToken);
         return rows.Select(r => r with { Appointment = appointments.GetValueOrDefault(r.SurveyRequestId) }).ToList();
+    }
+
+    public async Task<(IReadOnlyList<PendingSurveyRequestItem> Rows, int Total)> PagePendingSurveyRequestsAsync(int skip, int take, CancellationToken cancellationToken)
+    {
+        var total = await PendingRequests().CountAsync(cancellationToken);
+        var rows = await PendingItems(PendingRequests().OrderBy(x => x.SubmittedAt).ThenBy(x => x.Id).Skip(skip).Take(take)).ToListAsync(cancellationToken);
+        var appointments = await ActiveAppointmentsAsync(rows.Select(r => r.SurveyRequestId).ToList(), includeTechnician: false, cancellationToken);
+        return (rows.Select(r => r with { Appointment = appointments.GetValueOrDefault(r.SurveyRequestId) }).ToList(), total);
     }
 
     /// <summary>
@@ -223,33 +230,42 @@ public sealed class PreSurveyUnitOfWork : IPreSurveyUnitOfWork
 
         return affectedRows == 1;
     }
+    private IQueryable<MySurveyRequestItem> MyItems(IQueryable<SurveyRequest> requests)
+        => requests.Select(x => new MySurveyRequestItem(
+            x.Id,
+            x.PreSurveyId,
+            x.PropertySite.Customer.User.FullName,
+            x.PropertySite.Name,
+            x.PropertySite.Province,
+            x.PropertySite.District,
+            x.Status,
+            x.SubmittedAt,
+            x.AssignedAt,
+            x.ScheduledAt,
+            x.PropertySite.Ward,
+            _db.AdministrativeCommunes.Where(c => c.Code == x.PropertySite.CommuneCode).Select(c => c.Name).FirstOrDefault(),
+            null));
+
     public async Task<IReadOnlyList<MySurveyRequestItem>>
     GetSurveyRequestsBySaleAsync(
         Guid saleUserId,
         CancellationToken cancellationToken)
     {
-        var rows = await _db.SurveyRequests
-            .AsNoTracking()
-            .Where(x => x.AssignedSaleId == saleUserId)
-            .OrderByDescending(x => x.AssignedAt)
-            .Select(x => new MySurveyRequestItem(
-                x.Id,
-                x.PreSurveyId,
-                x.PropertySite.Customer.User.FullName,
-                x.PropertySite.Name,
-                x.PropertySite.Province,
-                x.PropertySite.District,
-                x.Status,
-                x.SubmittedAt,
-                x.AssignedAt,
-                x.ScheduledAt,
-                x.PropertySite.Ward,
-                _db.AdministrativeCommunes.Where(c => c.Code == x.PropertySite.CommuneCode).Select(c => c.Name).FirstOrDefault(),
-                null))
+        var rows = await MyItems(_db.SurveyRequests.AsNoTracking().Where(x => x.AssignedSaleId == saleUserId).OrderByDescending(x => x.AssignedAt))
             .ToListAsync(cancellationToken);
         // The caller owns these requests: the technician of each appointment is included.
         var appointments = await ActiveAppointmentsAsync(rows.Select(r => r.SurveyRequestId).ToList(), includeTechnician: true, cancellationToken);
         return rows.Select(r => r with { Appointment = appointments.GetValueOrDefault(r.SurveyRequestId) }).ToList();
+    }
+
+    public async Task<(IReadOnlyList<MySurveyRequestItem> Rows, int Total)> PageSurveyRequestsBySaleAsync(Guid saleUserId, int skip, int take,
+        CancellationToken cancellationToken)
+    {
+        var mine = _db.SurveyRequests.AsNoTracking().Where(x => x.AssignedSaleId == saleUserId);
+        var total = await mine.CountAsync(cancellationToken);
+        var rows = await MyItems(mine.OrderByDescending(x => x.AssignedAt).ThenByDescending(x => x.Id).Skip(skip).Take(take)).ToListAsync(cancellationToken);
+        var appointments = await ActiveAppointmentsAsync(rows.Select(r => r.SurveyRequestId).ToList(), includeTechnician: true, cancellationToken);
+        return (rows.Select(r => r with { Appointment = appointments.GetValueOrDefault(r.SurveyRequestId) }).ToList(), total);
     }
     public async Task<SurveyRequestDetail?>
     GetSurveyRequestDetailAsync(

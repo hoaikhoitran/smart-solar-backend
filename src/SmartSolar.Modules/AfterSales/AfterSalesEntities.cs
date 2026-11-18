@@ -499,9 +499,16 @@ public sealed class ServiceQuotation
     public bool IsSupplementary { get; set; }
     public Guid? SupersedesQuotationId { get; set; }
     public string Status { get; set; } = null!;
+    /// <summary>The user who issued this version: the Sales owner of the queue task, or (since 2026-11-18) the assigned technician (see <see cref="IssuedByRole"/>).</summary>
     public Guid SalesUserId { get; set; }
 
-    /// <summary>Lines as JSON: [{ itemId, description, partsAmount, laborAmount }].</summary>
+    /// <summary>Who priced and issued it (<see cref="QuotationIssuers"/>). TECHNICIAN quotations are priced from the catalog by the backend.</summary>
+    public string IssuedByRole { get; set; } = QuotationIssuers.Sales;
+
+    /// <summary>
+    /// Lines as JSON: [{ itemId, description, partsAmount, laborAmount }]; TECHNICIAN quotations add <c>components</c>: the catalog snapshot of each
+    /// priced product (productId, sku, name, productType, unit, unitPrice, quantity, amount, kind PARTS/LABOR) at the time of issue.
+    /// </summary>
     public string LinesJson { get; set; } = null!;
 
     public decimal PartsAmount { get; set; }
@@ -523,6 +530,13 @@ public sealed class ServiceQuotation
     public Guid? CurrentPaymentAttemptId { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
     public int Revision { get; set; }
+}
+
+public static class QuotationIssuers
+{
+    public const string Sales = "SALES";
+    public const string Technician = "TECHNICIAN";
+    public static readonly IReadOnlyList<string> All = [Sales, Technician];
 }
 
 public static class QuotationStatuses
@@ -766,6 +780,10 @@ public static class AfterSalesErrorCodes
     /// </summary>
     public const string PaidCancellationUnsupported = "AFTER_SALES_PAID_CANCELLATION_UNSUPPORTED";
     public const string QuotationExpired = "SERVICE_QUOTATION_EXPIRED";
+    /// <summary>A product of a technician quotation is not an active, VND-priced catalog product (409).</summary>
+    public const string ProductUnavailable = "SERVICE_QUOTATION_PRODUCT_UNAVAILABLE";
+    /// <summary>A product of a technician quotation has no catalog price: an Admin must price it before it can be quoted (409).</summary>
+    public const string PriceMissing = "SERVICE_QUOTATION_PRICE_MISSING";
     public const string BookingTooSoon = "MAINTENANCE_BOOKING_TOO_SOON";
     public const string OutsidePeriod = "MAINTENANCE_OUTSIDE_PERIOD";
     public const string ChangeTooLate = "AFTER_SALES_CHANGE_TOO_LATE";

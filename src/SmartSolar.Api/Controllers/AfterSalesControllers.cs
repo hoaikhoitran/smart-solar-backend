@@ -45,13 +45,21 @@ public sealed class CustomerAfterSalesController(
     [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
     public async Task<IActionResult> OneTimeMaintenance([FromBody] OneTimeMaintenanceRequest body, CancellationToken cancellationToken)
         => CurrentUserId() is { } user
-            ? Respond(await requests.RequestOneTimeMaintenanceAsync(user, body.ProjectId, body.PreferredStartsAt, body.Note, cancellationToken), StatusCodes.Status201Created)
+            ? Respond(await requests.RequestOneTimeMaintenanceAsync(user, body.ProjectId, body.PreferredStartsAt, body.Note, cancellationToken,
+                body.InspectionRequired ?? true), StatusCodes.Status201Created)
             : UnauthorizedFailure();
 
     [HttpGet("requests")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
-    public async Task<IActionResult> List(CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Ok(Contracts.ApiResponse<object>.Success(await requests.ListAsync(user, cancellationToken), HttpContext.GetTraceId())) : UnauthorizedFailure();
+    public async Task<IActionResult> List([FromQuery] int? page, [FromQuery] int? pageSize, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        var paging = SmartSolar.Modules.Common.Paging.PageRequest.Parse(page, pageSize);
+        if (!paging.Succeeded) return Respond(paging);
+        return paging.Value is { } p
+            ? Ok(Contracts.ApiResponse<object>.Success(await requests.PageAsync(user, p, cancellationToken), HttpContext.GetTraceId()))
+            : Ok(Contracts.ApiResponse<object>.Success(await requests.ListAsync(user, cancellationToken), HttpContext.GetTraceId()));
+    }
 
     [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.AfterSales.ServiceRequestView>), StatusCodes.Status200OK)]
     [HttpGet("requests/{requestId:guid}")]
@@ -117,6 +125,18 @@ public sealed class CustomerAfterSalesController(
         => CurrentUserId() is { } user ? Respond(await quotations.RejectAsync(user, quotationId, body.Reason, cancellationToken)) : UnauthorizedFailure();
 
     /// <summary>PayOS checkout of an accepted quotation (idempotent). The return URL never marks it paid: poll the payment.</summary>
+    /// <summary>Chooses to pay an ACCEPTED quotation in cash (pending until a Manager/Admin confirms the receipt, before the quotation expires).</summary>
+    [HttpPost("quotations/{quotationId:guid}/cash")]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
+    public async Task<IActionResult> ChooseCash(Guid quotationId, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await quotations.SelectCashAsync(user, quotationId, cancellationToken)) : UnauthorizedFailure();
+
+    /// <summary>Withdraws the pending cash choice of a quotation (to pay online instead).</summary>
+    [HttpPost("quotations/{quotationId:guid}/cash/cancel")]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
+    public async Task<IActionResult> CancelCash(Guid quotationId, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await quotations.CancelCashAsync(user, quotationId, cancellationToken)) : UnauthorizedFailure();
+
     [HttpPost("quotations/{quotationId:guid}/checkout")]
     [EnableRateLimiting(RateLimitingExtensions.PaymentCreatePolicy)]
     public async Task<IActionResult> CheckoutQuotation(Guid quotationId, CancellationToken cancellationToken)
@@ -144,7 +164,7 @@ public sealed class CustomerAfterSalesController(
     [EnableRateLimiting(RateLimitingExtensions.PaymentCreatePolicy)]
     public async Task<IActionResult> Purchase([FromBody] PurchaseRequest body, CancellationToken cancellationToken)
         => CurrentUserId() is { } user
-            ? Respond(await packages.PurchaseAsync(user, new PurchaseInput(body.ContractId, body.MaintenancePackageId, body.DisasterPackageId, body.IncludeContract),
+            ? Respond(await packages.PurchaseAsync(user, new PurchaseInput(body.ContractId, body.MaintenancePackageId, body.DisasterPackageId, body.IncludeContract, body.PaymentMethod),
                 cancellationToken), StatusCodes.Status201Created)
             : UnauthorizedFailure();
 
@@ -169,9 +189,15 @@ public sealed class CustomerAfterSalesController(
 
     [HttpGet("notifications")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
-    public async Task<IActionResult> Notifications(CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Ok(Contracts.ApiResponse<object>.Success(await requests.NotificationsAsync(user, cancellationToken), HttpContext.GetTraceId()))
-            : UnauthorizedFailure();
+    public async Task<IActionResult> Notifications([FromQuery] int? page, [FromQuery] int? pageSize, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        var paging = SmartSolar.Modules.Common.Paging.PageRequest.Parse(page, pageSize);
+        if (!paging.Succeeded) return Respond(paging);
+        return paging.Value is { } p
+            ? Ok(Contracts.ApiResponse<object>.Success(await requests.PageNotificationsAsync(user, p, cancellationToken), HttpContext.GetTraceId()))
+            : Ok(Contracts.ApiResponse<object>.Success(await requests.NotificationsAsync(user, cancellationToken), HttpContext.GetTraceId()));
+    }
 
     /// <summary>Marks one of the caller's notifications as read (idempotent; <c>readAt</c> is persisted). Another user's notification is 404.</summary>
     [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.AfterSales.NotificationView>), StatusCodes.Status200OK)]
@@ -179,6 +205,30 @@ public sealed class CustomerAfterSalesController(
     [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
     public async Task<IActionResult> MarkNotificationRead(Guid notificationId, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await requests.MarkNotificationReadAsync(user, notificationId, cancellationToken)) : UnauthorizedFailure();
+}
+
+/// <summary>
+/// Technician-priced repair quotations (2026-11-18): the technician of a visit of a FAULT request prices its chargeable / disaster-protected items with
+/// catalog products; the backend computes every amount. 404 for a technician without a visit on the request.
+/// </summary>
+[ApiController]
+[Route("api/technicians/me/after-sales/requests")]
+[Authorize(Roles = RoleCodes.Technician)]
+[RequireFeature(FeatureOptions.InstallationWorkflow)]
+public sealed class TechnicianAfterSalesQuotationsController(ServiceQuotationHandlers quotations) : OperationResultControllerBase
+{
+    [HttpPost("{requestId:guid}/quotations")]
+    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
+    public async Task<IActionResult> Issue(Guid requestId, [FromBody] TechnicianQuotationRequest body, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (body.Lines is not { Count: > 0 } lines || lines.Any(l => l.ItemId is null || l.Components is not { Count: > 0 }
+                                                                      || l.Components.Any(c => c.ProductId is null || c.Quantity is null)))
+            return Invalid("lines", "Give lines with 'itemId' and 'components' [{ productId, quantity }].");
+        var input = new TechnicianQuotationInput(lines.Select(l => new TechnicianQuotationLineInput(l.ItemId!.Value,
+            l.Components!.Select(c => new QuotationComponentInput(c.ProductId!.Value, c.Quantity!.Value)).ToList(), l.Description)).ToList(), body.RepairWarrantyMonths, body.Note);
+        return Respond(await quotations.IssueByTechnicianAsync(user, requestId, input, cancellationToken), StatusCodes.Status201Created);
+    }
 }
 
 /// <summary>Technician: assigned after-sales visits only.</summary>
@@ -190,8 +240,14 @@ public sealed class TechnicianAfterSalesController(TechnicianServiceHandlers vis
 {
     [HttpGet]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
-    public async Task<IActionResult> List(CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Ok(Contracts.ApiResponse<object>.Success(await visits.ListAsync(user, cancellationToken), HttpContext.GetTraceId())) : UnauthorizedFailure();
+    public async Task<IActionResult> List([FromQuery] int? page, [FromQuery] int? pageSize, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        var paging = SmartSolar.Modules.Common.Paging.PageRequest.Parse(page, pageSize);
+        if (!paging.Succeeded) return Respond(paging);
+        return Ok(Contracts.ApiResponse<object>.Success(paging.Value is { } p ? await visits.PageAsync(user, p, cancellationToken) : await visits.ListAsync(user, cancellationToken),
+            HttpContext.GetTraceId()));
+    }
 
     [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.AfterSales.TechnicianVisitView>), StatusCodes.Status200OK)]
     [HttpGet("{visitId:guid}")]
@@ -288,13 +344,24 @@ public sealed class SalesAfterSalesController(SalesTaskHandlers tasks, ServiceQu
 
     [HttpGet("tasks/open")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
-    public async Task<IActionResult> Open(CancellationToken cancellationToken)
-        => Ok(Contracts.ApiResponse<object>.Success(await tasks.ListOpenAsync(cancellationToken), HttpContext.GetTraceId()));
+    public async Task<IActionResult> Open([FromQuery] int? page, [FromQuery] int? pageSize, CancellationToken cancellationToken)
+    {
+        var paging = SmartSolar.Modules.Common.Paging.PageRequest.Parse(page, pageSize);
+        if (!paging.Succeeded) return Respond(paging);
+        return Ok(Contracts.ApiResponse<object>.Success(paging.Value is { } p ? await tasks.PageOpenAsync(p, cancellationToken) : await tasks.ListOpenAsync(cancellationToken),
+            HttpContext.GetTraceId()));
+    }
 
     [HttpGet("tasks/mine")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
-    public async Task<IActionResult> Mine(CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Ok(Contracts.ApiResponse<object>.Success(await tasks.ListMineAsync(user, cancellationToken), HttpContext.GetTraceId())) : UnauthorizedFailure();
+    public async Task<IActionResult> Mine([FromQuery] int? page, [FromQuery] int? pageSize, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        var paging = SmartSolar.Modules.Common.Paging.PageRequest.Parse(page, pageSize);
+        if (!paging.Succeeded) return Respond(paging);
+        return Ok(Contracts.ApiResponse<object>.Success(paging.Value is { } p ? await tasks.PageMineAsync(user, p, cancellationToken) : await tasks.ListMineAsync(user, cancellationToken),
+            HttpContext.GetTraceId()));
+    }
 
     [HttpPost("tasks/{taskId:guid}/claim")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
@@ -338,8 +405,15 @@ public sealed class ManagerAfterSalesController(ServiceManagerHandlers requests,
 {
     [HttpGet("requests")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
-    public async Task<IActionResult> List([FromQuery] string? status, [FromQuery] string? kind, CancellationToken cancellationToken)
-        => Ok(Contracts.ApiResponse<object>.Success(await requests.ListAsync(status, kind, cancellationToken), HttpContext.GetTraceId()));
+    public async Task<IActionResult> List([FromQuery] string? status, [FromQuery] string? kind, [FromQuery] int? page, [FromQuery] int? pageSize,
+        CancellationToken cancellationToken)
+    {
+        var paging = SmartSolar.Modules.Common.Paging.PageRequest.Parse(page, pageSize);
+        if (!paging.Succeeded) return Respond(paging);
+        return paging.Value is { } p
+            ? Ok(Contracts.ApiResponse<object>.Success(await requests.PageAsync(status, kind, p, cancellationToken), HttpContext.GetTraceId()))
+            : Ok(Contracts.ApiResponse<object>.Success(await requests.ListAsync(status, kind, cancellationToken), HttpContext.GetTraceId()));
+    }
 
     [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.AfterSales.ServiceRequestView>), StatusCodes.Status200OK)]
     [HttpGet("requests/{requestId:guid}")]
@@ -437,10 +511,27 @@ public sealed class ManagerAfterSalesController(ServiceManagerHandlers requests,
         => CurrentUserId() is { } user ? Respond(await packages.DecideCancellationAsync(user, subscriptionId, body.Approve, body.Note, cancellationToken))
             : UnauthorizedFailure();
 
+    /// <summary>Read-only, paged ledger of unapplied money (status optional: PENDING_APPROVAL, APPROVED, REJECTED, REFUNDED). Nothing is resolved here.</summary>
+    [HttpGet("unapplied-money")]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
+    public async Task<IActionResult> UnappliedMoney([FromQuery] string? status, [FromQuery] int? page, [FromQuery] int? pageSize, CancellationToken cancellationToken)
+    {
+        var paging = SmartSolar.Modules.Common.Paging.PageRequest.Parse(page ?? 1, pageSize);
+        if (!paging.Succeeded) return Respond(paging);
+        var s = string.IsNullOrWhiteSpace(status) ? null : status.Trim().ToUpperInvariant();
+        if (s is not null && !RefundStatuses.All.Contains(s)) return Invalid("status", $"'status' must be one of {string.Join(", ", RefundStatuses.All)}.");
+        return Ok(Contracts.ApiResponse<object>.Success(await requests.PageUnappliedMoneyAsync(s, paging.Value!, cancellationToken), HttpContext.GetTraceId()));
+    }
+
     [HttpGet("tasks")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
-    public async Task<IActionResult> Tasks([FromQuery] string? status, CancellationToken cancellationToken)
-        => Ok(Contracts.ApiResponse<object>.Success(await tasks.ListAllAsync(status, cancellationToken), HttpContext.GetTraceId()));
+    public async Task<IActionResult> Tasks([FromQuery] string? status, [FromQuery] int? page, [FromQuery] int? pageSize, CancellationToken cancellationToken)
+    {
+        var paging = SmartSolar.Modules.Common.Paging.PageRequest.Parse(page, pageSize);
+        if (!paging.Succeeded) return Respond(paging);
+        return Ok(Contracts.ApiResponse<object>.Success(paging.Value is { } p ? await tasks.PageAllAsync(status, p, cancellationToken) : await tasks.ListAllAsync(status, cancellationToken),
+            HttpContext.GetTraceId()));
+    }
 
     [HttpPost("tasks/{taskId:guid}/assign")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
@@ -454,8 +545,17 @@ public sealed class ManagerAfterSalesController(ServiceManagerHandlers requests,
 [Authorize(Roles = RoleCodes.Admin)]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
 public sealed class AdminAfterSalesController(ServicePackageHandlers packages, AfterSalesDashboard dashboard, SmartSolar.Modules.Files.FileService files,
-    SmartSolar.Modules.Files.PublicFileService publicFiles) : OperationResultControllerBase
+    SmartSolar.Modules.Files.PublicFileService publicFiles, AdminOverview overview) : OperationResultControllerBase
 {
+    /// <summary>
+    /// Operational overview (2026-11-18): status distributions now and payment / quotation figures of the period [from, to] (local dates, default this
+    /// month, at most 366 days). Computed by the backend; definitions in ADMIN_DASHBOARD_METRICS.md. Payment rows: GET /api/manager/payments (paged).
+    /// </summary>
+    [HttpGet("dashboard/overview")]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
+    public async Task<IActionResult> Overview([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken cancellationToken)
+        => Respond(await overview.GetAsync(from, to, cancellationToken));
+
     [HttpGet("packages")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> Packages([FromQuery] string? kind, CancellationToken cancellationToken)

@@ -153,8 +153,17 @@ public sealed partial class InstallationHandlers(
     }
 
     public async Task<IReadOnlyList<InstallationProjectSummary>> ListProjectsAsync(string? status, CancellationToken cancellationToken)
+        => await SummariesAsync(await unitOfWork.ListProjectsAsync(status, cancellationToken), cancellationToken);
+
+    /// <summary>One page of projects (SQL paging; newest first). Same items as <see cref="ListProjectsAsync"/>.</summary>
+    public async Task<Common.Paging.PagedResult<InstallationProjectSummary>> PageProjectsAsync(string? status, Common.Paging.PageRequest page, CancellationToken cancellationToken)
     {
-        var projects = await unitOfWork.ListProjectsAsync(status, cancellationToken);
+        var (rows, total) = await unitOfWork.PageProjectsAsync(status, page.Skip, page.PageSize, cancellationToken);
+        return page.Result(await SummariesAsync(rows, cancellationToken), total);
+    }
+
+    private async Task<IReadOnlyList<InstallationProjectSummary>> SummariesAsync(IReadOnlyList<InstallationProject> projects, CancellationToken cancellationToken)
+    {
         var names = await unitOfWork.GetUserNamesAsync(projects.Where(p => p.ResponsibleTechnicianUserId is not null).Select(p => p.ResponsibleTechnicianUserId!.Value).Distinct().ToList(), cancellationToken);
         return projects.Select(p => new InstallationProjectSummary(p.Id, p.ContractId, p.Status, p.ResponsibleTechnicianUserId,
             p.ResponsibleTechnicianUserId is { } t ? names.GetValueOrDefault(t) : null, p.TechnicianAcceptedAt is not null,

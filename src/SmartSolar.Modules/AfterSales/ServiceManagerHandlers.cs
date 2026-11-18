@@ -13,6 +13,10 @@ namespace SmartSolar.Modules.AfterSales;
 /// zone; <see cref="Reason"/> is also required to move an existing visit. <see cref="CompanyCaused"/> marks a move that SmartSolar caused
 /// (a valid maintenance booking may then be completed during the extension window after the term ends).
 /// </summary>
+/// <summary>One unapplied-money record (see <see cref="ServiceManagerHandlers.PageUnappliedMoneyAsync"/>).</summary>
+public sealed record UnappliedMoneyView(Guid RecordId, string Status, decimal Amount, string Reason, Guid CustomerUserId, Guid? PaymentAttemptId, Guid? SubscriptionId,
+    Guid? QuotationId, Guid? RequestId, DateTimeOffset CreatedAt, decimal? ApprovedAmount, DateTimeOffset? RefundedAt);
+
 public sealed record ScheduleVisitInput(Guid TechnicianUserId, DateTimeOffset StartsAt, DateTimeOffset? EndsAt, string? Reason, int ExpectedRevision,
     bool CrossZoneAuthorized = false, bool CompanyCaused = false);
 
@@ -39,6 +43,25 @@ public sealed class ServiceManagerHandlers(
 
     public async Task<IReadOnlyList<ServiceRequestSummary>> ListAsync(string? status, string? kind, CancellationToken cancellationToken)
         => (await data.ListRequestsAsync(new RequestFilter(Status: status, Kind: kind), cancellationToken)).Select(views.Summary).ToList();
+
+    /// <summary>One page of requests (SQL paging; newest first) with the same filters.</summary>
+    public async Task<Common.Paging.PagedResult<ServiceRequestSummary>> PageAsync(string? status, string? kind, Common.Paging.PageRequest page, CancellationToken cancellationToken)
+    {
+        var (rows, total) = await data.PageRequestsAsync(new RequestFilter(Status: status, Kind: kind), page.Skip, page.PageSize, cancellationToken);
+        return page.Result(rows.Select(views.Summary).ToList(), total);
+    }
+
+    /// <summary>
+    /// Read-only ledger of money received but not applied (duplicate payment of a paid contract, wrong amount, item paid after its deadline), for
+    /// reconciliation. Nothing is refunded or resolved here: refunds are not handled in this application (team decision 2026-11-13); settling these
+    /// rows is a pending business decision.
+    /// </summary>
+    public async Task<Common.Paging.PagedResult<UnappliedMoneyView>> PageUnappliedMoneyAsync(string? status, Common.Paging.PageRequest page, CancellationToken cancellationToken)
+    {
+        var (rows, total) = await data.PageRefundRecordsAsync(status, page.Skip, page.PageSize, cancellationToken);
+        return page.Result(rows.Select(r => new UnappliedMoneyView(r.Id, r.Status, r.OriginalAmount, r.Reason, r.CustomerUserId, r.PaymentAttemptId, r.SubscriptionId,
+            r.QuotationId, r.RequestId, r.CreatedAt, r.ApprovedAmount, r.RefundedAt)).ToList(), total);
+    }
 
     public async Task<OperationResult<ServiceRequestView>> GetAsync(Guid requestId, CancellationToken cancellationToken)
         => await data.FindRequestAsync(requestId, false, cancellationToken) is { } request
@@ -180,6 +203,8 @@ public sealed class ServiceManagerHandlers(
         (ServiceRequestKinds.Fault, ServiceRequestStatuses.Submitted) => VisitPurposes.Inspection,
         (ServiceRequestKinds.Fault, ServiceRequestStatuses.ReadyForWork) => VisitPurposes.Repair,
         (ServiceRequestKinds.Maintenance, ServiceRequestStatuses.Submitted) => VisitPurposes.Maintenance,
+        // Technician-priced one-time maintenance (2026-11-18): inspected first, maintained after payment.
+        (ServiceRequestKinds.OneTimeMaintenance, ServiceRequestStatuses.Submitted) => VisitPurposes.Inspection,
         (ServiceRequestKinds.OneTimeMaintenance, ServiceRequestStatuses.ReadyForWork) => VisitPurposes.Maintenance,
         (_, ServiceRequestStatuses.ReworkRequired) => VisitPurposes.Rework,
         _ => null,

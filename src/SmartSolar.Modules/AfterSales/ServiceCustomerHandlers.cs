@@ -496,11 +496,16 @@ public sealed class ServiceCustomerHandlers(
     // ================================================================== one-time maintenance
 
     /// <summary>
-    /// Asks for a single paid maintenance (no subscription needed; never uses subscription visits). Sales prices it per job; after the
-    /// customer accepts and pays the quotation, a Manager schedules the technician.
+    /// Asks for a single paid maintenance (no subscription needed; never uses subscription visits).
+    /// <para>Default (2026-11-18, <paramref name="inspectionRequired"/> true): technician-priced. The request starts SUBMITTED; a Manager schedules an
+    /// INSPECTION visit; the technician records the work items and their diagnosis; the Manager decides coverage per item; the technician prices
+    /// the chargeable items from the catalog; the customer accepts and pays (cash or PayOS); a Manager schedules the maintenance visit. No Sales
+    /// step is needed.</para>
+    /// <para>Legacy (<paramref name="inspectionRequired"/> false): no inspection; Sales prices the job from the shared queue, then the customer pays and a
+    /// Manager schedules the visit (unchanged).</para>
     /// </summary>
     public async Task<OperationResult<ServiceRequestView>> RequestOneTimeMaintenanceAsync(Guid customerUserId, Guid projectId, DateTimeOffset preferredStartsAt,
-        string? note, CancellationToken cancellationToken)
+        string? note, CancellationToken cancellationToken, bool inspectionRequired = true)
     {
         var installation = await OwnedHandedOverAsync(customerUserId, projectId, cancellationToken);
         if (!installation.Succeeded) return installation.As<ServiceRequestView>();
@@ -513,14 +518,20 @@ public sealed class ServiceCustomerHandlers(
         var request = new ServiceRequest
         {
             Id = Guid.NewGuid(), RequestNumber = AfterSalesWorkflow.NewRequestNumber(now), Kind = ServiceRequestKinds.OneTimeMaintenance,
-            Status = ServiceRequestStatuses.AwaitingQuotation, CustomerUserId = customerUserId, ProjectId = facts.ProjectId, PropertySiteId = facts.PropertySiteId,
+            Status = inspectionRequired ? ServiceRequestStatuses.Submitted : ServiceRequestStatuses.AwaitingQuotation, CustomerUserId = customerUserId,
+            ProjectId = facts.ProjectId, PropertySiteId = facts.PropertySiteId,
             Description = Text.Trim(note, 2000) ?? "One-time maintenance", PreferredStartsAt = start, CreatedAt = now, UpdatedAt = now,
         };
         await data.ExecuteInTransactionAsync<bool>(async token =>
         {
             data.Add(request);
-            AfterSalesHistory.Record(data, EventSubjects.Request, request.Id, "ONE_TIME_MAINTENANCE_REQUESTED", customerUserId, $"preferred {start:O}", now);
-            await AfterSalesWorkflow.OpenTaskAsync(data, SalesTaskTypes.MaintenanceQuotation, customerUserId, request.Id, null, "Price the one-time maintenance.", now, token);
+            AfterSalesHistory.Record(data, EventSubjects.Request, request.Id, "ONE_TIME_MAINTENANCE_REQUESTED", customerUserId,
+                $"preferred {start:O}; {(inspectionRequired ? "inspection and technician pricing" : "Sales pricing without inspection")}", now);
+            if (inspectionRequired)
+                AfterSalesHistory.NotifyAll(data, await data.ListActiveUserIdsWithRoleAsync(Identity.Constants.RoleCodes.Manager, token), "INSPECTION_NEEDED",
+                    $"{request.RequestNumber}: one-time maintenance requested; schedule an inspection.", now, request.Id);
+            else
+                await AfterSalesWorkflow.OpenTaskAsync(data, SalesTaskTypes.MaintenanceQuotation, customerUserId, request.Id, null, "Price the one-time maintenance.", now, token);
             await data.SaveChangesAsync(token);
             return (true, true);
         }, cancellationToken);
@@ -529,6 +540,20 @@ public sealed class ServiceCustomerHandlers(
 
     public async Task<IReadOnlyList<NotificationView>> NotificationsAsync(Guid userId, CancellationToken cancellationToken)
         => (await data.ListNotificationsAsync(userId, cancellationToken)).Select(views.Notification).ToList();
+
+    /// <summary>One page of the caller's notifications (SQL paging; newest first). Unlike the legacy list it is not capped at 100: every page is reachable.</summary>
+    public async Task<Common.Paging.PagedResult<NotificationView>> PageNotificationsAsync(Guid userId, Common.Paging.PageRequest page, CancellationToken cancellationToken)
+    {
+        var (rows, total) = await data.PageNotificationsAsync(userId, page.Skip, page.PageSize, cancellationToken);
+        return page.Result(rows.Select(views.Notification).ToList(), total);
+    }
+
+    /// <summary>One page of the customer's own requests (SQL paging; newest first). Only the caller's rows are counted and returned.</summary>
+    public async Task<Common.Paging.PagedResult<ServiceRequestSummary>> PageAsync(Guid customerUserId, Common.Paging.PageRequest page, CancellationToken cancellationToken)
+    {
+        var (rows, total) = await data.PageRequestsAsync(new RequestFilter(CustomerUserId: customerUserId), page.Skip, page.PageSize, cancellationToken);
+        return page.Result(rows.Select(views.Summary).ToList(), total);
+    }
 
     /// <summary>
     /// Marks an owned notification as read: read_at is persisted, so every device derives the same unread state. Idempotent (a second

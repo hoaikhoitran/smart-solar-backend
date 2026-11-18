@@ -86,3 +86,11 @@ used. When neither is configured, forwarding is **disabled**: ASP.NET Core would
 source check is skipped when both lists are empty), and every forged `X-Forwarded-For` would get a fresh rate-limit bucket. In
 `docker-compose.pull.yml` the API trusts the `edge` network of the built-in TLS proxy (`EDGE_SUBNET`, default `172.30.250.0/24`); with a
 host reverse proxy, set `ForwardedHeaders__KnownProxies__0` to the address the API sees for it.
+
+## Every controller action has a policy (2026-11-18)
+
+A runtime inventory of the routing table found 31 controller actions without any policy (customer profile, sites and pre-surveys, survey-request
+lists, simulation reads, the Sales queue and the 14 retired 410 routes). They now use `portal-read` (60/min/user), `portal-write` (20/min/user),
+`scheduling-write` (Sales claim) or `retired-endpoint` (30/min/user), configurable under `RateLimiting:PortalRead|PortalWrite|RetiredEndpoint`.
+`EndpointRateLimitCoverageTests` enumerates every controller endpoint at runtime and fails when an action has no policy or disables limiting, so a
+new action cannot ship unprotected. Details: [remediation-20261118/API_FE_INTEGRATION_HANDOFF.md](remediation-20261118/API_FE_INTEGRATION_HANDOFF.md) §5.

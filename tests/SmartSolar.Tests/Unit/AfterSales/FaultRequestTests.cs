@@ -284,12 +284,14 @@ public sealed class FaultRequestTests
     {
         await using var ctx = Create();
         var h = await ctx.HandedOverAsync();
-        var unpaid = (await ctx.Customer().RequestOneTimeMaintenanceAsync(h.CustomerId, h.ProjectId, Later(10), "Yearly clean", None)).Value!;
+        var unpaid = (await ctx.Customer().RequestOneTimeMaintenanceAsync(h.CustomerId, h.ProjectId, Later(10), "Yearly clean", None,
+            inspectionRequired: false)).Value!;
         Assert.Equal(ServiceRequestStatuses.Cancelled, (await ctx.Manager().ConfirmCannotFulfillAsync(h.ManagerId, unpaid.RequestId, "No technician in the area", None)).Value!.Status);
 
-        var request = (await ctx.Customer().RequestOneTimeMaintenanceAsync(h.CustomerId, h.ProjectId, Later(12), "Yearly clean", None)).Value!;
+        var request = (await ctx.Customer().RequestOneTimeMaintenanceAsync(h.CustomerId, h.ProjectId, Later(12), "Yearly clean", None,
+            inspectionRequired: false)).Value!;
         await ctx.ClaimQuotationTaskAsync(h, request.RequestId);
-        // A one-time maintenance has no diagnosed items: its quotation lines are free-text.
+        // Legacy Sales-priced mode (inspectionRequired: false, explicit since 2026-11-18): no diagnosed items, free-text quotation lines.
         var quotation = await ctx.IssueAsync(h, request.RequestId, new QuotationLineInput(null, "Yearly clean of 12 panels", 300_000, 0));
         Assert.True((await ctx.Quotations().AcceptAsync(h.CustomerId, quotation.QuotationId, None)).Succeeded);
         await ctx.PayAsync((await ctx.Quotations().CheckoutAsync(h.CustomerId, quotation.QuotationId, None)).Value!);

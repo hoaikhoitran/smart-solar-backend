@@ -4,6 +4,7 @@ using FluentValidation;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using SmartSolar.Api.Contracts;
 using SmartSolar.Api.Contracts.Customers;
 using SmartSolar.Api.Contracts.PropertySites;
@@ -41,6 +42,7 @@ namespace SmartSolar.Api.Controllers
         /// <summary>The caller's own property sites (by name), paged: <c>page</c> ≥ 1, <c>pageSize</c> 1–100 (default 20).</summary>
         [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Common.Paging.PagedResult<SmartSolar.Modules.PreSurvey.ListMine.CustomerSiteListItem>>), StatusCodes.Status200OK)]
         [HttpGet("me/sites")]
+        [EnableRateLimiting(RateLimitingExtensions.PortalReadPolicy)]
         public async Task<IActionResult> ListMySites(
             [FromQuery] int page = 1, [FromQuery] int pageSize = 20,
             [FromServices] SmartSolar.Modules.PreSurvey.ListMine.CustomerListingHandler listing = null!,
@@ -58,6 +60,7 @@ namespace SmartSolar.Api.Controllers
         /// </summary>
         [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.Common.Paging.PagedResult<SmartSolar.Modules.PreSurvey.ListMine.CustomerPreSurveyListItem>>), StatusCodes.Status200OK)]
         [HttpGet("me/pre-surveys")]
+        [EnableRateLimiting(RateLimitingExtensions.PortalReadPolicy)]
         public async Task<IActionResult> ListMyPreSurveys(
             [FromQuery] string? status = null, [FromQuery] string? sortBy = null, [FromQuery] string? sortDirection = null,
             [FromQuery] int page = 1, [FromQuery] int pageSize = 20,
@@ -90,6 +93,7 @@ namespace SmartSolar.Api.Controllers
         }
 
         [HttpPost("me")]
+        [EnableRateLimiting(RateLimitingExtensions.PortalWritePolicy)]
         public async Task<IActionResult> CreatMyProfile([FromBody] CreateCustomerProfileRequest request, 
                                                             CancellationToken token)
         {
@@ -132,6 +136,7 @@ namespace SmartSolar.Api.Controllers
     }
 
     [HttpPost("me/sites")]
+    [EnableRateLimiting(RateLimitingExtensions.PortalWritePolicy)]
     public async Task<IActionResult> CreatePropertySite(
         [FromBody] CreatePropertySiteRequest request,
         CancellationToken cancellationToken)

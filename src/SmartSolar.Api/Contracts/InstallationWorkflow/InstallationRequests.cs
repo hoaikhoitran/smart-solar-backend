@@ -50,3 +50,9 @@ public sealed record InstallationScheduleRequest(DateTimeOffset? StartsAt, DateT
 public sealed record InstallationScheduleReasonRequest(string? Reason);
 
 public sealed record InstallationScheduleChangeRequest(string? Note);
+
+/// <summary>One offered interval (ISO-8601 with offset).</summary>
+public sealed record InstallationSlotRequest(DateTimeOffset? StartsAt, DateTimeOffset? EndsAt);
+
+/// <summary>The responsible technician offers 1–5 intervals for the customer to choose; <c>note</c> (≤ 500) is shown to the customer.</summary>
+public sealed record InstallationSlotOffersRequest(IReadOnlyList<InstallationSlotRequest>? Slots, string? Note);

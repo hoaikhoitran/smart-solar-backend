@@ -4,6 +4,7 @@ using FluentValidation;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using SmartSolar.Api.Contracts;
 using SmartSolar.Api.Contracts.PreSurveys;
 using SmartSolar.Api.Extensions;
@@ -42,6 +43,7 @@ namespace SmartSolar.Api.Controllers
         _submitValidator = submitValidator;
     }
     [HttpPost]
+    [EnableRateLimiting(RateLimitingExtensions.PortalWritePolicy)]
     public async Task<IActionResult> Create(
         [FromBody] CreatePreSurveyRequest request,
         CancellationToken cancellationToken)
@@ -116,6 +118,7 @@ namespace SmartSolar.Api.Controllers
     }
     
     [HttpPost("{preSurveyId:guid}/submit")]
+    [EnableRateLimiting(RateLimitingExtensions.PortalWritePolicy)]
     public async Task<IActionResult> Submit(
         Guid preSurveyId,
         CancellationToken cancellationToken)
@@ -202,6 +205,7 @@ namespace SmartSolar.Api.Controllers
     }
 
     [HttpPut("{preSurveyId:guid}")]
+    [EnableRateLimiting(RateLimitingExtensions.PortalWritePolicy)]
     public async Task<IActionResult> Update(
         Guid preSurveyId,
         [FromBody] UpdatePreSurveyRequest request,

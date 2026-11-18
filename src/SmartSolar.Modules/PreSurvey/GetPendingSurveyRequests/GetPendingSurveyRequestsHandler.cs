@@ -24,4 +24,13 @@ public sealed class GetPendingSurveyRequestsHandler
         var now = _time.GetUtcNow();
         return items.Select(item => item with { Appointment = item.Appointment?.At(now) }).ToList();
     }
+
+    /// <summary>One page of the unclaimed queue (SQL paging; oldest first).</summary>
+    public async Task<SmartSolar.Modules.Common.Paging.PagedResult<PendingSurveyRequestItem>> HandleAsync(SmartSolar.Modules.Common.Paging.PageRequest page,
+        CancellationToken cancellationToken)
+    {
+        var (rows, total) = await _unitOfWork.PagePendingSurveyRequestsAsync(page.Skip, page.PageSize, cancellationToken);
+        var now = _time.GetUtcNow();
+        return page.Result(rows.Select(item => item with { Appointment = item.Appointment?.At(now) }).ToList(), total);
+    }
 }

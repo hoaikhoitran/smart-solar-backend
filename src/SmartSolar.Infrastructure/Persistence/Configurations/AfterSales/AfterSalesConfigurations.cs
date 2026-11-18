@@ -379,6 +379,7 @@ public sealed class ServiceQuotationConfiguration : IEntityTypeConfiguration<Ser
                 + "AND disaster_support_amount >= 0 AND disaster_support_amount <= total_amount AND customer_amount = total_amount - disaster_support_amount");
             t.HasCheckConstraint("ck_service_quotation_expiry", "expires_at > issued_at");
             t.HasCheckConstraint("ck_service_quotation_paid", $"status <> '{QuotationStatuses.Paid}' OR paid_at IS NOT NULL");
+            t.HasCheckConstraint("ck_service_quotation_issued_by_role", $"issued_by_role IN ({AfterSalesSql.In(QuotationIssuers.All)})");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -388,6 +389,8 @@ public sealed class ServiceQuotationConfiguration : IEntityTypeConfiguration<Ser
         builder.Property(x => x.SupersedesQuotationId).HasColumnName("supersedes_quotation_id");
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(20).IsRequired();
         builder.Property(x => x.SalesUserId).HasColumnName("sales_user_id").IsRequired();
+        // Existing rows were all issued by Sales; the default keeps an older API build (which does not set the column) writing valid rows.
+        builder.Property(x => x.IssuedByRole).HasColumnName("issued_by_role").HasMaxLength(20).IsRequired().HasDefaultValue(QuotationIssuers.Sales);
         builder.Property(x => x.LinesJson).HasColumnName("lines").HasColumnType("jsonb").IsRequired();
         builder.Property(x => x.PartsAmount).HasColumnName("parts_amount").HasPrecision(18, 2).IsRequired();
         builder.Property(x => x.LaborAmount).HasColumnName("labor_amount").HasPrecision(18, 2).IsRequired();

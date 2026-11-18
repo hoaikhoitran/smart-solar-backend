@@ -48,7 +48,7 @@ public interface IContractPaidFollowUp
 /// <see cref="InstallationHandlers.StartProjectAsync"/> (accepted assignment + EVN / PCCC / structural prerequisites).
 /// Manager/Admin keep every project operation (assign, reassign, cancel) for exceptions.
 /// </summary>
-public sealed class InstallationScheduleHandlers(
+public sealed partial class InstallationScheduleHandlers(
     IInstallationUnitOfWork unitOfWork,
     ISchedulingUnitOfWork scheduling,
     InstallationSchedulePlanner planner,
@@ -126,7 +126,22 @@ public sealed class InstallationScheduleHandlers(
         if (ineligible is not null)
             return Fail(InstallationScheduleErrorCodes.TechnicianIneligible, $"{name} cannot take this interval: {ineligible}.", new { reason = ineligible });
 
-        var reason = Trim(input.Reason);
+        return await RecordPlanAsync(actorUserId, contract, technician, startsAt, endsAt, agreement, Trim(input.Reason), input.ExpectedRevision, null, null,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// The locked write shared by the technician / Manager plan and the customer's selection of an offered interval: contract lock, contract still
+    /// SIGNED/PAID, optional <paramref name="guard"/> (inside the transaction, after the lock; a failure writes nothing), stale-revision check,
+    /// idempotent repeat, replacement of the live row (reason required), new PLANNED row, customer notification; confirmation when PAID.
+    /// <paramref name="onRecorded"/> runs in the same transaction with the row that now carries the plan (new, or the identical live one).
+    /// </summary>
+    private async Task<OperationResult<InstallationScheduleView>> RecordPlanAsync(Guid actorUserId, ScheduleContractInfo contract, Guid technician,
+        DateTimeOffset startsAt, DateTimeOffset endsAt, string agreement, string? reason, int? expectedRevision,
+        Func<ScheduleContractInfo, CancellationToken, Task<OperationResult<bool>>>? guard, Action<InstallationScheduleProposal, DateTimeOffset>? onRecorded,
+        CancellationToken cancellationToken)
+    {
+        var contractId = contract.ContractId;
         Guid? createdId = null;
         OperationResult<bool> written;
         try
@@ -137,15 +152,19 @@ public sealed class InstallationScheduleHandlers(
                 var fresh = await unitOfWork.GetScheduleContractAsync(contractId, token);
                 if (fresh is null || !Schedulable(fresh))
                     return (OperationResult<bool>.Fail(InstallationScheduleErrorCodes.ContractNotSigned, "The contract is no longer SIGNED or PAID."), false);
+                if (guard is not null && await guard(fresh, token) is { Succeeded: false } refused) return (refused, false);
                 var live = await unitOfWork.GetLiveProposalAsync(contractId, true, token);
-                if (live is not null && input.ExpectedRevision is { } expected && live.Revision != expected)
+                if (live is not null && expectedRevision is { } expected && live.Revision != expected)
                     return (OperationResult<bool>.Fail(InstallationScheduleErrorCodes.StaleRevision, "The schedule changed meanwhile. Reload and try again.",
                         new { currentRevision = live.Revision }), false);
                 if (live is not null && live.TechnicianUserId == technician && live.StartsAt == startsAt && live.EndsAt == endsAt
                     && live.Status != InstallationScheduleStatuses.RescheduleRequired)
                 {
                     createdId = live.Id;   // the same plan again: idempotent
-                    return (OperationResult<bool>.Ok(false), false);
+                    if (onRecorded is null) return (OperationResult<bool>.Ok(false), false);
+                    onRecorded(live, time.GetUtcNow());
+                    await unitOfWork.SaveChangesAsync(token);
+                    return (OperationResult<bool>.Ok(false), true);
                 }
                 if (live is not null && reason is null)
                     return (OperationResult<bool>.Fail(InstallationScheduleErrorCodes.ReasonRequired, "Give the reason for changing the agreed date ('reason')."), false);
@@ -169,6 +188,7 @@ public sealed class InstallationScheduleHandlers(
                     ReplacesProposalId = live?.Id, CreatedByUserId = actorUserId, CreatedAt = now, UpdatedAt = now,
                 };
                 unitOfWork.Add(proposal);
+                onRecorded?.Invoke(proposal, now);
                 var when = $"{Local(startsAt):dd/MM/yyyy HH:mm} – {Local(endsAt):dd/MM/yyyy HH:mm}";
                 unitOfWork.AddNotification(fresh.CustomerUserId,
                     live is null ? CustomerNotificationTypes.InstallationSchedulePlanned : CustomerNotificationTypes.InstallationScheduleChanged,
@@ -275,6 +295,15 @@ public sealed class InstallationScheduleHandlers(
     }
 
     // ================================================================== Manager / Admin
+
+    /// <summary>One page of schedules for Manager/Admin (SQL paging; newest first).</summary>
+    public async Task<Common.Paging.PagedResult<InstallationScheduleView>> PageForStaffAsync(string? status, Common.Paging.PageRequest page, CancellationToken cancellationToken)
+    {
+        var (rows, total) = await unitOfWork.PageProposalsAsync(status, page.Skip, page.PageSize, cancellationToken);
+        var views = new List<InstallationScheduleView>();
+        foreach (var p in rows) views.Add(await ViewAsync(p, null, cancellationToken));
+        return page.Result(views, total);
+    }
 
     public async Task<IReadOnlyList<InstallationScheduleView>> ListForStaffAsync(string? status, CancellationToken cancellationToken)
     {

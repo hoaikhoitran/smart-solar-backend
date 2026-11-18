@@ -117,12 +117,14 @@ public sealed class PostgresAiCostControlTests
         await using var _ = database;
         await using var __ = ctx;
         await using var db = database.NewContext();
-        Assert.Equal(Migration, (await db.Database.GetAppliedMigrationsAsync()).Last());
+        // 20261117171006_InstallationSlotOffers (2026-11-18) may follow this migration; it must be applied.
+        Assert.Contains(Migration, await db.Database.GetAppliedMigrationsAsync());
 
         await db.GetService<IMigrator>().MigrateAsync(Previous);
         Assert.False(await db.Database.SqlQueryRaw<bool>("SELECT to_regclass('ai_usage_ledger') IS NOT NULL AS \"Value\"").SingleAsync());
         await db.Database.MigrateAsync();
-        Assert.Equal(Migration, (await db.Database.GetAppliedMigrationsAsync()).Last());
+        // 20261117171006_InstallationSlotOffers (2026-11-18) may follow this migration; it must be applied.
+        Assert.Contains(Migration, await db.Database.GetAppliedMigrationsAsync());
 
         var user = (await UsersAsync(ctx, 1))[0];
         Assert.True((await new KnowledgeUnitOfWork(ctx.Db).TryAdmitAsync(Request(user, 0.001m, DateTimeOffset.UtcNow), Limits, None)).Admitted);

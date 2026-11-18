@@ -114,6 +114,9 @@ public interface IKnowledgeUnitOfWork : ITransactionalUnitOfWork
 {
     Task<KnowledgeDocument?> FindDocumentAsync(Guid documentId, bool track, CancellationToken cancellationToken);
     Task<IReadOnlyList<KnowledgeDocument>> ListDocumentsAsync(string? status, string? category, CancellationToken cancellationToken);
+
+    /// <summary>One page of documents (latest update first, id tie-breaker), filtered in SQL, with the total.</summary>
+    Task<(IReadOnlyList<KnowledgeDocument> Rows, int Total)> PageDocumentsAsync(string? status, string? category, int skip, int take, CancellationToken cancellationToken);
     Task<KnowledgeDocumentVersion?> FindVersionAsync(Guid versionId, bool track, CancellationToken cancellationToken);
     Task<IReadOnlyList<KnowledgeDocumentVersion>> GetVersionsAsync(Guid documentId, bool track, CancellationToken cancellationToken);
     Task<IReadOnlyList<KnowledgeIngestionJob>> GetJobsAsync(Guid documentId, CancellationToken cancellationToken);

@@ -83,7 +83,8 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
         foreach (var policy in SmartSolar.Api.Extensions.RateLimitingExtensions.InstallationWorkflowPolicies
                      .Concat(SmartSolar.Api.Extensions.RateLimitingExtensions.KnowledgeBasePolicies)
                      .Concat(SmartSolar.Api.Extensions.RateLimitingExtensions.SystemSettingsPolicies)
-                     .Concat(SmartSolar.Api.Extensions.RateLimitingExtensions.IotMonitoringPolicies))
+                     .Concat(SmartSolar.Api.Extensions.RateLimitingExtensions.IotMonitoringPolicies)
+                     .Concat(SmartSolar.Api.Extensions.RateLimitingExtensions.PortalPolicies))
         {
             builder.UseSetting($"{policy.Section}:PermitLimit", "1000");
         }

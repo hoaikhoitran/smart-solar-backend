@@ -1195,6 +1195,14 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("issued_at");
 
+                    b.Property<string>("IssuedByRole")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("SALES")
+                        .HasColumnName("issued_by_role");
+
                     b.Property<decimal>("LaborAmount")
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)")
@@ -1290,6 +1298,8 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                             t.HasCheckConstraint("ck_service_quotation_amounts", "parts_amount >= 0 AND labor_amount >= 0 AND total_amount = parts_amount + labor_amount AND total_amount > 0 AND disaster_support_amount >= 0 AND disaster_support_amount <= total_amount AND customer_amount = total_amount - disaster_support_amount");
 
                             t.HasCheckConstraint("ck_service_quotation_expiry", "expires_at > issued_at");
+
+                            t.HasCheckConstraint("ck_service_quotation_issued_by_role", "issued_by_role IN ('SALES', 'TECHNICIAN')");
 
                             t.HasCheckConstraint("ck_service_quotation_paid", "status <> 'PAID' OR paid_at IS NOT NULL");
 
@@ -3619,6 +3629,106 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                             t.HasCheckConstraint("ck_installation_schedule_proposal_reschedule_reason", "reschedule_reason_code IS NULL OR reschedule_reason_code IN ('TECHNICIAN_UNAVAILABLE', 'INVALID_SCHEDULE', 'COVERAGE_CHANGED', 'PROJECT_NOT_ASSIGNABLE')");
 
                             t.HasCheckConstraint("ck_installation_schedule_proposal_status", "status IN ('PLANNED', 'CONFIRMED', 'RESCHEDULE_REQUIRED', 'CANCELLED')");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Installations.InstallationSlotOffer", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ContractId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("contract_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<DateTimeOffset>("EndsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ends_at");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("note");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<DateTimeOffset?>("SelectedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("selected_at");
+
+                    b.Property<Guid?>("SelectedScheduleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("selected_schedule_id");
+
+                    b.Property<DateTimeOffset>("StartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("starts_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TechnicianUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("technician_user_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<DateTimeOffset?>("WithdrawnAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("withdrawn_at");
+
+                    b.Property<string>("WithdrawnReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("withdrawn_reason");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("SelectedScheduleId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_installation_slot_offer_selected_schedule")
+                        .HasFilter("selected_schedule_id IS NOT NULL");
+
+                    b.HasIndex("ContractId", "Status")
+                        .HasDatabaseName("ix_installation_slot_offer_contract_status");
+
+                    b.HasIndex("TechnicianUserId", "Status")
+                        .HasDatabaseName("ix_installation_slot_offer_technician_status");
+
+                    b.HasIndex("ContractId", "StartsAt", "EndsAt")
+                        .IsUnique()
+                        .HasDatabaseName("ux_installation_slot_offer_open_interval")
+                        .HasFilter("status = 'OPEN'");
+
+                    b.ToTable("installation_slot_offer", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_installation_slot_offer_interval", "ends_at > starts_at");
+
+                            t.HasCheckConstraint("ck_installation_slot_offer_selected", "(status = 'SELECTED') = (selected_at IS NOT NULL AND selected_schedule_id IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_installation_slot_offer_status", "status IN ('OPEN', 'SELECTED', 'WITHDRAWN')");
+
+                            t.HasCheckConstraint("ck_installation_slot_offer_withdrawn", "(status = 'WITHDRAWN') = (withdrawn_at IS NOT NULL AND withdrawn_reason IS NOT NULL)");
                         });
                 });
 
@@ -8695,6 +8805,36 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_installation_schedule_proposal_technician");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Installations.InstallationSlotOffer", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.CustomerContracts.CustomerContract", null)
+                        .WithMany()
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_installation_slot_offer_contract");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_installation_slot_offer_created_by");
+
+                    b.HasOne("SmartSolar.Modules.Installations.InstallationScheduleProposal", null)
+                        .WithMany()
+                        .HasForeignKey("SelectedScheduleId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_installation_slot_offer_selected_schedule");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("TechnicianUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_installation_slot_offer_technician");
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.Installations.InstalledAsset", b =>

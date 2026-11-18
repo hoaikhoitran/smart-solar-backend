@@ -116,7 +116,9 @@ public static partial class FilePolicies
         [FilePurposes.QuotationDocument] = [RoleCodes.Sales],
         // Manager/Admin prepare and publish contracts since 2026-11-17 (Sales is consult-only).
         [FilePurposes.ContractDocument] = [RoleCodes.Manager, RoleCodes.Admin],
-        [FilePurposes.SignedContract] = [RoleCodes.Customer],
+        // Paper contracts (2026-11-18): the customer may upload the scan, or the Sales owner / a Manager or Admin uploads the scan of the
+        // physically signed paper. Attaching still checks the request ownership and the contract state.
+        [FilePurposes.SignedContract] = [RoleCodes.Customer, RoleCodes.Sales, RoleCodes.Manager, RoleCodes.Admin],
         [FilePurposes.ProjectDocument] = [RoleCodes.Manager, RoleCodes.Admin],
         [FilePurposes.KnowledgeDocument] = [RoleCodes.Admin],
         // The roles that manage the catalog (AdminProductsController) and the package catalog (AdminAfterSalesController).

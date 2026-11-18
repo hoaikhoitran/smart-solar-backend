@@ -108,6 +108,7 @@ public sealed class SimulationsController : ControllerBase
     /// <summary>Cached recent results (newest first) and the stored selected summary.</summary>
     [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.SolarSimulation.Models.SimulationListView>), StatusCodes.Status200OK)]
     [HttpGet]
+    [EnableRateLimiting(RateLimitingExtensions.PortalReadPolicy)]
     public async Task<IActionResult> List(Guid preSurveyId, CancellationToken cancellationToken)
     {
         if (Viewer() is not { } viewer)
@@ -125,6 +126,7 @@ public sealed class SimulationsController : ControllerBase
     /// </summary>
     [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.SolarSimulation.Models.SimulationDetail>), StatusCodes.Status200OK)]
     [HttpGet("{simulationId:guid}")]
+    [EnableRateLimiting(RateLimitingExtensions.PortalReadPolicy)]
     public async Task<IActionResult> Get(Guid preSurveyId, Guid simulationId, CancellationToken cancellationToken)
     {
         if (Viewer() is not { } viewer)

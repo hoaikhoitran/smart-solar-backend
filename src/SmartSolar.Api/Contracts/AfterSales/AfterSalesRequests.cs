@@ -8,8 +8,13 @@ public sealed record CompletionDecisionRequest(bool Accept, string? Reason, IRea
 public sealed record ReconsiderationRequest(string? Note, IReadOnlyList<Guid>? EvidenceFileIds);
 public sealed record FaultFromMaintenanceRequest(string? Description);
 public sealed record PreferredTimeRequest(DateTimeOffset PreferredStartsAt, string? Note);
-public sealed record OneTimeMaintenanceRequest(Guid ProjectId, DateTimeOffset PreferredStartsAt, string? Note);
-public sealed record PurchaseRequest(Guid ContractId, Guid? MaintenancePackageId, Guid? DisasterPackageId, bool IncludeContract);
+/// <summary>One-time maintenance. <c>inspectionRequired</c> (default true): inspection + technician pricing; false: legacy Sales pricing without inspection.</summary>
+public sealed record OneTimeMaintenanceRequest(Guid ProjectId, DateTimeOffset PreferredStartsAt, string? Note, bool? InspectionRequired = null);
+/// <summary>
+/// Buys packages for a contract. <c>paymentMethod</c>: <c>ONLINE</c> (default, PayOS checkout) or <c>CASH</c> (only with <c>includeContract: true</c>:
+/// one cash payment for the installation and the packages, confirmed by a Manager/Admin with <c>POST /api/contracts/{id}/payments/cash/confirm</c>).
+/// </summary>
+public sealed record PurchaseRequest(Guid ContractId, Guid? MaintenancePackageId, Guid? DisasterPackageId, bool IncludeContract, string? PaymentMethod = null);
 
 // ---- Technician
 public sealed record VisitResponseRequest(bool Accept, string? Reason);
@@ -27,6 +32,11 @@ public sealed record AbsenceRequest(string? Note);
 // ---- Sales
 public sealed record QuotationLineRequest(Guid? ItemId, string? Description, decimal PartsAmount, decimal LaborAmount);
 public sealed record IssueQuotationRequest(IReadOnlyList<QuotationLineRequest>? Lines, int? RepairWarrantyMonths, string? Note);
+
+/// <summary>Technician quotation: per diagnosed item, the catalog products (parts and priced labor) and quantities. No amount is accepted.</summary>
+public sealed record TechnicianQuotationRequest(IReadOnlyList<TechnicianQuotationLineRequest>? Lines, int? RepairWarrantyMonths, string? Note);
+public sealed record TechnicianQuotationLineRequest(Guid? ItemId, IReadOnlyList<QuotationComponentRequest>? Components, string? Description);
+public sealed record QuotationComponentRequest(Guid? ProductId, decimal? Quantity);
 public sealed record FollowUpRequest(DateTimeOffset ContactedAt, string? Result, string? Note, string? Outcome);
 
 // ---- Manager

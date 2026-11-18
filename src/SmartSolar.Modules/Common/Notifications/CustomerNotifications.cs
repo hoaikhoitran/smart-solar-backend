@@ -30,6 +30,8 @@ public static class CustomerNotificationTypes
     public const string InstallationScheduleChanged = "INSTALLATION_SCHEDULE_CHANGED";
     public const string InstallationScheduleRescheduleRequired = "INSTALLATION_SCHEDULE_RESCHEDULE_REQUIRED";
     public const string InstallationScheduleCancelled = "INSTALLATION_SCHEDULE_CANCELLED";
+    /// <summary>The technician offered installation intervals for the customer to choose in the portal.</summary>
+    public const string InstallationSlotsOffered = "INSTALLATION_SLOTS_OFFERED";
     public const string InstallationStarted = "INSTALLATION_STARTED";
     public const string InstallationAcceptanceRequired = "INSTALLATION_ACCEPTANCE_REQUIRED";
     public const string InstallationReworkRequired = "INSTALLATION_REWORK_REQUIRED";
