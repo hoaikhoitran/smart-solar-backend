@@ -95,6 +95,8 @@ public sealed class PaymentAttemptItem
     /// this quotation's snapshot when the line is settled. Exactly one of contract / subscription / quotation / installation quotation is set.
     /// </summary>
     public Guid? InstallationQuotationId { get; set; }
+    /// <summary>Installment of a payment-plan contract paid by this line (2026-11-19: deposit 30% or balance 70%).</summary>
+    public Guid? ContractInstallmentId { get; set; }
     public decimal Amount { get; set; }
 
     /// <summary>PENDING until the payment is verified, then SETTLED, or REVIEW_REQUIRED when the money cannot be applied (manual refund).</summary>
@@ -112,7 +114,9 @@ public static class PaymentItemTypes
     public const string MaintenanceQuotation = "MAINTENANCE_QUOTATION";
     /// <summary>An installation quotation agreed on site with the technician; settling it creates the contract (payment before contract).</summary>
     public const string InstallationQuotation = "INSTALLATION_QUOTATION";
-    public static readonly IReadOnlyList<string> All = [Contract, MaintenancePackage, DisasterPackage, RepairQuotation, MaintenanceQuotation, InstallationQuotation];
+    /// <summary>One installment (deposit / balance) of a payment-plan contract; the attempt carries no contract id (the line names the installment).</summary>
+    public const string ContractInstallment = "CONTRACT_INSTALLMENT";
+    public static readonly IReadOnlyList<string> All = [Contract, MaintenancePackage, DisasterPackage, RepairQuotation, MaintenanceQuotation, InstallationQuotation, ContractInstallment];
 }
 
 public static class PaymentItemStatuses
@@ -212,4 +216,6 @@ public static class PaymentErrorCodes
     public const string CashReceiptDuplicate = "PAYMENT_CASH_RECEIPT_DUPLICATE";
     /// <summary>A line of the cash payment can no longer be applied (quotation expired, rejected or replaced; package order released): nothing recorded (409).</summary>
     public const string CashItemNotPayable = "PAYMENT_CASH_ITEM_NOT_PAYABLE";
+    /// <summary>The contract is paid in installments (30/70 plan): use the installment payment endpoints, never a 100% contract payment (409).</summary>
+    public const string ContractHasInstallments = "PAYMENT_CONTRACT_HAS_INSTALLMENTS";
 }

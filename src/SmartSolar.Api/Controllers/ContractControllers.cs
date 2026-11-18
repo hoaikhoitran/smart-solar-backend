@@ -11,12 +11,13 @@ using SmartSolar.Modules.Common.Features;
 namespace SmartSolar.Api.Controllers;
 
 /// <summary>
-/// Manager/Admin prepare, issue and publish contracts and confirm the customer's signature (2026-11-17 simplified flow). The DRAFT is created
-/// automatically when the customer accepts the quotation. Sales is consult-only: it reads the contracts of the requests it owns, nothing else.
+/// Staff contract endpoints. Reads (2026-11-19): Sales, Technician, Manager and Admin read every contract (read-all; detail reads are audited).
+/// Writes of the previous flow (official PDF, scan, review, amendments) stay Manager/Admin and apply to legacy (full-payment) contracts only; 30/70
+/// contracts answer 409 CONTRACT_PAYMENT_PLAN_NOT_APPLICABLE there (they are signed on paper through the technician's signed-page upload).
 /// </summary>
 [ApiController]
 [Route("api")]
-[Authorize(Roles = $"{RoleCodes.Sales},{RoleCodes.Manager},{RoleCodes.Admin}")]
+[Authorize(Roles = $"{RoleCodes.Sales},{RoleCodes.Technician},{RoleCodes.Manager},{RoleCodes.Admin}")]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
 public sealed class SalesContractsController(ContractHandlers handlers, ContractDocumentHandlers documents) : OperationResultControllerBase
 {
@@ -37,7 +38,12 @@ public sealed class SalesContractsController(ContractHandlers handlers, Contract
     [HttpGet("contracts/{contractId:guid}")]
     [EnableRateLimiting(RateLimitingExtensions.ContractReadPolicy)]
     public async Task<IActionResult> Get(Guid contractId, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await handlers.GetForStaffAsync(user, IsManager(), contractId, cancellationToken)) : UnauthorizedFailure();
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        var result = await handlers.GetForStaffAsync(user, IsManager(), contractId, cancellationToken);
+        if (result.Succeeded) await documents.AuditAsync(contractId, user, CurrentRole(), ContractAccessActions.Detail, null, cancellationToken);
+        return Respond(result);
+    }
 
     [HttpPut("contracts/{contractId:guid}")]
     [Authorize(Roles = StaffRoles)]
@@ -129,6 +135,7 @@ public sealed class SalesContractsController(ContractHandlers handlers, Contract
     /// exactly like a customer submission; a Manager/Admin still confirms the signature (<c>POST …/review</c>). 404 for Sales of another request.
     /// </summary>
     [HttpPost("contracts/{contractId:guid}/signed-document")]
+    [Authorize(Roles = $"{RoleCodes.Sales},{RoleCodes.Manager},{RoleCodes.Admin}")]
     [EnableRateLimiting(RateLimitingExtensions.ContractWritePolicy)]
     public async Task<IActionResult> SubmitPaperSigned(Guid contractId, [FromBody] PaperSignedDocumentRequest request, CancellationToken cancellationToken)
         => CurrentUserId() is { } user
@@ -143,6 +150,8 @@ public sealed class SalesContractsController(ContractHandlers handlers, Contract
         => CurrentUserId() is { } user ? Respond(await handlers.CreateAmendmentAsync(user, contractId, request.Terms, cancellationToken, request.WarrantyMonths), StatusCodes.Status201Created) : UnauthorizedFailure();
 
     private bool IsManager() => IsInRole(RoleCodes.Manager) || IsInRole(RoleCodes.Admin);
+
+    private string CurrentRole() => new[] { RoleCodes.Admin, RoleCodes.Manager, RoleCodes.Sales, RoleCodes.Technician }.FirstOrDefault(IsInRole) ?? "UNKNOWN";
 
     private const string StaffRoles = $"{RoleCodes.Manager},{RoleCodes.Admin}";
 }
@@ -164,12 +173,15 @@ public sealed class CustomerContractsController(ContractHandlers handlers, Contr
     public async Task<IActionResult> Get(Guid contractId, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await handlers.GetForCustomerAsync(user, contractId, cancellationToken)) : UnauthorizedFailure();
 
+    /// <summary>
+    /// Retired (2026-11-19): the customer no longer uploads a signed scan. The paper contract is signed on site after the deposit and the technician
+    /// uploads the photographed pages; the customer reads them with <c>GET …/signature-sets</c>.
+    /// </summary>
     [HttpPost("{contractId:guid}/signed-document")]
-    [EnableRateLimiting(RateLimitingExtensions.ContractWritePolicy)]
-    public async Task<IActionResult> SubmitSigned(Guid contractId, [FromBody] SignedDocumentRequest request, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user
-            ? Respond(await handlers.SubmitSignedDocumentAsync(user, contractId, request.FileId, request.OfficialDocumentSha256 ?? "", cancellationToken))
-            : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
+    public IActionResult SubmitSigned(Guid contractId)
+        => Retired("None for the customer: the technician uploads the signed paper pages (POST /api/technician/contracts/{contractId}/signature-set …)");
 
     /// <summary>
     /// A presigned GET URL for the official PDF of one of the customer's own contract versions (from AWAITING_SIGNATURE on, superseded versions

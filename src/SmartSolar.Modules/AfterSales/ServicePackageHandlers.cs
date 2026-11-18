@@ -250,6 +250,10 @@ public sealed class ServicePackageHandlers(
         var contract = await data.GetContractAsync(input.ContractId, cancellationToken);
         if (contract is null || contract.CustomerUserId != customerUserId)
             return OperationResult<PurchaseView>.Fail(AfterSalesErrorCodes.ProjectNotFound, "Contract was not found.");
+        // A 30/70 contract is paid per installment (CONTRACT_INSTALLMENT); its balance is never bundled with packages. After-sales stays 100% upfront.
+        if (input.IncludeContract && contract.PaymentPlan is not null)
+            return OperationResult<PurchaseView>.Fail(AfterSalesErrorCodes.InvalidState,
+                "This contract is paid in two installments; pay its installment first, then buy the packages separately once it is fully paid.");
         if (input.IncludeContract && contract.Status != ContractStatuses.Signed)
             return OperationResult<PurchaseView>.Fail(AfterSalesErrorCodes.InvalidState, "The contract can be paid together only while it is signed and unpaid.");
         if (!input.IncludeContract && contract.Status != ContractStatuses.Paid)

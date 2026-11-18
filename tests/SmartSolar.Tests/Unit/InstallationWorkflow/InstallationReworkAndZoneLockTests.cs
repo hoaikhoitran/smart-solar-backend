@@ -134,7 +134,8 @@ public sealed class InstallationReworkAndZoneLockTests
         Assert.True((await InternalAcceptance.AcceptAsync(ctx, project.ProjectId, paid.ManagerId)).Succeeded);
         var completed = (await installs.GetForCustomerAsync(paid.CustomerId, project.ProjectId, None)).Value!;
         Assert.Equal(InstallationStatuses.Completed, completed.Status);
-        Assert.Equal(new string?[] { AcceptanceDeciders.Staff, AcceptanceDeciders.Staff }, completed.Acceptances.Select(a => a.DecidedBy));
+        // The Manager returned round 1; the customer accepted round 2 (2026-11-19).
+        Assert.Equal(new string?[] { AcceptanceDeciders.Staff, AcceptanceDeciders.Customer }, completed.Acceptances.Select(a => a.DecidedBy));
     }
 
     [Fact]

@@ -13,7 +13,9 @@ public sealed record InstallationFacts(
     Guid? OperationalZoneId, int? WarrantyMonths);
 
 /// <summary>A customer contract as seen by package purchases (the project may not exist yet).</summary>
-public sealed record ContractFacts(Guid ContractId, Guid CustomerUserId, string Status, Guid? ProjectId, string? ProjectStatus, DateTimeOffset? HandoverAt);
+/// <param name="PaymentPlan">Non-null for a 30/70 contract (paid per installment; never bundled with a package checkout).</param>
+public sealed record ContractFacts(Guid ContractId, Guid CustomerUserId, string Status, Guid? ProjectId, string? ProjectStatus, DateTimeOffset? HandoverAt,
+    string? PaymentPlan = null);
 
 public sealed record RequestFilter(Guid? CustomerUserId = null, Guid? ProjectId = null, string? Status = null, string? Kind = null);
 

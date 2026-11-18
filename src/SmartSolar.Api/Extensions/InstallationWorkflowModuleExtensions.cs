@@ -26,12 +26,28 @@ public static class InstallationWorkflowModuleExtensions
 
         services.AddScoped<SmartSolar.Modules.CustomerContracts.IContractUnitOfWork, ContractUnitOfWork>();
         services.AddScoped<SmartSolar.Modules.CustomerContracts.ContractHandlers>();
+        // 30/70 payment plan (2026-11-19): contract at the on-site agreement, installments, paper signature, customer acceptance → balance, collection.
+        var paymentPlan = ConfigurationBinding.Bind<SmartSolar.Modules.CustomerContracts.PaymentPlanOptions>(configuration,
+            SmartSolar.Modules.CustomerContracts.PaymentPlanOptions.SectionName);
+        if (paymentPlan.BalanceDueHours is < 1 or > SmartSolar.Modules.CustomerContracts.PaymentPlanCalculator.MaxBalanceDueHours)
+            throw new InvalidOperationException("'PaymentPlan:BalanceDueHours' must be between 1 and 72 (the balance is due at most 3 days after acceptance).");
+        services.AddSingleton(paymentPlan);
+        services.AddScoped<SmartSolar.Modules.CustomerContracts.PaymentPlanLedger>();
+        services.AddScoped<SmartSolar.Modules.Quotations.IAgreedQuotationContracts>(sp => sp.GetRequiredService<SmartSolar.Modules.CustomerContracts.PaymentPlanLedger>());
+        services.AddScoped<SmartSolar.Modules.Installations.IInstallationAcceptanceHook>(sp => sp.GetRequiredService<SmartSolar.Modules.CustomerContracts.PaymentPlanLedger>());
+        services.AddScoped<SmartSolar.Modules.CustomerContracts.InstallmentPaymentHandlers>();
+        services.AddScoped<SmartSolar.Modules.CustomerContracts.PaperSignatureHandlers>();
+        services.AddScoped<SmartSolar.Modules.CustomerContracts.ContractDirectoryHandlers>();
+        services.AddScoped<SmartSolar.Modules.CustomerContracts.CollectionHandlers>();
+        services.AddScoped<SmartSolar.Modules.CustomerContracts.IFinanceOverviewQueries, FinanceOverviewQueries>();
+        services.AddScoped<SmartSolar.Modules.CustomerContracts.FinanceOverview>();
         // Technician-led on-site sales (2026-11-18): the technician opens the payment of the agreed quotation; the verified payment creates the contract.
         services.AddScoped<SmartSolar.Modules.Quotations.OnSiteQuotationPaymentHandlers>();
         // Payment settlement: installation-quotation lines create the contract (same transaction, same scoped AppDbContext); every other line goes to
         // the after-sales settlement (registered by AddAfterSales; absent → those lines are flagged for manual handling).
         services.AddScoped<SmartSolar.Modules.Payments.IPaymentItemSettlement>(sp => new SmartSolar.Modules.CustomerContracts.InstallationQuotationPaymentSettlement(
-            sp.GetRequiredService<SmartSolar.Modules.CustomerContracts.ContractHandlers>(), sp.GetService<SmartSolar.Modules.AfterSales.AfterSalesPaymentSettlement>()));
+            sp.GetRequiredService<SmartSolar.Modules.CustomerContracts.ContractHandlers>(), sp.GetService<SmartSolar.Modules.AfterSales.AfterSalesPaymentSettlement>(),
+            sp.GetRequiredService<SmartSolar.Modules.CustomerContracts.PaymentPlanLedger>()));
         services.AddScoped<SmartSolar.Modules.CustomerContracts.ContractDocumentHandlers>();
 
         var payments = ConfigurationBinding.Bind<SmartSolar.Modules.Payments.PaymentOptions>(configuration, SmartSolar.Modules.Payments.PaymentOptions.SectionName);

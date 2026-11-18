@@ -104,16 +104,15 @@ public sealed class TechnicianQuotationsController(QuotationHandlers handlers) :
     }
 
     /// <summary>
-    /// Opens the payment of the AGREED quotation: ONLINE returns the PayOS <c>qrCode</c> / <c>checkoutUrl</c> to show on the technician's device;
-    /// CASH records a pending cash choice that a Manager/Admin confirms. Repeating the same method returns the open payment. The contract is
-    /// created automatically once the payment is verified (<c>contractId</c>).
+    /// Retired (2026-11-19, 30/70 plan): a quotation is no longer paid 100% before its contract. AGREED creates the contract (<c>contractId</c> in the
+    /// decision response) and the technician opens the deposit with <c>POST /api/technician/contracts/{contractId}/installments/1/payment</c>.
+    /// Reading and cancelling a quotation payment opened before the release stay available (in-flight legacy payments).
     /// </summary>
     [HttpPost("quotations/{quotationId:guid}/payment")]
-    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationPaymentView>), StatusCodes.Status200OK)]
-    [EnableRateLimiting(RateLimitingExtensions.PaymentCreatePolicy)]
-    public async Task<IActionResult> StartPayment(Guid quotationId, [FromBody] QuotationPaymentRequest request, [FromServices] OnSiteQuotationPaymentHandlers payments,
-        CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await payments.StartAsync(user, quotationId, request.Method, cancellationToken)) : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
+    public IActionResult StartPayment(Guid quotationId)
+        => Retired("POST /api/technician/contracts/{contractId}/installments/1/payment (deposit 30%; contractId from the AGREED on-site decision)");
 
     /// <summary>Payment state of the quotation (an open online link is checked server-to-server with PayOS; a browser return URL never marks it paid).</summary>
     [HttpGet("quotations/{quotationId:guid}/payment")]

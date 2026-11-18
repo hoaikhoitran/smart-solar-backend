@@ -32,10 +32,22 @@ public sealed record InstallationScheduleView(
 public sealed record TechnicianScheduleContractView(Guid ContractId, string ContractNumber, string ContractStatus, string PropertyName, string CustomerName,
     InstallationScheduleView? Schedule);
 
-/// <summary>Called after a contract became PAID (PayOS webhook / reconciliation or a staff cash confirmation), outside the payment transaction.</summary>
+/// <summary>
+/// Called after a contract became ready for installation, outside the transaction that made it ready: a legacy contract PAID (PayOS webhook /
+/// reconciliation or a staff cash confirmation), or a 30/70 contract SIGNED on paper after its verified deposit.
+/// </summary>
 public interface IContractPaidFollowUp
 {
     Task ContractPaidAsync(Guid contractId, CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Financial effect of the customer's acceptance (30/70 plan: the balance opens), implemented by the contracts module and called INSIDE the acceptance
+/// transaction. Null = done (nothing to do for legacy contracts); otherwise why the acceptance cannot be recorded.
+/// </summary>
+public interface IInstallationAcceptanceHook
+{
+    Task<string?> CustomerAcceptedAsync(Guid contractId, Guid customerUserId, DateTimeOffset acceptedAt, CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -212,9 +224,9 @@ public sealed partial class InstallationScheduleHandlers(
                 var when = $"{Local(startsAt):dd/MM/yyyy HH:mm} – {Local(endsAt):dd/MM/yyyy HH:mm}";
                 unitOfWork.AddNotification(fresh.CustomerUserId,
                     live is null ? CustomerNotificationTypes.InstallationSchedulePlanned : CustomerNotificationTypes.InstallationScheduleChanged,
-                    fresh.Status == ContractStatuses.Paid
+                    fresh.ReadyForInstallation
                         ? $"Lịch thi công dự kiến {when} đã được ghi nhận; hệ thống đang xác nhận với kỹ thuật viên."
-                        : fresh.Prepaid
+                        : fresh.Prepaid || fresh.PaymentPlan is not null
                             ? $"Lịch thi công dự kiến {when} đã được ghi nhận. Lịch được xác nhận tự động khi hồ sơ hợp đồng hoàn tất."
                             : $"Lịch thi công dự kiến {when} đã được ghi nhận. Lịch chỉ được xác nhận sau khi hợp đồng được thanh toán.",
                     now);
@@ -229,7 +241,7 @@ public sealed partial class InstallationScheduleHandlers(
         }
         if (!written.Succeeded) return written.As<InstallationScheduleView>();
 
-        if (contract.Status == ContractStatuses.Paid || (await unitOfWork.GetScheduleContractAsync(contractId, cancellationToken))?.Status == ContractStatuses.Paid)
+        if (contract.ReadyForInstallation || (await unitOfWork.GetScheduleContractAsync(contractId, cancellationToken))?.ReadyForInstallation == true)
             await ConfirmForContractAsync(contractId, cancellationToken);
         var stored = await unitOfWork.FindProposalAsync(createdId!.Value, false, cancellationToken);
         return OperationResult<InstallationScheduleView>.Ok(await ViewAsync(stored!, null, cancellationToken));
@@ -356,7 +368,7 @@ public sealed partial class InstallationScheduleHandlers(
         var plan = await unitOfWork.GetLiveProposalAsync(contractId, false, cancellationToken);
         if (plan is null) return OperationResult<InstallationScheduleView?>.Ok(null);
         var contract = await unitOfWork.GetScheduleContractAsync(contractId, cancellationToken);
-        if (plan.Status != InstallationScheduleStatuses.Planned || contract?.Status != ContractStatuses.Paid)
+        if (plan.Status != InstallationScheduleStatuses.Planned || contract?.ReadyForInstallation != true)
             return OperationResult<InstallationScheduleView?>.Ok(await ViewAsync(plan, contract, cancellationToken));
 
         var project = await unitOfWork.FindProjectByContractAsync(contractId, cancellationToken);
@@ -526,16 +538,21 @@ public sealed partial class InstallationScheduleHandlers(
             p.ConfirmedAt is { } c ? Local(c) : null, p.RescheduleReasonCode, p.RescheduleDetail,
             p.CustomerChangeRequestedAt is { } r ? Local(r) : null, p.CustomerChangeRequestNote, p.CancelledAt is { } x ? Local(x) : null, p.CancellationReason,
             Local(p.CreatedAt), p.Revision,
-            AwaitingPayment: p.Status == InstallationScheduleStatuses.Planned && contract?.Status != ContractStatuses.Paid && contract?.Prepaid != true,
-            AwaitingContractSignature: p.Status == InstallationScheduleStatuses.Planned && contract?.Status != ContractStatuses.Paid && contract?.Prepaid == true);
+            AwaitingPayment: p.Status == InstallationScheduleStatuses.Planned && contract?.ReadyForInstallation != true && contract?.Prepaid != true
+                             && contract?.PaymentPlan is null,
+            AwaitingContractSignature: p.Status == InstallationScheduleStatuses.Planned && contract?.ReadyForInstallation != true
+                                       && (contract?.Prepaid == true || contract?.PaymentPlan is not null));
     }
 
     /// <summary>
     /// SIGNED / PAID (previous flow: signed, then paid), or any live contract created from a paid quotation (technician-led flow: paid first,
     /// signed after). Superseded and discarded contracts are never scheduled.
     /// </summary>
+    /// <remarks>30/70 contracts (2026-11-19): from the verified deposit on (AWAITING_SIGNATURE, SIGNED, PAID); confirmed once SIGNED (ready).</remarks>
     private static bool Schedulable(ScheduleContractInfo c)
-        => c.Status is ContractStatuses.Signed or ContractStatuses.Paid || (c.Prepaid && ContractStatuses.IsLive(c.Status));
+        => c.PaymentPlan is not null
+            ? c.Status is ContractStatuses.AwaitingSignature or ContractStatuses.Signed or ContractStatuses.Paid
+            : c.Status is ContractStatuses.Signed or ContractStatuses.Paid || (c.Prepaid && ContractStatuses.IsLive(c.Status));
     private DateTimeOffset Local(DateTimeOffset at) => TimeZoneInfo.ConvertTime(at, calendar.TimeZone);
     private static string? Trim(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim().Length <= MaxNote ? value.Trim() : value.Trim()[..MaxNote];
     private static OperationResult<InstallationScheduleView> Fail(string code, string message, object? details = null)

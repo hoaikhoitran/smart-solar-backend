@@ -74,7 +74,8 @@ public sealed partial class InstallationHandlers(
     FileService files,
     WorkingCalendar calendar,
     InstallationOptions options,
-    TimeProvider time)
+    TimeProvider time,
+    IInstallationAcceptanceHook? acceptanceHook = null)
 {
     /// <summary>Change outcome meaning "already in the requested state": success without a write.</summary>
     private const string Noop = "NOOP";
@@ -94,8 +95,8 @@ public sealed partial class InstallationHandlers(
         => unitOfWork.ListPaidContractsWithoutProjectAsync(cancellationToken);
 
     /// <summary>
-    /// PAID contract → PENDING_ASSIGNMENT (one project per contract; unique index backstop). <paramref name="managerUserId"/> null = created by the
-    /// system when a PAID contract has a technician-agreed schedule (<paramref name="actorUserId"/> = that technician, recorded on the event).
+    /// Contract ready for installation (legacy: PAID; 30/70: deposit verified + paper signed) → PENDING_ASSIGNMENT (one project per contract; unique
+    /// index backstop). <paramref name="managerUserId"/> null = created by the system when a ready contract has a technician-agreed schedule (<paramref name="actorUserId"/> = that technician, recorded on the event).
     /// </summary>
     public async Task<OperationResult<InstallationStaffView>> CreateProjectAsync(Guid? managerUserId, Guid contractId, CancellationToken cancellationToken,
         Guid? actorUserId = null)
@@ -103,8 +104,11 @@ public sealed partial class InstallationHandlers(
         var actor = managerUserId ?? actorUserId ?? throw new ArgumentException("A project is created by a Manager/Admin or for a technician-agreed schedule.");
         var contract = await unitOfWork.GetContractAsync(contractId, cancellationToken);
         if (contract is null) return OperationResult<InstallationStaffView>.Fail(InstallationErrorCodes.ContractNotFound, "Contract was not found.");
-        if (contract.Status != CustomerContracts.ContractStatuses.Paid)
-            return OperationResult<InstallationStaffView>.Fail(InstallationErrorCodes.ContractNotPaid, "Installation starts only after the full payment is verified.");
+        // Explicit readiness: a legacy contract fully PAID, or a 30/70 contract signed on paper after its verified deposit (100% is not required).
+        if (!contract.ReadyForInstallation)
+            return OperationResult<InstallationStaffView>.Fail(InstallationErrorCodes.ContractNotPaid, contract.PaymentPlan is null
+                ? "Installation starts only after the full payment is verified."
+                : "Installation starts once the deposit (30%) is verified and the paper contract is signed and finalized.");
 
         var coverage = await scheduling.GetSiteCoverageAsync(contract.PropertySiteId, cancellationToken);
         var projectId = Guid.NewGuid();
@@ -381,7 +385,8 @@ public sealed partial class InstallationHandlers(
     /// <summary>
     /// Manager/Admin: awaiting internal acceptance (stored PENDING_CUSTOMER_ACCEPTANCE) → REWORK_REQUIRED (the report is incomplete or the result
     /// is not acceptable). The pending acceptance round is closed as REWORK_REQUESTED with the manager as decider and the reason, so the next
-    /// completion report needs new evidence. The other outcome is <see cref="AcceptInternallyAsync"/>.
+    /// completion report needs new evidence. The Manager coordinates rework but never accepts: only the customer accepts
+    /// (<see cref="DecideAcceptanceAsync"/>).
     /// </summary>
     public async Task<OperationResult<InstallationStaffView>> ReturnToReworkAsync(Guid managerUserId, Guid projectId, int expectedRevision, string? reason,
         CancellationToken cancellationToken)
@@ -397,6 +402,7 @@ public sealed partial class InstallationHandlers(
             if (pending is null) return Fail(InstallationErrorCodes.InvalidState, "There is no pending completion report.");
             pending.Decision = AcceptanceDecisions.ReworkRequested;
             pending.DecidedByUserId = managerUserId;
+            pending.DecidedByRole = "MANAGER";
             pending.DecidedAt = now;
             pending.Reason = why;
             var from = p.Status;
@@ -404,62 +410,6 @@ public sealed partial class InstallationHandlers(
             Event(projectId, InstallationEventTypes.ReturnedToRework, managerUserId, from, p.Status, $"round {pending.Round}: {why}", now);
             unitOfWork.AddNotification(p.CustomerUserId, CustomerNotificationTypes.InstallationReworkRequired,
                 $"SmartSolar returned the completion report of your installation for rework: {why} A new completion report will follow.", now);
-            return OperationResult<bool>.Ok(true);
-        }, cancellationToken);
-        return await ThenAsync(result, () => StaffViewAsync(projectId, cancellationToken));
-    }
-
-    /// <summary>
-    /// Internal acceptance (2026-11-18, replaces the customer's in-app acceptance): a Manager/Admin accepts the reported completion — awaiting internal
-    /// acceptance (stored PENDING_CUSTOMER_ACCEPTANCE) → COMPLETED (handover; assignment COMPLETED). Never by default: the completion report of the
-    /// current round must exist (with its verified photos and registered panels / inverter, checked when reported), every required prerequisite
-    /// (EVN / PCCC / structural …) must be SATISFIED or NOT_APPLICABLE, and installed equipment that differs from the contract must have a Manager
-    /// approval of exactly that comparison. The basis of the acceptance (e.g. the on-site handover done with the customer) is required and recorded
-    /// with the decider and time; an optional verified PROJECT_DOCUMENT (handover minutes) is recorded too. The customer is informed, not asked.
-    /// </summary>
-    public async Task<OperationResult<InstallationStaffView>> AcceptInternallyAsync(Guid managerUserId, Guid projectId, int expectedRevision, string? note,
-        Guid? evidenceFileId, CancellationToken cancellationToken)
-    {
-        var basis = Trim(note, 500);
-        if (basis is null)
-            return OperationResult<InstallationStaffView>.Fail(InstallationErrorCodes.ReasonRequired,
-                "Record the basis of the acceptance (e.g. handover done on site with the customer, checklist and photos reviewed).");
-        if (evidenceFileId is { } fileId)
-        {
-            var verified = await files.RequireVerifiedAsync([fileId], FilePurposes.ProjectDocument, null, cancellationToken);
-            if (!verified.Succeeded) return verified.As<InstallationStaffView>();
-        }
-        var result = await MutateAsync(projectId, expectedRevision, null, async (p, now, token) =>
-        {
-            if (p.Status != InstallationStatuses.PendingCustomerAcceptance)
-                return Fail(InstallationErrorCodes.InvalidState, $"Only an installation whose completion was reported can be accepted; this one is {p.Status}.");
-            var pending = (await unitOfWork.GetAcceptancesAsync(projectId, true, token)).SingleOrDefault(a => a.Decision == AcceptanceDecisions.Pending);
-            if (pending is null) return Fail(InstallationErrorCodes.InvalidState, "There is no pending completion report.");
-            var open = (await unitOfWork.GetChecklistAsync(projectId, false, token))
-                .Where(i => i.IsRequired && i.Status is not (ChecklistStatuses.Satisfied or ChecklistStatuses.NotApplicable)).Select(i => i.Code).ToList();
-            if (open.Count > 0)
-                return OperationResult<bool>.Fail(InstallationErrorCodes.ChecklistIncomplete, "Required prerequisites are not satisfied.", new { missing = open });
-            if (await EquipmentComparisonAsync(p, token) is { Status: EquipmentComparisonStatuses.ApprovalRequired } comparison)
-                return OperationResult<bool>.Fail(InstallationErrorCodes.SubstitutionApprovalRequired,
-                    "The installed panels / inverters differ from the contract. Approve the substitution (with its reason) first, or return the work to rework.",
-                    new { differences = comparison.Differences });
-            pending.Decision = AcceptanceDecisions.Accepted;
-            pending.DecidedByUserId = managerUserId;
-            pending.DecidedAt = now;
-            pending.Reason = evidenceFileId is { } file ? Trim($"{basis} (handover document {file})", 2000) : basis;
-            var from = p.Status;
-            p.Status = InstallationStatuses.Completed;
-            p.CompletedAt = now;
-            p.HandoverAt = now;
-            if (await unitOfWork.GetCurrentAssignmentAsync(projectId, true, token) is { } current)
-            {
-                current.Status = AssignmentStatuses.Completed;
-                current.ClosedAt = now;
-            }
-            Event(projectId, InstallationEventTypes.InternallyAccepted, managerUserId, from, p.Status,
-                Trim($"round {pending.Round}: {basis}" + (evidenceFileId is { } doc ? $"; document {doc}" : ""), 500), now);
-            unitOfWork.AddNotification(p.CustomerUserId, CustomerNotificationTypes.InstallationCompleted,
-                "Công trình điện mặt trời của bạn đã được nghiệm thu và bàn giao. Bạn có thể xem hồ sơ bàn giao và bảo hành trong ứng dụng.", now);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
         return await ThenAsync(result, () => StaffViewAsync(projectId, cancellationToken));
@@ -787,9 +737,9 @@ public sealed partial class InstallationHandlers(
             p.Status = InstallationStatuses.PendingCustomerAcceptance;
             p.AcceptanceRequestedAt = now;
             Event(projectId, InstallationEventTypes.CompletionReported, technicianUserId, from, p.Status, $"round {round}", now);
-            // Information only: SmartSolar accepts the completion internally; the customer is not asked to approve anything in the app.
-            unitOfWork.AddNotification(p.CustomerUserId, CustomerNotificationTypes.InstallationCompletionReported,
-                $"Đội thi công đã báo cáo hoàn thành (lượt {round}). SmartSolar đang nghiệm thu nội bộ; bạn có thể theo dõi tiến độ trong ứng dụng.", now);
+            // 2026-11-19: the customer accepts or requests rework in the app (the technician never accepts for the customer).
+            unitOfWork.AddNotification(p.CustomerUserId, CustomerNotificationTypes.InstallationAcceptanceRequested,
+                $"Đội thi công đã báo cáo hoàn thành (lượt {round}). Vui lòng kiểm tra và nghiệm thu, hoặc yêu cầu sửa chữa kèm lý do, trong ứng dụng.", now);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
     }

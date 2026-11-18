@@ -177,6 +177,8 @@ public sealed class InstallationAcceptanceConfiguration : IEntityTypeConfigurati
         builder.Property(x => x.DecidedByUserId).HasColumnName("decided_by_user_id");
         builder.Property(x => x.DecidedAt).HasColumnName("decided_at");
         builder.Property(x => x.Reason).HasColumnName("reason").HasMaxLength(2000);
+        builder.Property(x => x.DecidedByRole).HasColumnName("decided_by_role").HasMaxLength(20);
+        builder.Property(x => x.EvidenceFileIds).HasColumnName("evidence_file_ids").HasColumnType("jsonb");
         builder.HasIndex(x => new { x.ProjectId, x.Round }).IsUnique().HasDatabaseName("ux_installation_acceptance_project_round");
         builder.HasIndex(x => new { x.ProjectId, x.Decision }).IsUnique().HasFilter($"decision = '{AcceptanceDecisions.Pending}'").HasDatabaseName("ux_installation_acceptance_one_pending");
         builder.HasOne<InstallationProject>().WithMany().HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Restrict);

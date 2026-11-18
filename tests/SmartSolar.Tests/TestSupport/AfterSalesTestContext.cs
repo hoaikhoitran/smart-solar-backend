@@ -48,7 +48,8 @@ public sealed class AfterSalesTestContext : IAsyncDisposable
     {
         var data = Data(db);
         return new(new PaymentUnitOfWork(db ?? Db), Installation.PayOs.Gateway(), Installation.PaymentOptions, Clock, NullLogger<PaymentService>.Instance,
-            new SmartSolar.Modules.CustomerContracts.InstallationQuotationPaymentSettlement(Installation.Contracts(db), new AfterSalesPaymentSettlement(data, Terms(data))), Installation.OrderCodes, Installation.Files(db));
+            new SmartSolar.Modules.CustomerContracts.InstallationQuotationPaymentSettlement(Installation.Contracts(db), new AfterSalesPaymentSettlement(data, Terms(data)),
+                Installation.Ledger(db)), Installation.OrderCodes, Installation.Files(db));
     }
 
     /// <summary>Full production payment wiring: after-sales settlement, cash evidence verification and the post-PAID schedule confirmation.</summary>
@@ -56,7 +57,8 @@ public sealed class AfterSalesTestContext : IAsyncDisposable
     {
         var data = Data(db);
         return new(new PaymentUnitOfWork(db ?? Db), Installation.PayOs.Gateway(), Installation.PaymentOptions, Clock, NullLogger<PaymentService>.Instance,
-            new SmartSolar.Modules.CustomerContracts.InstallationQuotationPaymentSettlement(Installation.Contracts(db), new AfterSalesPaymentSettlement(data, Terms(data))), Installation.OrderCodes, Installation.Files(db), Installation.Schedules(db));
+            new SmartSolar.Modules.CustomerContracts.InstallationQuotationPaymentSettlement(Installation.Contracts(db), new AfterSalesPaymentSettlement(data, Terms(data)),
+                Installation.Ledger(db)), Installation.OrderCodes, Installation.Files(db), Installation.Schedules(db));
     }
 
     public ServiceCustomerHandlers Customer(AppDbContext? db = null)

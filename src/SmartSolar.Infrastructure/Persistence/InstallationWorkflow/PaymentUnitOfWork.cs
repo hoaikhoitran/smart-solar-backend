@@ -9,7 +9,7 @@ public sealed class PaymentUnitOfWork(AppDbContext db) : TransactionalUnitOfWork
     public async Task<PayableContract?> GetContractAsync(Guid contractId, CancellationToken cancellationToken)
         => await Db.CustomerContracts.AsNoTracking().Where(c => c.Id == contractId)
             .Join(Db.UserAccounts, c => c.CustomerUserId, u => u.Id, (c, u) => new PayableContract(c.Id, c.ContractNumber, c.CustomerUserId, c.Status, c.TotalAmount,
-                c.Currency, u.FullName, u.Email, u.Phone))
+                c.Currency, u.FullName, u.Email, u.Phone, c.PaymentPlan))
             .FirstOrDefaultAsync(cancellationToken);
 
     public Task<PaymentAttempt?> FindAttemptAsync(Guid attemptId, bool track, CancellationToken cancellationToken)
@@ -24,6 +24,11 @@ public sealed class PaymentUnitOfWork(AppDbContext db) : TransactionalUnitOfWork
     public async Task<IReadOnlyList<PaymentAttempt>> ListAttemptsForInstallationQuotationAsync(Guid quotationId, CancellationToken cancellationToken)
         => await Db.PaymentAttempts.AsNoTracking()
             .Where(a => Db.PaymentAttemptItems.Any(i => i.PaymentAttemptId == a.Id && i.InstallationQuotationId == quotationId))
+            .ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<PaymentAttempt>> ListAttemptsForInstallmentAsync(Guid installmentId, CancellationToken cancellationToken)
+        => await Db.PaymentAttempts.AsNoTracking()
+            .Where(a => Db.PaymentAttemptItems.Any(i => i.PaymentAttemptId == a.Id && i.ContractInstallmentId == installmentId))
             .ToListAsync(cancellationToken);
 
     public Task<int> CountAttemptsSinceAsync(Guid contractId, DateTimeOffset since, CancellationToken cancellationToken)
@@ -43,7 +48,8 @@ public sealed class PaymentUnitOfWork(AppDbContext db) : TransactionalUnitOfWork
 
     public async Task<bool> TryMarkContractPaidAsync(Guid contractId, DateTimeOffset now, CancellationToken cancellationToken, Guid? actorUserId = null, string? detail = null)
     {
-        var updated = await Db.CustomerContracts.Where(c => c.Id == contractId && c.Status == ContractStatuses.Signed)
+        // A 30/70 contract becomes PAID only through its installments (never through a 100% contract payment).
+        var updated = await Db.CustomerContracts.Where(c => c.Id == contractId && c.Status == ContractStatuses.Signed && c.PaymentPlan == null)
             .ExecuteUpdateAsync(s => s.SetProperty(c => c.Status, ContractStatuses.Paid).SetProperty(c => c.PaidAt, now)
                 .SetProperty(c => c.UpdatedAt, now).SetProperty(c => c.Revision, c => c.Revision + 1), cancellationToken) == 1;
         if (updated)

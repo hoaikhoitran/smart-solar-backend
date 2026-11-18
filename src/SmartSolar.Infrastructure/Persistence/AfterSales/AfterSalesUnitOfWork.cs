@@ -26,11 +26,11 @@ public sealed class AfterSalesUnitOfWork(AppDbContext db) : TransactionalUnitOfW
     public async Task<ContractFacts?> GetContractAsync(Guid contractId, CancellationToken cancellationToken)
     {
         var contract = await Db.CustomerContracts.AsNoTracking().Where(c => c.Id == contractId)
-            .Select(c => new { c.Id, c.CustomerUserId, c.Status }).FirstOrDefaultAsync(cancellationToken);
+            .Select(c => new { c.Id, c.CustomerUserId, c.Status, c.PaymentPlan }).FirstOrDefaultAsync(cancellationToken);
         if (contract is null) return null;
         var project = await Db.InstallationProjects.AsNoTracking().Where(p => p.ContractId == contractId)
             .Select(p => new { p.Id, p.Status, p.HandoverAt }).FirstOrDefaultAsync(cancellationToken);
-        return new ContractFacts(contract.Id, contract.CustomerUserId, contract.Status, project?.Id, project?.Status, project?.HandoverAt);
+        return new ContractFacts(contract.Id, contract.CustomerUserId, contract.Status, project?.Id, project?.Status, project?.HandoverAt, contract.PaymentPlan);
     }
 
     public async Task<string?> GetSiteAddressAsync(Guid propertySiteId, CancellationToken cancellationToken)

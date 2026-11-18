@@ -65,9 +65,18 @@ public static class FilePurposes
     /// <summary>Cash receipt scan or photo recorded by a Manager/Admin when confirming a CASH contract payment.</summary>
     public const string PaymentEvidence = "PAYMENT_EVIDENCE";
 
+    /// <summary>One photographed page of the paper contract signed on site (technician; Manager/Admin support). JPEG/PNG/WebP/PDF.</summary>
+    public const string SignedContractPage = "SIGNED_CONTRACT_PAGE";
+
+    /// <summary>Photos / documents the customer attaches when requesting rework of an installation instead of accepting it.</summary>
+    public const string AcceptanceEvidence = "ACCEPTANCE_EVIDENCE";
+
+    /// <summary>Evidence of a collection contact / agreement (call note screenshot, signed payment commitment) recorded by Sales/Manager/Admin.</summary>
+    public const string CollectionEvidence = "COLLECTION_EVIDENCE";
+
     public static readonly IReadOnlyList<string> All =
         [OnSiteSurveyEvidence, QuotationDocument, ContractDocument, SignedContract, InstallationEvidence, KnowledgeDocument, ProjectDocument, ServiceEvidence, ProductImage, PackageImage,
-         PaymentEvidence];
+         PaymentEvidence, SignedContractPage, AcceptanceEvidence, CollectionEvidence];
 
     /// <summary>The only purposes an anonymous visitor may read (catalog pictures). Every other purpose is served after authorization only.</summary>
     public static readonly IReadOnlyList<string> PublicImagePurposes = [ProductImage, PackageImage];

@@ -21,13 +21,19 @@ public sealed class CustomerContractConfiguration : IEntityTypeConfiguration<Cus
             t.HasCheckConstraint("ck_customer_contract_issued_hash",
                 $"status IN ('{ContractStatuses.Draft}', '{ContractStatuses.Discarded}') OR (canonical_hash IS NOT NULL AND issued_at IS NOT NULL)");
             t.HasCheckConstraint("ck_customer_contract_published_document",
-                $"status IN ('{ContractStatuses.Draft}', '{ContractStatuses.Issued}', '{ContractStatuses.Superseded}', '{ContractStatuses.Discarded}') OR (official_document_file_id IS NOT NULL AND official_document_sha256 IS NOT NULL)");
+                $"status IN ('{ContractStatuses.Draft}', '{ContractStatuses.Issued}', '{ContractStatuses.Superseded}', '{ContractStatuses.Discarded}') OR (official_document_file_id IS NOT NULL AND official_document_sha256 IS NOT NULL)"
+                // 30/70 plan (2026-11-19): the paper is signed on site from the frozen contract content; no official PDF upload step.
+                + " OR payment_plan IS NOT NULL");
             t.HasCheckConstraint("ck_customer_contract_discarded",
                 $"(status = '{ContractStatuses.Discarded}') = (discarded_at IS NOT NULL AND discarded_by_user_id IS NOT NULL AND discard_reason IS NOT NULL)");
             t.HasCheckConstraint("ck_customer_contract_discarded_never_issued",
                 $"status <> '{ContractStatuses.Discarded}' OR (issued_at IS NULL AND signed_at IS NULL AND paid_at IS NULL AND previous_contract_id IS NULL)");
             t.HasCheckConstraint("ck_customer_contract_signed_review",
-                $"status NOT IN ('{ContractStatuses.Signed}', '{ContractStatuses.Paid}') OR (signed_document_file_id IS NOT NULL AND reviewed_by_user_id IS NOT NULL AND signed_at IS NOT NULL)");
+                $"status NOT IN ('{ContractStatuses.Signed}', '{ContractStatuses.Paid}') OR (signed_document_file_id IS NOT NULL AND reviewed_by_user_id IS NOT NULL AND signed_at IS NOT NULL)"
+                // 30/70 plan: signed = finalized set of photographed pages (contract_signature_set), no single scan and no review step.
+                + " OR (payment_plan IS NOT NULL AND signed_at IS NOT NULL)");
+            t.HasCheckConstraint("ck_customer_contract_payment_plan",
+                $"payment_plan IS NULL OR payment_plan IN ({string.Join(", ", PaymentPlans.All.Select(p => $"'{p}'"))})");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -65,6 +71,8 @@ public sealed class CustomerContractConfiguration : IEntityTypeConfiguration<Cus
         builder.Property(x => x.DiscardedAt).HasColumnName("discarded_at");
         builder.Property(x => x.DiscardedByUserId).HasColumnName("discarded_by_user_id");
         builder.Property(x => x.DiscardReason).HasColumnName("discard_reason").HasMaxLength(1000);
+        builder.Property(x => x.PaymentPlan).HasColumnName("payment_plan").HasMaxLength(30);
+        builder.Property(x => x.TermsVersion).HasColumnName("terms_version").HasMaxLength(60);
         builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
         builder.Property(x => x.Revision).HasColumnName("revision").IsConcurrencyToken().IsRequired();

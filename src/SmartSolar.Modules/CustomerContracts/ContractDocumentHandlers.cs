@@ -7,9 +7,9 @@ namespace SmartSolar.Modules.CustomerContracts;
 /// <summary>Who asks for a contract document: decides the visibility rule (the same as the contract views).</summary>
 public enum ContractViewer
 {
-    /// <summary>The contract's customer; only customer-visible versions (from AWAITING_SIGNATURE on, superseded versions included).</summary>
+    /// <summary>The contract's customer; only customer-visible versions (legacy: from AWAITING_SIGNATURE on, superseded included; 30/70: from creation).</summary>
     Customer = 1,
-    /// <summary>The Sales owner of the request, or a Manager / Admin (any version, drafts included).</summary>
+    /// <summary>Sales, Technician, Manager or Admin: every contract and version (read-all since 2026-11-19; reads are audited).</summary>
     Staff = 2,
 }
 
@@ -43,15 +43,46 @@ public sealed class ContractDocumentHandlers(IContractUnitOfWork contracts, IFil
         return await SignAsync(contract, submission.FileId, FilePurposes.SignedContract, disposition, cancellationToken);
     }
 
-    /// <summary>Same rules as <see cref="ContractHandlers.GetForStaffAsync"/> and <see cref="ContractHandlers.GetForCustomerAsync"/>.</summary>
+    /// <summary>
+    /// One photographed page of the signed paper contract (30/70 plan), of the current set or of an older (superseded / replaced) upload as history.
+    /// Short-lived signed URL; every issued URL is recorded in the contract access audit.
+    /// </summary>
+    public async Task<OperationResult<AttachedFileUrlView>> SignedPageUrlAsync(ContractViewer viewer, Guid actorUserId, string actorRole, Guid contractId, Guid fileId,
+        StorageUrlDisposition disposition, CancellationToken cancellationToken)
+    {
+        var contract = await VisibleAsync(viewer, actorUserId, true, contractId, cancellationToken);
+        if (contract is null) return NotFound();
+        var page = (await contracts.GetSignedPagesAsync(contractId, false, cancellationToken)).FirstOrDefault(p => p.FileId == fileId);
+        if (page is null) return OperationResult<AttachedFileUrlView>.Fail(PaymentPlanErrorCodes.SignatureSetNotFound, "The signed page was not found.");
+        var signed = await SignAsync(contract, fileId, FilePurposes.SignedContractPage, disposition, cancellationToken);
+        if (signed.Succeeded) await AuditAsync(contractId, actorUserId, actorRole, ContractAccessActions.PageUrl, $"page {page.PageNumber} file {fileId}", cancellationToken);
+        return signed;
+    }
+
+    /// <summary>Records one read in the contract access audit (own short transaction; the read itself never fails because of it).</summary>
+    public async Task AuditAsync(Guid? contractId, Guid actorUserId, string actorRole, string action, string? detail, CancellationToken cancellationToken)
+    {
+        try
+        {
+            contracts.AddAccessAudit(new ContractAccessAudit { Id = Guid.NewGuid(), ContractId = contractId, ActorUserId = actorUserId, ActorRole = actorRole,
+                Action = action, Detail = detail is { Length: > 500 } ? detail[..500] : detail, CreatedAt = DateTimeOffset.UtcNow });
+            await contracts.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Contract access audit not recorded for {ContractId} ({Action}).", contractId, action);
+        }
+    }
+
+    /// <summary>Same rules as <see cref="ContractHandlers.GetForStaffAsync"/> (read-all) and <see cref="ContractHandlers.GetForCustomerAsync"/>.</summary>
     private async Task<CustomerContract?> VisibleAsync(ContractViewer viewer, Guid actorUserId, bool isManager, Guid contractId, CancellationToken cancellationToken)
     {
         var contract = await contracts.FindAsync(contractId, false, cancellationToken);
         if (contract is null) return null;
         return viewer switch
         {
-            ContractViewer.Customer when contract.CustomerUserId == actorUserId && ContractStatuses.CustomerVisible.Contains(contract.Status) => contract,
-            ContractViewer.Staff when isManager || await contracts.GetAssignedSaleAsync(contract.SurveyRequestId, cancellationToken) == actorUserId => contract,
+            ContractViewer.Customer when contract.CustomerUserId == actorUserId && ContractStatuses.IsCustomerVisible(contract) => contract,
+            ContractViewer.Staff => contract,
             _ => null,
         };
     }

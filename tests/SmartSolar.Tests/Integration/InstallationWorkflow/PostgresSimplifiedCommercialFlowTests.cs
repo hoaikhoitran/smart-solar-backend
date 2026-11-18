@@ -200,7 +200,8 @@ public sealed class PostgresSimplifiedCommercialFlowTests
     private static Task<List<string>> RowsAsync(AppDbContext db) => db.Database.SqlQueryRaw<string>("""
         SELECT 'quotation ' || row_to_json(q)::text AS "Value" FROM quotation q
         UNION ALL SELECT 'line ' || row_to_json(l)::text FROM quotation_line l
-        UNION ALL SELECT 'contract ' || row_to_json(c)::text FROM customer_contract c
+        -- 30/70 columns (2026-11-19) are new and NULL on every upgraded row (asserted separately); the comparison covers every older column.
+        UNION ALL SELECT 'contract ' || (to_jsonb(c) - 'payment_plan' - 'terms_version')::text FROM customer_contract c
         UNION ALL SELECT 'contract_event ' || row_to_json(e)::text FROM contract_event e
         """).OrderBy(x => x).ToListAsync();
 
@@ -234,6 +235,7 @@ public sealed class PostgresSimplifiedCommercialFlowTests
 
         await using var check = database.NewContext();
         Assert.Equal(rowsBefore, await RowsAsync(check));
+        Assert.All(await check.CustomerContracts.AsNoTracking().ToListAsync(), c => Assert.Equal((null, null), (c.PaymentPlan, c.TermsVersion)));
         Assert.Equal(ready.Survey.Sales.Id, (await check.Quotations.AsNoTracking().SingleAsync(q => q.Id == ready.QuotationId)).SalesUserId);
         Assert.Equal(ready.Survey.Sales.Id, (await check.CustomerContracts.AsNoTracking().SingleAsync()).SalesUserId);
     }

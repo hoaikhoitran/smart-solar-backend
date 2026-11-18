@@ -28,12 +28,12 @@ public sealed class ContractDocumentEndpointsTests
 
         Assert.Equal(HttpStatusCode.Unauthorized, (await factory.CreateClient().GetAsync(Staff(id))).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await factory.CreateClient().GetAsync(Customer(id))).StatusCode);
-        // Technicians never read contracts; customers do not use the staff route and staff do not use the customer route.
-        Assert.Equal(HttpStatusCode.Forbidden, (await CatalogEndpointsTests.ClientFor(factory, RoleCodes.Technician).GetAsync(Staff(id))).StatusCode);
+        // Staff read-all (2026-11-19): Technicians read contracts too; customers do not use the staff route and staff do not use the customer route.
         Assert.Equal(HttpStatusCode.Forbidden, (await CatalogEndpointsTests.ClientFor(factory, RoleCodes.Customer).GetAsync(Staff(id))).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await CatalogEndpointsTests.ClientFor(factory, RoleCodes.Sales).GetAsync(Customer(id))).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await CatalogEndpointsTests.ClientFor(factory, RoleCodes.Technician).GetAsync(Customer(id))).StatusCode);
 
-        foreach (var role in new[] { RoleCodes.Sales, RoleCodes.Manager, RoleCodes.Admin })
+        foreach (var role in new[] { RoleCodes.Sales, RoleCodes.Technician, RoleCodes.Manager, RoleCodes.Admin })
         {
             var client = CatalogEndpointsTests.ClientFor(factory, role);
             var missing = await client.GetAsync(Staff(id));

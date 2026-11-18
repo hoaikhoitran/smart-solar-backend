@@ -83,24 +83,33 @@ public sealed class TechnicianLedOnSiteEndpointsTests
             HttpStatusCode.BadRequest, "VALIDATION_FAILED");   // note required for a decline
         await AssertFailureAsync(await technician.PostAsJsonAsync($"/api/technician/quotations/{id}/on-site-decision", new { decision = "AGREED", revision = 1 }),
             HttpStatusCode.NotFound, "QUOTATION_NOT_FOUND");
-        await AssertFailureAsync(await technician.PostAsJsonAsync($"/api/technician/quotations/{id}/payment", new { method = "BITCOIN" }),
-            HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+        // 30/70 plan (2026-11-19): a quotation is no longer paid 100%; the deposit is paid on the contract created at the agreement.
         await AssertFailureAsync(await technician.PostAsJsonAsync($"/api/technician/quotations/{id}/payment", new { method = "CASH" }),
-            HttpStatusCode.NotFound, "QUOTATION_NOT_FOUND");
+            HttpStatusCode.Gone, "ENDPOINT_RETIRED");
+        await AssertFailureAsync(await technician.PostAsJsonAsync($"/api/technician/contracts/{id}/installments/1/payment", new { method = "BITCOIN" }),
+            HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+        await AssertFailureAsync(await technician.PostAsJsonAsync($"/api/technician/contracts/{id}/installments/1/payment", new { method = "CASH" }),
+            HttpStatusCode.NotFound, "CONTRACT_NOT_FOUND");
         await AssertFailureAsync(await technician.PostAsJsonAsync($"/api/technicians/me/after-sales/quotations/{id}/on-site-decision", new { decision = "LATER" }),
             HttpStatusCode.BadRequest, "AFTER_SALES_VALIDATION_FAILED");
         await AssertFailureAsync(await technician.PostAsJsonAsync($"/api/technicians/me/after-sales/requests/{id}/completion-confirmation", new { note = " " }),
             HttpStatusCode.BadRequest, "AFTER_SALES_REASON_REQUIRED");
 
+        // The Manager's internal acceptance is retired (2026-11-19): only the customer accepts.
         var manager = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Manager);
-        await AssertFailureAsync(await manager.PostAsJsonAsync($"/api/installation-projects/{id}/acceptance", new { note = "x" }),
-            HttpStatusCode.BadRequest, "VALIDATION_FAILED");   // expectedRevision required
         await AssertFailureAsync(await manager.PostAsJsonAsync($"/api/installation-projects/{id}/acceptance", new { expectedRevision = 0, note = "handover done" }),
+            HttpStatusCode.Gone, "ENDPOINT_RETIRED");
+        var customer = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Customer);
+        await AssertFailureAsync(await customer.PostAsJsonAsync($"/api/customers/me/installation-projects/{id}/acceptance", new { decision = "LATER" }),
+            HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+        await AssertFailureAsync(await customer.PostAsJsonAsync($"/api/customers/me/installation-projects/{id}/acceptance", new { decision = "REQUEST_REWORK" }),
+            HttpStatusCode.BadRequest, "VALIDATION_FAILED");   // reason required
+        await AssertFailureAsync(await customer.PostAsJsonAsync($"/api/customers/me/installation-projects/{id}/acceptance", new { decision = "ACCEPT" }),
             HttpStatusCode.NotFound, "INSTALLATION_PROJECT_NOT_FOUND");
     }
 
     [Fact]
-    public async Task Every_customer_approval_or_selection_route_is_retired_with_410()
+    public async Task Every_retired_customer_approval_or_selection_route_answers_410_and_customer_acceptance_is_live_again()
     {
         using var factory = Enabled(new FakeStorageObjectVerifier(), new FakeRagServiceClient(), GenerousLimits);
         var id = Guid.NewGuid();
@@ -113,8 +122,9 @@ public sealed class TechnicianLedOnSiteEndpointsTests
                      new Call("POST", $"/api/customers/me/quotations/{id}/revision-request", new { reason = "x" }),
                      new Call("GET", $"/api/customers/me/contracts/{id}/installation-slot-offers"),
                      new Call("POST", $"/api/customers/me/installation-slot-offers/{id}/select"),
-                     new Call("POST", $"/api/customers/me/installation-projects/{id}/acceptance", new { decision = "ACCEPT" }),
                      new Call("POST", $"/api/customers/me/installation-projects/{id}/equipment-substitution/approve"),
+                     // 2026-11-19: the customer no longer uploads a signed scan (the technician uploads the photographed paper pages).
+                     new Call("POST", $"/api/customers/me/contracts/{id}/signed-document", new { fileId = id, officialDocumentSha256 = "x" }),
                  })
         {
             await AssertFailureAsync(await SendAsync(customer, call), HttpStatusCode.Gone, "ENDPOINT_RETIRED");
@@ -128,5 +138,8 @@ public sealed class TechnicianLedOnSiteEndpointsTests
         Assert.Equal(HttpStatusCode.OK, (await customer.GetAsync("/api/customers/me/installation-schedules")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await customer.GetAsync("/api/customers/me/installation-projects")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await customer.GetAsync("/api/customers/me/contracts")).StatusCode);
+        // Restored 2026-11-19: the customer decides the acceptance (unknown project → 404, never 410).
+        await AssertFailureAsync(await customer.PostAsJsonAsync($"/api/customers/me/installation-projects/{id}/acceptance", new { decision = "ACCEPT" }),
+            HttpStatusCode.NotFound, "INSTALLATION_PROJECT_NOT_FOUND");
     }
 }

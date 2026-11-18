@@ -15,9 +15,11 @@ public sealed class InstallationUnitOfWork(AppDbContext db) : TransactionalUnitO
                 .Join(Db.PropertySites, x => x.PropertyId, p => p.Id, (x, p) => new
                 {
                     x.c.Id, x.c.ContractNumber, x.c.Status, x.c.SurveyRequestId, x.c.CustomerUserId, SiteId = p.Id, p.Latitude, p.Longitude, x.c.TotalAmount, x.c.PaidAt,
+                    x.c.PaymentPlan,
                 })
                 .ToListAsync(cancellationToken))
-            .Select(x => new PaidContractSource(x.Id, x.ContractNumber, x.Status, x.SurveyRequestId, x.CustomerUserId, x.SiteId, x.Latitude, x.Longitude, x.TotalAmount, x.PaidAt))
+            .Select(x => new PaidContractSource(x.Id, x.ContractNumber, x.Status, x.SurveyRequestId, x.CustomerUserId, x.SiteId, x.Latitude, x.Longitude, x.TotalAmount, x.PaidAt,
+                x.PaymentPlan))
             .ToList();
 
     private IQueryable<ScheduleContractInfo> ScheduleContracts(IQueryable<CustomerContract> contracts)
@@ -28,13 +30,14 @@ public sealed class InstallationUnitOfWork(AppDbContext db) : TransactionalUnitO
                     .OrderByDescending(r => r.CompletedAt).Select(r => (Guid?)r.TechnicianUserId).FirstOrDefault(),
                 p.Name,
                 Db.UserAccounts.Where(u => u.Id == x.c.CustomerUserId).Select(u => u.FullName).FirstOrDefault() ?? "",
-                Db.PaymentAttempts.Any(a => a.ContractId == x.c.Id && a.Status == SmartSolar.Modules.Payments.PaymentStatuses.Paid)));
+                Db.PaymentAttempts.Any(a => a.ContractId == x.c.Id && a.Status == SmartSolar.Modules.Payments.PaymentStatuses.Paid), x.c.PaymentPlan));
 
     public Task<ScheduleContractInfo?> GetScheduleContractAsync(Guid contractId, CancellationToken cancellationToken)
         => ScheduleContracts(Db.CustomerContracts.AsNoTracking().Where(c => c.Id == contractId)).FirstOrDefaultAsync(cancellationToken);
 
     public async Task<IReadOnlyList<ScheduleContractInfo>> ListScheduleContractsForTechnicianAsync(Guid technicianUserId, CancellationToken cancellationToken)
         => (await ScheduleContracts(Db.CustomerContracts.AsNoTracking().Where(c => (c.Status == ContractStatuses.Signed || c.Status == ContractStatuses.Paid
+                        || (c.PaymentPlan != null && c.Status == ContractStatuses.AwaitingSignature)
                         || (c.Status != ContractStatuses.Superseded && c.Status != ContractStatuses.Discarded
                             && Db.PaymentAttempts.Any(a => a.ContractId == c.Id && a.Status == SmartSolar.Modules.Payments.PaymentStatuses.Paid)))
                     && Db.OnSiteSurveyReports.Any(r => r.SurveyRequestId == c.SurveyRequestId && r.TechnicianUserId == technicianUserId
@@ -66,13 +69,14 @@ public sealed class InstallationUnitOfWork(AppDbContext db) : TransactionalUnitO
     public async Task<IReadOnlyList<Guid>> ListContractsWithPlannedProposalAndPaidAsync(int limit, CancellationToken cancellationToken)
         => await Db.InstallationScheduleProposals.AsNoTracking()
             .Where(p => p.Status == InstallationScheduleStatuses.Planned
-                        && Db.CustomerContracts.Any(c => c.Id == p.ContractId && c.Status == ContractStatuses.Paid))
+                        // Ready for installation (legacy PAID, or 30/70 SIGNED / PAID): explicit readiness, never "PAID" alone.
+                        && Db.CustomerContracts.Any(c => c.Id == p.ContractId && ((c.PaymentPlan == null && c.Status == ContractStatuses.Paid) || (c.PaymentPlan != null && (c.Status == ContractStatuses.Signed || c.Status == ContractStatuses.Paid)))))
             .OrderBy(p => p.CreatedAt).Select(p => p.ContractId).Take(limit).ToListAsync(cancellationToken);
 
     public async Task<IReadOnlyList<Guid>> ListExpiredPlannedProposalIdsAsync(DateTimeOffset nowUtc, int limit, CancellationToken cancellationToken)
         => await Db.InstallationScheduleProposals.AsNoTracking()
             .Where(p => p.Status == InstallationScheduleStatuses.Planned && p.StartsAt <= nowUtc
-                        && !Db.CustomerContracts.Any(c => c.Id == p.ContractId && c.Status == ContractStatuses.Paid))
+                        && !Db.CustomerContracts.Any(c => c.Id == p.ContractId && ((c.PaymentPlan == null && c.Status == ContractStatuses.Paid) || (c.PaymentPlan != null && (c.Status == ContractStatuses.Signed || c.Status == ContractStatuses.Paid)))))
             .OrderBy(p => p.StartsAt).Select(p => p.Id).Take(limit).ToListAsync(cancellationToken);
 
     public async Task<IReadOnlyList<InstallationSlotOffer>> ListSlotOffersAsync(Guid contractId, string? status, bool track, CancellationToken cancellationToken)
@@ -103,7 +107,7 @@ public sealed class InstallationUnitOfWork(AppDbContext db) : TransactionalUnitO
         => (await ContractsAsync(Db.CustomerContracts.Where(c => c.Id == contractId), cancellationToken)).FirstOrDefault();
 
     public async Task<IReadOnlyList<PaidContractSource>> ListPaidContractsWithoutProjectAsync(CancellationToken cancellationToken)
-        => (await ContractsAsync(Db.CustomerContracts.Where(c => c.Status == ContractStatuses.Paid && !Db.InstallationProjects.Any(p => p.ContractId == c.Id)), cancellationToken))
+        => (await ContractsAsync(Db.CustomerContracts.Where(c => ((c.PaymentPlan == null && c.Status == ContractStatuses.Paid) || (c.PaymentPlan != null && (c.Status == ContractStatuses.Signed || c.Status == ContractStatuses.Paid))) && !Db.InstallationProjects.Any(p => p.ContractId == c.Id)), cancellationToken))
             .OrderBy(c => c.PaidAt).ToList();
 
     public Task<InstallationProject?> FindProjectAsync(Guid projectId, bool track, CancellationToken cancellationToken)

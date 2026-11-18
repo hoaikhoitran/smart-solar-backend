@@ -24,7 +24,8 @@ public sealed record QuotationView(
     bool IsExpired, bool CanAccept, string? Terms, string? Notes, Guid? DocumentFileId, Guid OnSiteSurveyReportId, int OnSiteSurveyVersion,
     DateTimeOffset? IssuedAt, DateTimeOffset? AcceptedAt, string? RevisionReason, int Revision, IReadOnlyList<QuotationEventView>? Events,
     string Origin = QuotationOrigins.Sales, PricingBasis? PricingBasis = null, int? CurrentSurveyVersion = null, bool SurveyChanged = false,
-    PricingReview? PricingReview = null, PricingApprovalView? PricingApproval = null, DateTimeOffset? ClosedAt = null, string? CloseReason = null);
+    PricingReview? PricingReview = null, PricingApprovalView? PricingApproval = null, DateTimeOffset? ClosedAt = null, string? CloseReason = null,
+    Guid? ContractId = null);
 
 /// <summary>
 /// Staff-only state of an AUTOMATIC draft's pricing issues, recomputed from the current lines and costs: <see cref="Outstanding"/> are the
@@ -71,7 +72,10 @@ public sealed class QuotationOptions
 /// ISSUED/ACCEPTED quotation per survey request, so concurrent edits, issues and acceptances can
 /// never produce two live offers.
 /// </summary>
-public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, FileService files, QuotationOptions options, TimeProvider time)
+/// <param name="agreedContracts">Creates the 30/70 contract at the on-site agreement (2026-11-19). Without it (unit tests of older flows) the agreement
+/// creates no contract.</param>
+public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, FileService files, QuotationOptions options, TimeProvider time,
+    IAgreedQuotationContracts? agreedContracts = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 

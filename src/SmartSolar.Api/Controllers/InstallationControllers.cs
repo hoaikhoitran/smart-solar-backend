@@ -101,18 +101,14 @@ public sealed class ManagerInstallationsController(InstallationHandlers handlers
     }
 
     /// <summary>
-    /// Internal acceptance (replaces the customer's in-app acceptance, 2026-11-18): awaiting acceptance → COMPLETED (handover). Refused while required
-    /// prerequisites are open or differing equipment has no Manager approval. <c>note</c> (basis, e.g. on-site handover with the customer) is required.
+    /// Retired (2026-11-19): the customer accepts the installation (<c>POST /api/customers/me/installation-projects/{projectId}/acceptance</c>). A
+    /// Manager/Admin coordinates rework (<c>…/return-to-rework</c>) but never accepts on the customer's behalf.
     /// </summary>
     [HttpPost("installation-projects/{projectId:guid}/acceptance")]
-    [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
-    public async Task<IActionResult> AcceptInternally(Guid projectId, [FromBody] InternalAcceptanceRequest request, CancellationToken cancellationToken)
-    {
-        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
-        if (request.ExpectedRevision is not { } revision) return Invalid("expectedRevision", "'expectedRevision' is required.");
-        if (request.Note is { } note && note.Trim().Length > 500) return Invalid("note", "'note' must be at most 500 characters.");
-        return Respond(await handlers.AcceptInternallyAsync(user, projectId, revision, request.Note, request.EvidenceFileId, cancellationToken));
-    }
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
+    public IActionResult AcceptInternally(Guid projectId)
+        => Retired("Customer: POST /api/customers/me/installation-projects/{projectId}/acceptance (ACCEPT | REQUEST_REWORK)");
 
     /// <summary>
     /// Manager (only) approves, with a reason, that the installed panels / inverters differ from the accepted quotation (see
@@ -289,11 +285,19 @@ public sealed class CustomerInstallationsController(InstallationHandlers handler
         return Respond(await evidence.CreateEvidenceUrlAsync(EvidenceViewerRole.Customer, user, projectId, evidenceId, parsed, cancellationToken));
     }
 
-    /// <summary>Retired (2026-11-18): the completion is accepted internally (Manager/Admin) after the on-site handover; the customer follows the result.</summary>
+    /// <summary>
+    /// Customer acceptance (restored 2026-11-19): <c>decision</c> ACCEPT, or REQUEST_REWORK / REJECT with <c>reason</c> (and optional VERIFIED
+    /// <c>ACCEPTANCE_EVIDENCE</c> <c>evidenceFileIds</c>), on the pending round of a reported completion. ACCEPT completes the handover and, for a 30/70
+    /// contract, opens the 70% balance (due within 72 hours). Only the project's customer; anyone else 404.
+    /// </summary>
     [HttpPost("{projectId:guid}/acceptance")]
-    [ProducesResponseType(StatusCodes.Status410Gone)]
-    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
-    public IActionResult Decide(Guid projectId) => RetiredOnSite("None for the customer: POST /api/installation-projects/{projectId}/acceptance (internal acceptance)");
+    [ProducesResponseType(typeof(ApiResponse<InstallationCustomerView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
+    public async Task<IActionResult> Decide(Guid projectId, [FromBody] CustomerAcceptanceRequest request, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user
+            ? Respond(await handlers.DecideAcceptanceAsync(user, projectId, new CustomerAcceptanceInput(request.Decision, request.Reason, request.EvidenceFileIds,
+                request.ExpectedRevision), cancellationToken))
+            : UnauthorizedFailure();
 
     /// <summary>Retired (2026-11-18): a Manager approves equipment substitutions with a reason (internal, final); the customer is informed.</summary>
     [HttpPost("{projectId:guid}/equipment-substitution/approve")]
