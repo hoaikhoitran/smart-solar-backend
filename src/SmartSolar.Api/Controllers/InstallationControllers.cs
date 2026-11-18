@@ -38,8 +38,16 @@ public sealed class ManagerInstallationsController(InstallationHandlers handlers
 
     [HttpGet("installation-projects")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
-    public async Task<IActionResult> List([FromQuery] string? status, CancellationToken cancellationToken)
-        => Ok(ApiResponse<IReadOnlyList<InstallationProjectSummary>>.Success(await handlers.ListProjectsAsync(status?.Trim().ToUpperInvariant(), cancellationToken), HttpContext.GetTraceId()));
+    public async Task<IActionResult> List([FromQuery] string? status, [FromQuery] int? page, [FromQuery] int? pageSize, CancellationToken cancellationToken)
+    {
+        // Opt-in paging: without page/pageSize the historical array is returned unchanged.
+        var paging = SmartSolar.Modules.Common.Paging.PageRequest.Parse(page, pageSize);
+        if (!paging.Succeeded) return Respond(paging);
+        var filter = status?.Trim().ToUpperInvariant();
+        return paging.Value is { } p
+            ? Ok(ApiResponse<SmartSolar.Modules.Common.Paging.PagedResult<InstallationProjectSummary>>.Success(await handlers.PageProjectsAsync(filter, p, cancellationToken), HttpContext.GetTraceId()))
+            : Ok(ApiResponse<IReadOnlyList<InstallationProjectSummary>>.Success(await handlers.ListProjectsAsync(filter, cancellationToken), HttpContext.GetTraceId()));
+    }
 
     [HttpGet("installation-projects/{projectId:guid}")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]

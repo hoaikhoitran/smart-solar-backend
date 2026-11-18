@@ -3,6 +3,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using SmartSolar.Api.Contracts;
 using SmartSolar.Api.Contracts.SurveyRequests;
 using SmartSolar.Api.Extensions;
@@ -45,9 +46,17 @@ public sealed class SurveyRequestsController : ControllerBase
     /// <summary>The unclaimed queue: non-cancelled requests without a commercial owner (whatever their scheduling state).</summary>
     [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<System.Collections.Generic.IReadOnlyList<SmartSolar.Modules.PreSurvey.GetPendingSurveyRequests.PendingSurveyRequestItem>>), StatusCodes.Status200OK)]
     [HttpGet("pending")]
+    [EnableRateLimiting(RateLimitingExtensions.PortalReadPolicy)]
     public async Task<IActionResult> GetPending(
+        [FromQuery] int? page,
+        [FromQuery] int? pageSize,
         CancellationToken cancellationToken)
     {
+        // Opt-in paging (2026-11-18): without page/pageSize the historical array is returned unchanged.
+        var paging = SmartSolar.Modules.Common.Paging.PageRequest.Parse(page, pageSize);
+        if (!paging.Succeeded) return BadRequest(Failure("VALIDATION_FAILED", paging.Message!, paging.Details));
+        if (paging.Value is { } p) return Ok(Success(await _getPendingHandler.HandleAsync(p, cancellationToken)));
+
         var requests =
             await _getPendingHandler.HandleAsync(
                 cancellationToken);
@@ -56,6 +65,7 @@ public sealed class SurveyRequestsController : ControllerBase
     }
 
     [HttpPost("{surveyRequestId:guid}/claim")]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingWritePolicy)]
     public async Task<IActionResult> Claim(
         Guid surveyRequestId,
         CancellationToken cancellationToken)
@@ -90,7 +100,10 @@ public sealed class SurveyRequestsController : ControllerBase
 
     [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<System.Collections.Generic.IReadOnlyList<SmartSolar.Modules.PreSurvey.GetMySurveyRequests.MySurveyRequestItem>>), StatusCodes.Status200OK)]
     [HttpGet("my")]
+    [EnableRateLimiting(RateLimitingExtensions.PortalReadPolicy)]
     public async Task<IActionResult> GetMy(
+        [FromQuery] int? page,
+        [FromQuery] int? pageSize,
         CancellationToken cancellationToken)
     {
         var saleUserId = GetAuthenticatedUserId();
@@ -99,6 +112,10 @@ public sealed class SurveyRequestsController : ControllerBase
         {
             return UnauthorizedFailure();
         }
+
+        var paging = SmartSolar.Modules.Common.Paging.PageRequest.Parse(page, pageSize);
+        if (!paging.Succeeded) return BadRequest(Failure("VALIDATION_FAILED", paging.Message!, paging.Details));
+        if (paging.Value is { } p) return Ok(Success(await _getMyHandler.HandleAsync(saleUserId.Value, p, cancellationToken)));
 
         var requests =
             await _getMyHandler.HandleAsync(
@@ -110,6 +127,7 @@ public sealed class SurveyRequestsController : ControllerBase
 
     [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<SmartSolar.Modules.PreSurvey.GetSurveyRequestDetail.SurveyRequestDetail>), StatusCodes.Status200OK)]
     [HttpGet("{surveyRequestId:guid}")]
+    [EnableRateLimiting(RateLimitingExtensions.PortalReadPolicy)]
     public async Task<IActionResult> GetDetail(
         Guid surveyRequestId,
         CancellationToken cancellationToken)

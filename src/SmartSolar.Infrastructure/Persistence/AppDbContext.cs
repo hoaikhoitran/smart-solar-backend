@@ -111,6 +111,7 @@ public sealed class AppDbContext : DbContext
 
     public DbSet<SmartSolar.Modules.Installations.InstallationProject> InstallationProjects => Set<SmartSolar.Modules.Installations.InstallationProject>();
     public DbSet<SmartSolar.Modules.Installations.InstallationScheduleProposal> InstallationScheduleProposals => Set<SmartSolar.Modules.Installations.InstallationScheduleProposal>();
+    public DbSet<SmartSolar.Modules.Installations.InstallationSlotOffer> InstallationSlotOffers => Set<SmartSolar.Modules.Installations.InstallationSlotOffer>();
 
     public DbSet<SmartSolar.Modules.Installations.InstallationAssignment> InstallationAssignments => Set<SmartSolar.Modules.Installations.InstallationAssignment>();
 

@@ -34,6 +34,9 @@ public interface IAfterSalesUnitOfWork : ITransactionalUnitOfWork
     // ---- requests, items, visits, evidence
     Task<ServiceRequest?> FindRequestAsync(Guid requestId, bool track, CancellationToken cancellationToken);
     Task<IReadOnlyList<ServiceRequest>> ListRequestsAsync(RequestFilter filter, CancellationToken cancellationToken);
+
+    /// <summary>One page of requests (newest first, id as tie-breaker), filtered in SQL, with the total count of the filter.</summary>
+    Task<(IReadOnlyList<ServiceRequest> Rows, int Total)> PageRequestsAsync(RequestFilter filter, int skip, int take, CancellationToken cancellationToken);
     Task<IReadOnlyList<ServiceItem>> ListItemsAsync(Guid requestId, bool track, CancellationToken cancellationToken);
     Task<IReadOnlyList<ServiceVisit>> ListVisitsAsync(Guid requestId, bool track, CancellationToken cancellationToken);
     Task<ServiceVisit?> FindVisitAsync(Guid visitId, bool track, CancellationToken cancellationToken);
@@ -47,6 +50,19 @@ public interface IAfterSalesUnitOfWork : ITransactionalUnitOfWork
     // ---- quotations and disaster claims
     Task<IReadOnlyList<ServiceQuotation>> ListQuotationsAsync(Guid requestId, bool track, CancellationToken cancellationToken);
     Task<ServiceQuotation?> FindQuotationAsync(Guid quotationId, bool track, CancellationToken cancellationToken);
+
+    /// <summary>One page of unapplied-money records (newest first, id tie-breaker), optionally one status, with the total.</summary>
+    Task<(IReadOnlyList<RefundRecord> Rows, int Total)> PageRefundRecordsAsync(string? status, int skip, int take, CancellationToken cancellationToken);
+
+    /// <summary>One page of Sales tasks (oldest first, id tie-breaker): statuses (null = any) and owner (null = any) filtered in SQL, with the total.</summary>
+    Task<(IReadOnlyList<SalesTask> Rows, int Total)> PageTasksAsync(IReadOnlyCollection<string>? statuses, Guid? assignedSalesUserId, int skip, int take,
+        CancellationToken cancellationToken);
+
+    /// <summary>One page of a technician's non-cancelled visits (by start, id tie-breaker) and the total.</summary>
+    Task<(IReadOnlyList<ServiceVisit> Rows, int Total)> PageVisitsForTechnicianAsync(Guid technicianUserId, int skip, int take, CancellationToken cancellationToken);
+
+    /// <summary>Catalog products by id (deleted ones excluded), as the quotation pricing sees them.</summary>
+    Task<IReadOnlyDictionary<Guid, Quotations.CatalogProductSnapshot>> GetCatalogProductsAsync(IReadOnlyCollection<Guid> productIds, CancellationToken cancellationToken);
     /// <summary>ISSUED / ACCEPTED quotations whose validity ended before <paramref name="nowUtc"/> (for the worker).</summary>
     Task<IReadOnlyList<ServiceQuotation>> ListExpiredOpenQuotationsAsync(DateTimeOffset nowUtc, CancellationToken cancellationToken);
 
@@ -70,6 +86,9 @@ public interface IAfterSalesUnitOfWork : ITransactionalUnitOfWork
     Task<SalesTask?> FindOpenTaskAsync(Guid? requestId, Guid? entitlementId, string taskType, bool track, CancellationToken cancellationToken);
     Task<IReadOnlyList<AfterSalesEvent>> ListEventsAsync(string subjectType, Guid subjectId, CancellationToken cancellationToken);
     Task<IReadOnlyList<AfterSalesNotification>> ListNotificationsAsync(Guid recipientUserId, CancellationToken cancellationToken);
+
+    /// <summary>One page of the recipient's notifications (newest first, id as tie-breaker) and their total.</summary>
+    Task<(IReadOnlyList<AfterSalesNotification> Rows, int Total)> PageNotificationsAsync(Guid recipientUserId, int skip, int take, CancellationToken cancellationToken);
     /// <summary>One notification of <paramref name="recipientUserId"/>; null when it does not exist or belongs to someone else.</summary>
     Task<AfterSalesNotification?> FindNotificationAsync(Guid notificationId, Guid recipientUserId, bool track, CancellationToken cancellationToken);
 
@@ -101,15 +120,18 @@ public interface IAfterSalesReportQueries
 public sealed record DashboardFilter(Guid? OperationalZoneId, string? ServiceType, string? Status);
 
 /// <summary>
-/// Metrics of one period [from, to). Collections are verified PayOS money by provider transaction time, split per item category so a
-/// combined checkout is never counted twice; refunds are money actually returned (refund date), so net = collected − refunded.
+/// Metrics of one period [from, to). Collections are verified money (PayOS, or CASH confirmed by a Manager/Admin) by transaction time. The
+/// category amounts count only money APPLIED to its item (a SETTLED line of a PAID attempt, or a PAID contract-only attempt without lines), split
+/// per line so a combined checkout is never counted twice. Money received but not applied (a second payment of an already paid contract, a wrong
+/// amount, a package paid after its deadline) is <see cref="CollectedUnapplied"/>: it is never revenue of a contract or a package.
+/// Gross = applied + unapplied; refunds are money actually returned (refund date), so net = gross − refunded.
 /// </summary>
 public sealed record DashboardNumbers(
     int TotalCustomers, int NewCustomers, int InstallationProjects, int CompletedInstallations, int ActiveInstallationWarranties,
     int ReportedFaultRequests, int CompletedRepairs, int CompletedMaintenanceVisits, int ActiveMaintenanceSubscriptions,
     int ActiveDisasterSubscriptions, int PackagePurchases, int ActiveTechnicians, int TechnicianServiceVisits,
-    decimal CollectedContracts, decimal CollectedPackages, decimal CollectedServices, decimal Refunded)
+    decimal CollectedContracts, decimal CollectedPackages, decimal CollectedServices, decimal Refunded, decimal CollectedUnapplied = 0)
 {
-    public decimal CollectedTotal => CollectedContracts + CollectedPackages + CollectedServices;
+    public decimal CollectedTotal => CollectedContracts + CollectedPackages + CollectedServices + CollectedUnapplied;
     public decimal NetCollected => CollectedTotal - Refunded;
 }

@@ -55,6 +55,13 @@ public static class PaymentProviders
     public const string Cash = "CASH";
 }
 
+/// <summary>How the customer pays (the <c>method</c> of a payment attempt view and of a package purchase).</summary>
+public static class PaymentMethods
+{
+    public const string Online = "ONLINE";
+    public const string Cash = "CASH";
+}
+
 /// <summary>Derived payment state of a contract for the FE (the contract status itself stays SIGNED until it is PAID).</summary>
 public static class ContractPaymentStates
 {
@@ -193,4 +200,6 @@ public static class PaymentErrorCodes
     public const string CashAmountMismatch = "PAYMENT_CASH_AMOUNT_MISMATCH";
     /// <summary>The receipt reference was already used by another cash confirmation (409).</summary>
     public const string CashReceiptDuplicate = "PAYMENT_CASH_RECEIPT_DUPLICATE";
+    /// <summary>A line of the cash payment can no longer be applied (quotation expired, rejected or replaced; package order released): nothing recorded (409).</summary>
+    public const string CashItemNotPayable = "PAYMENT_CASH_ITEM_NOT_PAYABLE";
 }

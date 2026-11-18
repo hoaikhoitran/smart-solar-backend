@@ -59,6 +59,23 @@ public sealed class PaymentUnitOfWork(AppDbContext db) : TransactionalUnitOfWork
 
     public void AddItem(PaymentAttemptItem item) => Db.PaymentAttemptItems.Add(item);
 
+    public async Task<(IReadOnlyList<PaymentAttempt> Rows, int Total)> PageAttemptsAsync(PaymentAttemptFilter filter, int skip, int take, CancellationToken cancellationToken)
+    {
+        var query = Db.PaymentAttempts.AsNoTracking().AsQueryable();
+        if (filter.Method == PaymentMethods.Cash) query = query.Where(a => a.Provider == PaymentProviders.Cash);
+        else if (filter.Method == PaymentMethods.Online) query = query.Where(a => a.Provider != PaymentProviders.Cash);
+        if (filter.Status is { } status) query = query.Where(a => a.Status == status);
+        if (filter.CreatedFrom is { } from) query = query.Where(a => a.CreatedAt >= from);
+        if (filter.CreatedTo is { } to) query = query.Where(a => a.CreatedAt < to);
+        if (filter.CustomerUserId is { } customer) query = query.Where(a => a.CustomerUserId == customer);
+        var total = await query.CountAsync(cancellationToken);
+        var rows = await query.OrderByDescending(a => a.CreatedAt).ThenByDescending(a => a.Id).Skip(skip).Take(take).ToListAsync(cancellationToken);
+        return (rows, total);
+    }
+
+    public async Task<IReadOnlyList<PaymentAttemptItem>> GetItemsForAttemptsAsync(IReadOnlyCollection<Guid> attemptIds, CancellationToken cancellationToken)
+        => await Db.PaymentAttemptItems.AsNoTracking().Where(i => attemptIds.Contains(i.PaymentAttemptId)).ToListAsync(cancellationToken);
+
     public void AddAttempt(PaymentAttempt attempt) => Db.PaymentAttempts.Add(attempt);
     public void AddEvent(PaymentEvent paymentEvent) => Db.PaymentEvents.Add(paymentEvent);
     public void AddWebhookEvent(PaymentWebhookEvent webhookEvent) => Db.PaymentWebhookEvents.Add(webhookEvent);

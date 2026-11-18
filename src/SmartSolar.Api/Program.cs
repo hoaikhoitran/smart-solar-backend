@@ -40,6 +40,7 @@ builder.Services.AddSolarSimulationModule(builder.Configuration);
 builder.Services.AddSimulationRateLimiting(builder.Configuration);
 builder.Services.AddSchedulingModule(builder.Configuration);
 builder.Services.AddSchedulingRateLimiting(builder.Configuration);
+builder.Services.AddPortalRateLimiting(builder.Configuration);
 builder.Services.AddAdminUsersRateLimiting(builder.Configuration);
 builder.Services.AddFeatureFlagsAndFileStorage(builder.Configuration);
 builder.Services.AddInstallationWorkflow(builder.Configuration);

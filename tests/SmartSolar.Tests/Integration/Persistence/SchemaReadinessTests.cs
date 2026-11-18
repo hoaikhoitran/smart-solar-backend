@@ -46,6 +46,39 @@ public sealed class SchemaReadinessTests
         Assert.Equal(2, probe.Calls);
     }
 
+    /// <summary>
+    /// Regression (2026-11-18, found by NFR-RL-CONCURRENT): callers that arrive while the first check is still in flight must wait for its answer, not
+    /// be told "not ready" (before the fix the check time was stamped before the probe answered, so a cold start with traffic answered 503 to every
+    /// concurrent request for 30 s although the schema was current).
+    /// </summary>
+    [Fact]
+    public async Task Concurrent_callers_during_the_first_check_get_its_answer_and_the_probe_runs_once()
+    {
+        var release = new TaskCompletionSource();
+        var probe = new SlowProbe(release.Task);
+        var readiness = new SchemaReadiness(probe, NullLogger<SchemaReadiness>.Instance, new FixedTimeProvider(DateTimeOffset.UtcNow));
+
+        var callers = Enumerable.Range(0, 20).Select(_ => readiness.IsReadyAsync(CancellationToken.None)).ToArray();
+        await Task.Delay(50);
+        release.SetResult();
+        var answers = await Task.WhenAll(callers);
+
+        Assert.All(answers, Assert.True);
+        Assert.Equal(1, probe.Calls);
+    }
+
+    private sealed class SlowProbe(Task release) : ISchemaMigrationProbe
+    {
+        public int Calls;
+
+        public async Task<IReadOnlyList<string>?> GetPendingMigrationsAsync(CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref Calls);
+            await release;
+            return [];
+        }
+    }
+
     [Fact]
     public async Task A_provider_without_migrations_is_ready()
     {

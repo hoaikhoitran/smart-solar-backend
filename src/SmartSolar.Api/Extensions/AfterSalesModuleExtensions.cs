@@ -14,6 +14,8 @@ public static class AfterSalesModuleExtensions
     {
         services.AddScoped<IAfterSalesUnitOfWork, AfterSalesUnitOfWork>();
         services.AddScoped<IAfterSalesReportQueries, AfterSalesReportQueries>();
+        services.AddScoped<IAdminOverviewQueries, AdminOverviewQueries>();
+        services.AddScoped<AdminOverview>();
         services.AddScoped<AfterSalesViews>();
         services.AddScoped<SubscriptionTerms>();
         // Applies the after-sales lines of verified PayOS payments inside the payment confirmation transaction.

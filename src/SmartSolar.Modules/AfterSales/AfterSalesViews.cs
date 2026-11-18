@@ -12,7 +12,7 @@ public sealed record ServiceVisitView(Guid VisitId, string Purpose, string Statu
 
 public sealed record ServiceQuotationView(Guid QuotationId, int Version, bool IsSupplementary, string Status, JsonElement Lines, decimal PartsAmount, decimal LaborAmount,
     decimal TotalAmount, decimal DisasterSupportAmount, decimal CustomerAmount, int? RepairWarrantyMonths, string? Note, DateTimeOffset IssuedAt, DateTimeOffset ExpiresAt,
-    DateTimeOffset? AcceptedAt, DateTimeOffset? PaidAt, Guid? CurrentPaymentAttemptId);
+    DateTimeOffset? AcceptedAt, DateTimeOffset? PaidAt, Guid? CurrentPaymentAttemptId, string IssuedByRole = QuotationIssuers.Sales);
 
 public sealed record DisasterClaimView(Guid ClaimId, string DisasterType, DateTimeOffset IncidentOccurredAt, string Status, string? DecisionReason,
     DateTimeOffset? ReconsiderationRequestedAt, bool CanRequestReconsideration, Guid? SubscriptionId, decimal CoveragePercent, decimal PerIncidentLimit,
@@ -126,7 +126,7 @@ public sealed class AfterSalesViews(IAfterSalesUnitOfWork data, Scheduling.Domai
 
     public ServiceQuotationView Quotation(ServiceQuotation q)
         => new(q.Id, q.Version, q.IsSupplementary, q.Status, JsonDocument.Parse(q.LinesJson).RootElement.Clone(), q.PartsAmount, q.LaborAmount, q.TotalAmount,
-            q.DisasterSupportAmount, q.CustomerAmount, q.RepairWarrantyMonths, q.Note, L(q.IssuedAt), L(q.ExpiresAt), L(q.AcceptedAt), L(q.PaidAt), q.CurrentPaymentAttemptId);
+            q.DisasterSupportAmount, q.CustomerAmount, q.RepairWarrantyMonths, q.Note, L(q.IssuedAt), L(q.ExpiresAt), L(q.AcceptedAt), L(q.PaidAt), q.CurrentPaymentAttemptId, q.IssuedByRole);
 
     public DisasterClaimView Claim(DisasterClaim c)
         => new(c.Id, c.DisasterType, L(c.IncidentOccurredAt), c.Status, c.DecisionReason, L(c.ReconsiderationRequestedAt),

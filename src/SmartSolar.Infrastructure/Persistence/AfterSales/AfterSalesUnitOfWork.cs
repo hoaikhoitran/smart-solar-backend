@@ -57,13 +57,24 @@ public sealed class AfterSalesUnitOfWork(AppDbContext db) : TransactionalUnitOfW
         => (track ? Db.ServiceRequests : Db.ServiceRequests.AsNoTracking()).FirstOrDefaultAsync(r => r.Id == requestId, cancellationToken);
 
     public async Task<IReadOnlyList<ServiceRequest>> ListRequestsAsync(RequestFilter filter, CancellationToken cancellationToken)
+        => (await Requests(filter).ToListAsync(cancellationToken)).OrderByDescending(r => r.CreatedAt).ToList();
+
+    public async Task<(IReadOnlyList<ServiceRequest> Rows, int Total)> PageRequestsAsync(RequestFilter filter, int skip, int take, CancellationToken cancellationToken)
+    {
+        var query = Requests(filter);
+        var total = await query.CountAsync(cancellationToken);
+        var rows = await query.OrderByDescending(r => r.CreatedAt).ThenByDescending(r => r.Id).Skip(skip).Take(take).ToListAsync(cancellationToken);
+        return (rows, total);
+    }
+
+    private IQueryable<ServiceRequest> Requests(RequestFilter filter)
     {
         var query = Db.ServiceRequests.AsNoTracking().AsQueryable();
         if (filter.CustomerUserId is { } customer) query = query.Where(r => r.CustomerUserId == customer);
         if (filter.ProjectId is { } project) query = query.Where(r => r.ProjectId == project);
         if (filter.Status is { } status) query = query.Where(r => r.Status == status);
         if (filter.Kind is { } kind) query = query.Where(r => r.Kind == kind);
-        return (await query.ToListAsync(cancellationToken)).OrderByDescending(r => r.CreatedAt).ToList();
+        return query;
     }
 
     public async Task<IReadOnlyList<ServiceItem>> ListItemsAsync(Guid requestId, bool track, CancellationToken cancellationToken)
@@ -101,6 +112,14 @@ public sealed class AfterSalesUnitOfWork(AppDbContext db) : TransactionalUnitOfW
     public async Task<IReadOnlyList<ServiceQuotation>> ListQuotationsAsync(Guid requestId, bool track, CancellationToken cancellationToken)
         => (await (track ? Db.ServiceQuotations : Db.ServiceQuotations.AsNoTracking()).Where(q => q.RequestId == requestId).ToListAsync(cancellationToken))
             .OrderBy(q => q.Version).ToList();
+
+    public async Task<IReadOnlyDictionary<Guid, SmartSolar.Modules.Quotations.CatalogProductSnapshot>> GetCatalogProductsAsync(IReadOnlyCollection<Guid> productIds,
+        CancellationToken cancellationToken)
+        => (await Db.Products.AsNoTracking().Where(p => productIds.Contains(p.Id) && p.DeletedAt == null)
+                .Select(p => new { p.Id, p.Sku, p.Name, p.Brand, p.Model, p.Unit, p.UnitPrice, p.Currency, p.Status, p.ProductType, p.RatedPowerW })
+                .ToListAsync(cancellationToken))
+            .ToDictionary(p => p.Id, p => new SmartSolar.Modules.Quotations.CatalogProductSnapshot(p.Id, p.Sku, p.Name, p.Brand, p.Model, p.Unit, p.UnitPrice, p.Currency,
+                p.Status == SmartSolar.Modules.Catalog.Enums.ProductStatus.Active, p.ProductType, p.RatedPowerW));
 
     public Task<ServiceQuotation?> FindQuotationAsync(Guid quotationId, bool track, CancellationToken cancellationToken)
         => (track ? Db.ServiceQuotations : Db.ServiceQuotations.AsNoTracking()).FirstOrDefaultAsync(q => q.Id == quotationId, cancellationToken);
@@ -163,6 +182,28 @@ public sealed class AfterSalesUnitOfWork(AppDbContext db) : TransactionalUnitOfW
                 .ToListAsync(cancellationToken))
             .OrderBy(t => t.CreatedAt).ToList();
 
+    public async Task<(IReadOnlyList<RefundRecord> Rows, int Total)> PageRefundRecordsAsync(string? status, int skip, int take, CancellationToken cancellationToken)
+    {
+        var query = Db.RefundRecords.AsNoTracking().Where(r => status == null || r.Status == status);
+        var total = await query.CountAsync(cancellationToken);
+        return (await query.OrderByDescending(r => r.CreatedAt).ThenByDescending(r => r.Id).Skip(skip).Take(take).ToListAsync(cancellationToken), total);
+    }
+
+    public async Task<(IReadOnlyList<SalesTask> Rows, int Total)> PageTasksAsync(IReadOnlyCollection<string>? statuses, Guid? assignedSalesUserId, int skip, int take,
+        CancellationToken cancellationToken)
+    {
+        var query = Db.SalesTasks.AsNoTracking().Where(t => (statuses == null || statuses.Contains(t.Status)) && (assignedSalesUserId == null || t.AssignedSalesUserId == assignedSalesUserId));
+        var total = await query.CountAsync(cancellationToken);
+        return (await query.OrderBy(t => t.CreatedAt).ThenBy(t => t.Id).Skip(skip).Take(take).ToListAsync(cancellationToken), total);
+    }
+
+    public async Task<(IReadOnlyList<ServiceVisit> Rows, int Total)> PageVisitsForTechnicianAsync(Guid technicianUserId, int skip, int take, CancellationToken cancellationToken)
+    {
+        var query = Db.ServiceVisits.AsNoTracking().Where(v => v.TechnicianUserId == technicianUserId && v.Status != VisitStatuses.Cancelled);
+        var total = await query.CountAsync(cancellationToken);
+        return (await query.OrderBy(v => v.StartsAt).ThenBy(v => v.Id).Skip(skip).Take(take).ToListAsync(cancellationToken), total);
+    }
+
     public Task<SalesTask?> FindTaskAsync(Guid taskId, bool track, CancellationToken cancellationToken)
         => (track ? Db.SalesTasks : Db.SalesTasks.AsNoTracking()).FirstOrDefaultAsync(t => t.Id == taskId, cancellationToken);
 
@@ -178,6 +219,15 @@ public sealed class AfterSalesUnitOfWork(AppDbContext db) : TransactionalUnitOfW
     public async Task<IReadOnlyList<AfterSalesNotification>> ListNotificationsAsync(Guid recipientUserId, CancellationToken cancellationToken)
         => (await Db.AfterSalesNotifications.AsNoTracking().Where(n => n.RecipientUserId == recipientUserId).ToListAsync(cancellationToken))
             .OrderByDescending(n => n.CreatedAt).Take(100).ToList();
+
+    public async Task<(IReadOnlyList<AfterSalesNotification> Rows, int Total)> PageNotificationsAsync(Guid recipientUserId, int skip, int take,
+        CancellationToken cancellationToken)
+    {
+        var query = Db.AfterSalesNotifications.AsNoTracking().Where(n => n.RecipientUserId == recipientUserId);
+        var total = await query.CountAsync(cancellationToken);
+        var rows = await query.OrderByDescending(n => n.CreatedAt).ThenByDescending(n => n.Id).Skip(skip).Take(take).ToListAsync(cancellationToken);
+        return (rows, total);
+    }
 
     public Task<AfterSalesNotification?> FindNotificationAsync(Guid notificationId, Guid recipientUserId, bool track, CancellationToken cancellationToken)
         => (track ? Db.AfterSalesNotifications : Db.AfterSalesNotifications.AsNoTracking())

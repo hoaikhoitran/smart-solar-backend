@@ -37,6 +37,15 @@ public sealed class TechnicianServiceHandlers(IAfterSalesUnitOfWork data, FileSe
         return list;
     }
 
+    /// <summary>One page of the technician's visits (SQL paging; by start). Each row is built like the list (bounded by the page size).</summary>
+    public async Task<Common.Paging.PagedResult<TechnicianVisitView>> PageAsync(Guid technicianUserId, Common.Paging.PageRequest page, CancellationToken cancellationToken)
+    {
+        var (rows, total) = await data.PageVisitsForTechnicianAsync(technicianUserId, page.Skip, page.PageSize, cancellationToken);
+        var list = new List<TechnicianVisitView>();
+        foreach (var visit in rows) list.Add(await ViewAsync(visit, cancellationToken));
+        return page.Result(list, total);
+    }
+
     public async Task<OperationResult<TechnicianVisitView>> GetAsync(Guid technicianUserId, Guid visitId, CancellationToken cancellationToken)
         => await data.FindVisitAsync(visitId, false, cancellationToken) is { } visit && visit.TechnicianUserId == technicianUserId
             ? OperationResult<TechnicianVisitView>.Ok(await ViewAsync(visit, cancellationToken))
@@ -222,7 +231,11 @@ public sealed class TechnicianServiceHandlers(IAfterSalesUnitOfWork data, FileSe
         if (description is null || diagnosis is null) return Task.FromResult(Fail(AfterSalesErrorCodes.ValidationFailed, "The item needs a description and a diagnosis."));
         return MutateAsync(technicianUserId, visitId, async (visit, _, request, now, token) =>
         {
-            if (visit.Purpose is not (VisitPurposes.Repair or VisitPurposes.Rework) || visit.Status != VisitStatuses.InProgress) return Bad("Additional faults are reported during a repair.");
+            // Repairs, and (2026-11-18) the paid visit of a one-time maintenance: extra chargeable work gets its own decision and supplementary quotation.
+            // A package maintenance visit keeps its policy: the technician records a finding and the customer may open a fault request.
+            var additionalWorkAllowed = visit.Purpose is VisitPurposes.Repair or VisitPurposes.Rework
+                                        || visit.Purpose == VisitPurposes.Maintenance && request.Kind == ServiceRequestKinds.OneTimeMaintenance;
+            if (!additionalWorkAllowed || visit.Status != VisitStatuses.InProgress) return Bad("Additional faults are reported during a repair.");
             data.Add(NewItem(request.Id, input, description, diagnosis, technicianUserId, supplementary: true, now));
             AfterSalesHistory.Record(data, EventSubjects.Request, request.Id, "SUPPLEMENTARY_ITEM_FOUND", technicianUserId, description, now);
             AfterSalesHistory.NotifyAll(data, await data.ListActiveUserIdsWithRoleAsync(RoleCodes.Manager, token), "SUPPLEMENTARY_ITEM_FOUND",
@@ -264,10 +277,17 @@ public sealed class TechnicianServiceHandlers(IAfterSalesUnitOfWork data, FileSe
             // A same-visit repair keeps the inspection report in front of the work report.
             CloseVisit(visit, assignment, visit.Report is { } diagnosis ? $"{diagnosis}\n\n{text}" : text, now);
             visit.FindingNote = Text.Trim(findingNote, 2000);
-            if (request.Kind != ServiceRequestKinds.Fault)
+            if (request.Kind == ServiceRequestKinds.Maintenance || request.Kind == ServiceRequestKinds.OneTimeMaintenance && items.Count == 0)
             {
                 request.Outcome = ServiceOutcomes.MaintenanceDone;
                 AfterSalesWorkflow.Move(data, request, ServiceRequestStatuses.PendingCustomerAcceptance, technicianUserId, "maintenance reported", now);
+            }
+            else if (request.Kind == ServiceRequestKinds.OneTimeMaintenance)
+            {
+                // Inspected one-time maintenance: an additional item found on site (pending decision / quotation) is handled before acceptance.
+                var next = AfterSalesWorkflow.NextStatus(items);
+                if (next == ServiceRequestStatuses.PendingCustomerAcceptance) request.Outcome = ServiceOutcomes.MaintenanceDone;
+                AfterSalesWorkflow.Move(data, request, next, technicianUserId, "maintenance reported", now);
             }
             else
             {

@@ -114,50 +114,62 @@ public sealed class SalesQuotationsController(QuotationHandlers handlers) : Oper
 
     [HttpPost("survey-requests/{surveyRequestId:guid}/quotations")]
     [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
     public IActionResult Create(Guid surveyRequestId) => Retired(CartRoutes);
 
     [HttpPost("survey-requests/{surveyRequestId:guid}/quotations/generate")]
     [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
     public IActionResult Generate(Guid surveyRequestId) => Retired(CartRoutes);
 
     [HttpGet("quotations/pending-review")]
     [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
     public IActionResult PendingReview() => Retired("GET /api/survey-requests/{surveyRequestId}/quotations (read) — no review queue exists any more");
 
     [HttpPut("quotations/{quotationId:guid}")]
     [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
     public IActionResult Update(Guid quotationId) => Retired(CartRoutes);
 
     [HttpPost("quotations/{quotationId:guid}/lines")]
     [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
     public IActionResult AddLine(Guid quotationId) => Retired(CartRoutes);
 
     [HttpPut("quotations/{quotationId:guid}/lines/{lineId:guid}")]
     [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
     public IActionResult UpdateLine(Guid quotationId, Guid lineId) => Retired(CartRoutes);
 
     [HttpDelete("quotations/{quotationId:guid}/lines/{lineId:guid}")]
     [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
     public IActionResult RemoveLine(Guid quotationId, Guid lineId) => Retired(CartRoutes);
 
     [HttpPost("quotations/{quotationId:guid}/issue")]
     [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
     public IActionResult Issue(Guid quotationId) => Retired(CartRoutes);
 
     [HttpPost("quotations/{quotationId:guid}/confirm-survey-version")]
     [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
     public IActionResult ConfirmSurveyVersion(Guid quotationId) => Retired("The technician's cart is re-based on the current survey when it is issued");
 
     [HttpPost("quotations/{quotationId:guid}/pricing-approval-request")]
     [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
     public IActionResult RequestPricingApproval(Guid quotationId) => Retired("None: quotations use catalog prices only (no discount or price exception)");
 
     [HttpPost("quotations/{quotationId:guid}/revisions")]
     [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
     public IActionResult CreateRevision(Guid quotationId) => Retired("POST /api/technician/quotations/{quotationId}/revisions");
 
     [HttpPut("quotations/{quotationId:guid}/document")]
     [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
     public IActionResult AttachDocument(Guid quotationId) => Retired("None: the quotation view carries every line and total for the FE to render");
 
     private bool IsManager() => IsInRole(RoleCodes.Manager) || IsInRole(RoleCodes.Admin);
@@ -172,10 +184,12 @@ public sealed class ManagerQuotationApprovalsController : OperationResultControl
 {
     [HttpGet("pricing-approvals")]
     [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
     public IActionResult Pending() => Retired("None: quotations use catalog prices only (no discount or price exception)");
 
     [HttpPost("{quotationId:guid}/pricing-approval")]
     [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
     public IActionResult Decide(Guid quotationId) => Retired("None: quotations use catalog prices only (no discount or price exception)");
 }
 

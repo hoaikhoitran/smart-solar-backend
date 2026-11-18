@@ -22,6 +22,25 @@ public sealed class SalesTaskHandlers(IAfterSalesUnitOfWork data, AfterSalesView
     public async Task<IReadOnlyList<SalesTaskView>> ListAllAsync(string? status, CancellationToken cancellationToken)
         => (await data.ListTasksAsync(status, null, cancellationToken)).Select(views.Task).ToList();
 
+    private static readonly IReadOnlyList<string> OpenStatuses = [SalesTaskStatuses.Open, SalesTaskStatuses.Claimed, SalesTaskStatuses.InProgress];
+
+    /// <summary>Paged variants (SQL; oldest first): the shared OPEN queue, the caller's open tasks, every task (Manager).</summary>
+    public Task<Common.Paging.PagedResult<SalesTaskView>> PageOpenAsync(Common.Paging.PageRequest page, CancellationToken cancellationToken)
+        => PageAsync([SalesTaskStatuses.Open], null, page, cancellationToken);
+
+    public Task<Common.Paging.PagedResult<SalesTaskView>> PageMineAsync(Guid salesUserId, Common.Paging.PageRequest page, CancellationToken cancellationToken)
+        => PageAsync(OpenStatuses, salesUserId, page, cancellationToken);
+
+    public Task<Common.Paging.PagedResult<SalesTaskView>> PageAllAsync(string? status, Common.Paging.PageRequest page, CancellationToken cancellationToken)
+        => PageAsync(status is null ? null : [status], null, page, cancellationToken);
+
+    private async Task<Common.Paging.PagedResult<SalesTaskView>> PageAsync(IReadOnlyCollection<string>? statuses, Guid? owner, Common.Paging.PageRequest page,
+        CancellationToken cancellationToken)
+    {
+        var (rows, total) = await data.PageTasksAsync(statuses, owner, page.Skip, page.PageSize, cancellationToken);
+        return page.Result(rows.Select(views.Task).ToList(), total);
+    }
+
     /// <summary>OPEN → CLAIMED by the caller. Two Sales users claiming at the same time: exactly one wins, the other gets 409.</summary>
     public Task<OperationResult<SalesTaskView>> ClaimAsync(Guid salesUserId, Guid taskId, CancellationToken cancellationToken)
         => MutateAsync(taskId, (task, now, _) =>

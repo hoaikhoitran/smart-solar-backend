@@ -72,6 +72,24 @@ public sealed class InstallationUnitOfWork(AppDbContext db) : TransactionalUnitO
                         && !Db.CustomerContracts.Any(c => c.Id == p.ContractId && c.Status == ContractStatuses.Paid))
             .OrderBy(p => p.StartsAt).Select(p => p.Id).Take(limit).ToListAsync(cancellationToken);
 
+    public async Task<IReadOnlyList<InstallationSlotOffer>> ListSlotOffersAsync(Guid contractId, string? status, bool track, CancellationToken cancellationToken)
+        => await (track ? Db.InstallationSlotOffers : Db.InstallationSlotOffers.AsNoTracking())
+            .Where(o => o.ContractId == contractId && (status == null || o.Status == status))
+            .OrderBy(o => o.StartsAt).ThenBy(o => o.Id).ToListAsync(cancellationToken);
+
+    public Task<InstallationSlotOffer?> FindSlotOfferAsync(Guid offerId, bool track, CancellationToken cancellationToken)
+        => (track ? Db.InstallationSlotOffers : Db.InstallationSlotOffers.AsNoTracking()).FirstOrDefaultAsync(o => o.Id == offerId, cancellationToken);
+
+    public async Task<IReadOnlyList<InstallationScheduleProposal>> ListOverlappingLiveProposalsAsync(Guid technicianUserId, Guid exceptContractId,
+        DateTimeOffset startsAt, DateTimeOffset endsAt, CancellationToken cancellationToken)
+        => (await Db.InstallationScheduleProposals.AsNoTracking()
+                .Where(p => p.TechnicianUserId == technicianUserId && p.ContractId != exceptContractId
+                            && (p.Status == InstallationScheduleStatuses.Planned || p.Status == InstallationScheduleStatuses.Confirmed
+                                || p.Status == InstallationScheduleStatuses.RescheduleRequired))
+                .ToListAsync(cancellationToken))
+            // Interval overlap evaluated in memory: SQLite (tests) cannot compare DateTimeOffset columns; the candidate set is one technician's live plans.
+            .Where(p => p.StartsAt < endsAt && startsAt < p.EndsAt).ToList();
+
     public async Task LockContractAsync(Guid contractId, CancellationToken cancellationToken)
     {
         if (!Db.Database.IsNpgsql()) return;
@@ -90,6 +108,21 @@ public sealed class InstallationUnitOfWork(AppDbContext db) : TransactionalUnitO
 
     public async Task<IReadOnlyList<InstallationProject>> ListProjectsAsync(string? status, CancellationToken cancellationToken)
         => (await Db.InstallationProjects.AsNoTracking().Where(p => status == null || p.Status == status).ToListAsync(cancellationToken)).OrderByDescending(p => p.CreatedAt).ToList();
+
+    public async Task<(IReadOnlyList<InstallationProject> Rows, int Total)> PageProjectsAsync(string? status, int skip, int take, CancellationToken cancellationToken)
+    {
+        var query = Db.InstallationProjects.AsNoTracking().Where(p => status == null || p.Status == status);
+        var total = await query.CountAsync(cancellationToken);
+        return (await query.OrderByDescending(p => p.CreatedAt).ThenByDescending(p => p.Id).Skip(skip).Take(take).ToListAsync(cancellationToken), total);
+    }
+
+    public async Task<(IReadOnlyList<InstallationScheduleProposal> Rows, int Total)> PageProposalsAsync(string? status, int skip, int take,
+        CancellationToken cancellationToken)
+    {
+        var query = Db.InstallationScheduleProposals.AsNoTracking().Where(p => status == null || p.Status == status);
+        var total = await query.CountAsync(cancellationToken);
+        return (await query.OrderByDescending(p => p.CreatedAt).ThenByDescending(p => p.Id).Skip(skip).Take(take).ToListAsync(cancellationToken), total);
+    }
 
     public async Task<IReadOnlyList<InstallationProject>> ListForTechnicianAsync(Guid technicianUserId, CancellationToken cancellationToken)
         => (await Db.InstallationProjects.AsNoTracking()

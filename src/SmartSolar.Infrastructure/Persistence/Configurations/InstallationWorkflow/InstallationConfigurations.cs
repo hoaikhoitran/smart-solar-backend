@@ -433,3 +433,52 @@ public sealed class InstallationScheduleProposalConfiguration : IEntityTypeConfi
             .HasConstraintName("fk_installation_schedule_proposal_replaces");
     }
 }
+
+/// <summary>Installation intervals offered by the responsible technician for the customer to choose (history kept; no capacity held).</summary>
+public sealed class InstallationSlotOfferConfiguration : IEntityTypeConfiguration<InstallationSlotOffer>
+{
+    public void Configure(EntityTypeBuilder<InstallationSlotOffer> builder)
+    {
+        static string In(IEnumerable<string> values) => "(" + string.Join(", ", values.Select(v => $"'{v}'")) + ")";
+        builder.ToTable("installation_slot_offer", t =>
+        {
+            t.HasCheckConstraint("ck_installation_slot_offer_status", $"status IN {In(InstallationSlotOfferStatuses.All)}");
+            t.HasCheckConstraint("ck_installation_slot_offer_interval", "ends_at > starts_at");
+            t.HasCheckConstraint("ck_installation_slot_offer_selected",
+                $"(status = '{InstallationSlotOfferStatuses.Selected}') = (selected_at IS NOT NULL AND selected_schedule_id IS NOT NULL)");
+            t.HasCheckConstraint("ck_installation_slot_offer_withdrawn",
+                $"(status = '{InstallationSlotOfferStatuses.Withdrawn}') = (withdrawn_at IS NOT NULL AND withdrawn_reason IS NOT NULL)");
+        });
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.ContractId).HasColumnName("contract_id").IsRequired();
+        builder.Property(x => x.TechnicianUserId).HasColumnName("technician_user_id").IsRequired();
+        builder.Property(x => x.StartsAt).HasColumnName("starts_at").IsRequired();
+        builder.Property(x => x.EndsAt).HasColumnName("ends_at").IsRequired();
+        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(20).IsRequired();
+        builder.Property(x => x.Note).HasColumnName("note").HasMaxLength(500);
+        builder.Property(x => x.CreatedByUserId).HasColumnName("created_by_user_id").IsRequired();
+        builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
+        builder.Property(x => x.SelectedAt).HasColumnName("selected_at");
+        builder.Property(x => x.SelectedScheduleId).HasColumnName("selected_schedule_id");
+        builder.Property(x => x.WithdrawnAt).HasColumnName("withdrawn_at");
+        builder.Property(x => x.WithdrawnReason).HasColumnName("withdrawn_reason").HasMaxLength(500);
+        builder.Property(x => x.Revision).HasColumnName("revision").IsConcurrencyToken().IsRequired();
+        builder.HasIndex(x => new { x.ContractId, x.Status }).HasDatabaseName("ix_installation_slot_offer_contract_status");
+        builder.HasIndex(x => new { x.TechnicianUserId, x.Status }).HasDatabaseName("ix_installation_slot_offer_technician_status");
+        // The same interval is offered at most once at a time for a contract.
+        builder.HasIndex(x => new { x.ContractId, x.StartsAt, x.EndsAt }).IsUnique().HasDatabaseName("ux_installation_slot_offer_open_interval")
+            .HasFilter($"status = '{InstallationSlotOfferStatuses.Open}'");
+        builder.HasIndex(x => x.SelectedScheduleId).IsUnique().HasDatabaseName("ux_installation_slot_offer_selected_schedule")
+            .HasFilter("selected_schedule_id IS NOT NULL");
+        builder.HasOne<CustomerContract>().WithMany().HasForeignKey(x => x.ContractId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_slot_offer_contract");
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.TechnicianUserId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_slot_offer_technician");
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.CreatedByUserId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_slot_offer_created_by");
+        builder.HasOne<InstallationScheduleProposal>().WithMany().HasForeignKey(x => x.SelectedScheduleId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_installation_slot_offer_selected_schedule");
+    }
+}

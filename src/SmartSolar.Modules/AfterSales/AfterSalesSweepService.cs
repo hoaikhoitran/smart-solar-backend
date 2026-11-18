@@ -109,11 +109,17 @@ public sealed class AfterSalesSweepService(
         var count = 0;
         foreach (var quotation in await data.ListExpiredOpenQuotationsAsync(time.GetUtcNow(), cancellationToken))
         {
-            // Release reserved support only after PayOS confirmed that this quotation's checkout was not paid.
+            // Release reserved support only after PayOS confirmed that this quotation's checkout was not paid. A pending CASH choice is not money in
+            // flight (nothing to ask a provider; CASH_PENDING is not PAID): it is withdrawn and the quotation expires as usual, so a cash choice never
+            // extends a quotation or keeps disaster support reserved. A cash receipt confirmed first (PAID) keeps the quotation.
             if (quotation.CurrentPaymentAttemptId is { } attemptId
                 && await payments.ReconcileAsync(attemptId, force: true, cancellationToken) is { } attempt
                 && (attempt.Status == PaymentStatuses.Paid || PaymentStatuses.Payable.Contains(attempt.Status)))
-                continue;
+            {
+                if (attempt.Provider != PaymentProviders.Cash || attempt.Status == PaymentStatuses.Paid) continue;
+                var withdrawn = await payments.CancelAttemptAsync(attemptId, "quotation expired before the cash receipt was confirmed", cancellationToken);
+                if (withdrawn is null || withdrawn.Status != PaymentStatuses.Cancelled) continue;
+            }
             count += await InTransactionAsync(async token =>
             {
                 var tracked = await data.FindQuotationAsync(quotation.Id, true, token);
@@ -121,7 +127,8 @@ public sealed class AfterSalesSweepService(
                 var now = time.GetUtcNow();
                 var request = (await data.FindRequestAsync(tracked.RequestId, true, token))!;
                 await AfterSalesWorkflow.CloseQuotationAsync(data, tracked, QuotationStatuses.Expired, ItemStatuses.Open, null, now, token);
-                if (request.Kind == ServiceRequestKinds.OneTimeMaintenance)
+                var expiredItems = await data.ListItemsAsync(request.Id, true, token);
+                if (request.Kind == ServiceRequestKinds.OneTimeMaintenance && expiredItems.Count == 0)
                 {
                     AfterSalesWorkflow.Move(data, request, ServiceRequestStatuses.AwaitingQuotation, null, "quotation expired", now);
                     await AfterSalesWorkflow.OpenTaskAsync(data, SalesTaskTypes.MaintenanceQuotation, request.CustomerUserId, request.Id, null, "The quotation expired.", now, token);

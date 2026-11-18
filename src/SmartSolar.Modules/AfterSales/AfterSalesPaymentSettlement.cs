@@ -38,6 +38,31 @@ public sealed class AfterSalesPaymentSettlement(IAfterSalesUnitOfWork data, Subs
         }
     }
 
+    public async Task<string?> CashSettlementProblemAsync(PaymentAttempt attempt, IReadOnlyList<PaymentAttemptItem> items, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        foreach (var item in items)
+        {
+            if (item.SubscriptionId is { } subscriptionId)
+            {
+                var subscription = await data.FindSubscriptionAsync(subscriptionId, true, cancellationToken);
+                if (subscription is null || subscription.CurrentPaymentAttemptId != attempt.Id
+                    || subscription.Status is not (SubscriptionStatuses.AwaitingPayment or SubscriptionStatuses.CheckoutExpired))
+                    return "The package order no longer waits for this cash payment.";
+            }
+            else if (item.QuotationId is { } quotationId)
+            {
+                var quotation = await data.FindQuotationAsync(quotationId, true, cancellationToken);
+                if (quotation is null || quotation.CurrentPaymentAttemptId != attempt.Id)
+                    return "The quotation no longer waits for this cash payment.";
+                if (quotation.Status != QuotationStatuses.Accepted) return $"The quotation is {quotation.Status}.";
+                // CASH_PENDING is not PAID: the quotation's own validity is not extended by a cash choice.
+                if (quotation.ExpiresAt <= now) return "The quotation expired before the cash receipt was confirmed; a new quotation is needed.";
+            }
+        }
+        return null;
+    }
+
     public Task RecordUnappliedPaymentAsync(PaymentAttempt attempt, decimal amount, string reason, DateTimeOffset now, CancellationToken cancellationToken)
     {
         var refund = new RefundRecord
@@ -58,7 +83,10 @@ public sealed class AfterSalesPaymentSettlement(IAfterSalesUnitOfWork data, Subs
         if (subscription.CurrentPaymentAttemptId != attempt.Id) return "The package order belongs to another checkout.";
         if (subscription.Status is not (SubscriptionStatuses.AwaitingPayment or SubscriptionStatuses.CheckoutExpired))
             return $"The package order is {subscription.Status}.";
-        if (providerPaidAt > (subscription.CheckoutExpiresAt ?? attempt.ExpiresAt)) return "The payment was made after the checkout expired.";
+        // An online link has a deadline; a CASH choice has none (it holds the contract's payable slot until a Manager/Admin confirms or the
+        // customer withdraws it), so a cash receipt confirmed after the online checkout window is still on time.
+        if (attempt.Provider != PaymentProviders.Cash && providerPaidAt > (subscription.CheckoutExpiresAt ?? attempt.ExpiresAt))
+            return "The payment was made after the checkout expired.";
         subscription.Status = SubscriptionStatuses.Paid;
         subscription.PaidAt = providerPaidAt;
         subscription.UpdatedAt = now;

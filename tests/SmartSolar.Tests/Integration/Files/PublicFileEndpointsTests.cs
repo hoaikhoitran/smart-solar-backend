@@ -18,9 +18,9 @@ namespace SmartSolar.Tests.Integration.Files;
 /// </summary>
 public sealed class PublicFileEndpointsTests
 {
-    private const string PublicBase = "https://app.smartsolar.test";
+    internal const string PublicBase = "https://app.smartsolar.test";
 
-    private sealed record Api(AuthApiFactory Factory, FakeStorageObjectVerifier Storage) : IDisposable
+    internal sealed record Api(AuthApiFactory Factory, FakeStorageObjectVerifier Storage) : IDisposable
     {
         public void Dispose() => Factory.Dispose();
 
@@ -28,7 +28,7 @@ public sealed class PublicFileEndpointsTests
         public HttpClient Visitor() => Factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
     }
 
-    private static Api Start(string? publicBase = PublicBase)
+    internal static Api Start(string? publicBase = PublicBase)
     {
         var storage = new FakeStorageObjectVerifier();
         var factory = Enabled(storage, new FakeRagServiceClient(), extra: new() { ["Storage:PublicFileBaseUrl"] = publicBase ?? "" }, services: services =>
@@ -42,7 +42,7 @@ public sealed class PublicFileEndpointsTests
     }
 
     /// <summary>The frontend flow: presigned URL, PUT (simulated), register; returns the VERIFIED file id.</summary>
-    private static async Task<Guid> UploadPictureAsync(HttpClient client, FakeStorageObjectVerifier storage, string purpose)
+    internal static async Task<Guid> UploadPictureAsync(HttpClient client, FakeStorageObjectVerifier storage, string purpose)
     {
         var presign = await DataOf(await client.PostAsJsonAsync("/api/files/presigned-upload",
             new { purpose, fileName = "cover.jpg", contentType = FilePolicies.Jpeg, sizeBytes = FakeStorageObjectVerifier.JpegBytes.Length }));
@@ -63,7 +63,7 @@ public sealed class PublicFileEndpointsTests
         return product.Id;
     }
 
-    private static object PackageBody(string name, Guid? imageFileId = null, string? imageUrl = null, int revision = 0)
+    internal static object PackageBody(string name, Guid? imageFileId = null, string? imageUrl = null, int revision = 0)
         => new { kind = "MAINTENANCE", name, description = "Two visits", price = 2_000_000m, durationMonths = 12, visitMonths = new[] { 6, 12 }, isActive = true, revision, imageFileId, imageUrl };
 
     [Fact]

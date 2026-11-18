@@ -3,6 +3,7 @@ using System.Security.Claims;
 using FluentValidation;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using SmartSolar.Api.Contracts;
 using SmartSolar.Api.Contracts.PreSurveys;
 using SmartSolar.Api.Extensions;
@@ -34,6 +35,7 @@ public sealed class PreSurveySurfaceController : ControllerBase
     }
 
     [HttpGet]
+    [EnableRateLimiting(RateLimitingExtensions.PortalReadPolicy)]
     public async Task<IActionResult> Get(Guid preSurveyId, CancellationToken cancellationToken)
     {
         if (GetAuthenticatedUserId() is not { } userId)
@@ -53,6 +55,7 @@ public sealed class PreSurveySurfaceController : ControllerBase
     }
 
     [HttpPut]
+    [EnableRateLimiting(RateLimitingExtensions.PortalWritePolicy)]
     public async Task<IActionResult> Update(Guid preSurveyId, [FromBody] UpdatePreSurveySurfaceRequest request, CancellationToken cancellationToken)
     {
         if (GetAuthenticatedUserId() is not { } userId)

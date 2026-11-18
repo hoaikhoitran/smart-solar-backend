@@ -58,11 +58,11 @@ public sealed class AfterSalesReportQueries(AppDbContext db) : IAfterSalesReport
             .Where(v => v.Status == VisitStatuses.Reported && v.ReportedAt >= fromUtc && v.ReportedAt < toUtc)
             .CountAsync(v => db.ServiceRequests.Any(r => r.Id == v.RequestId && projects.Any(p => p.Id == r.ProjectId)), cancellationToken);
 
-        var (contracts, packages, services) = await CollectedAsync(projects, zoneId, fromUtc, toUtc, cancellationToken);
+        var (contracts, packages, services, unapplied) = await CollectedAsync(projects, zoneId, fromUtc, toUtc, cancellationToken);
         var refunded = await RefundedAsync(projects, zoneId, fromUtc, toUtc, cancellationToken);
 
         return new DashboardNumbers(totalCustomers, newCustomers, newProjects, handedOver, activeWarranties, faultsReported, repairsCompleted,
-            maintenanceCompleted, activeMaintenance, activeDisaster, purchases, activeTechnicians, reportedVisits, contracts, packages, services, refunded);
+            maintenanceCompleted, activeMaintenance, activeDisaster, purchases, activeTechnicians, reportedVisits, contracts, packages, services, refunded, unapplied);
     }
 
     /// <summary>Handed-over installations whose warranty (handover + contract months, local calendar) covers the end of the period.</summary>
@@ -76,35 +76,56 @@ public sealed class AfterSalesReportQueries(AppDbContext db) : IAfterSalesReport
     }
 
     /// <summary>
-    /// Verified PayOS money of the period by provider transaction time, per item category (a combined checkout is split by its lines,
-    /// never counted as a whole). A contract-only attempt from before Flow 3 has no lines: its whole amount is the contract.
+    /// Verified money of the period (PayOS by provider transaction time, CASH by its confirmation time) received by attempts in PAID,
+    /// REFUND_REQUIRED or REVIEW_REQUIRED. Applied money per category: SETTLED lines of PAID attempts (a combined checkout is split by its
+    /// lines, never counted as a whole), plus PAID contract-only attempts without lines (whole amount = the contract). Everything else that was
+    /// received is unapplied: gross per attempt is its amount paid, so applied + unapplied = gross exactly. The zone filter follows each attempt
+    /// to its installation (through its contract or any of its lines).
     /// </summary>
-    private async Task<(decimal Contracts, decimal Packages, decimal Services)> CollectedAsync(IQueryable<InstallationProject> projects, Guid? zoneId,
-        DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken cancellationToken)
+    private async Task<(decimal Contracts, decimal Packages, decimal Services, decimal Unapplied)> CollectedAsync(IQueryable<InstallationProject> projects,
+        Guid? zoneId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken cancellationToken)
     {
-        var paidInPeriod = db.PaymentAttempts.AsNoTracking()
+        var received = db.PaymentAttempts.AsNoTracking()
             .Where(a => a.AmountPaid != null && (a.Status == PaymentStatuses.Paid || a.Status == PaymentStatuses.RefundRequired || a.Status == PaymentStatuses.ReviewRequired))
             .Where(a => (a.ProviderTransactionAt ?? a.PaidAt ?? a.UpdatedAt) >= fromUtc && (a.ProviderTransactionAt ?? a.PaidAt ?? a.UpdatedAt) < toUtc);
+        var lines = db.PaymentAttemptItems.AsNoTracking();
+        var inZone = zoneId == null
+            ? received
+            : received.Where(a => (a.ContractId != null && projects.Any(p => p.ContractId == a.ContractId))
+                                  || lines.Any(l => l.PaymentAttemptId == a.Id
+                                                    && ((l.SubscriptionId != null && db.ServiceSubscriptions.Any(s => s.Id == l.SubscriptionId && projects.Any(p => p.ContractId == s.ContractId)))
+                                                        || (l.QuotationId != null && db.ServiceQuotations.Any(q => q.Id == l.QuotationId
+                                                            && db.ServiceRequests.Any(r => r.Id == q.RequestId && projects.Any(p => p.Id == r.ProjectId)))))));
 
-        var lines = await db.PaymentAttemptItems.AsNoTracking()
-            .Where(l => paidInPeriod.Any(a => a.Id == l.PaymentAttemptId))
-            .Where(l => zoneId == null
-                        || (l.ContractId != null && projects.Any(p => p.ContractId == l.ContractId))
-                        || (l.SubscriptionId != null && db.ServiceSubscriptions.Any(s => s.Id == l.SubscriptionId && projects.Any(p => p.ContractId == s.ContractId)))
-                        || (l.QuotationId != null && db.ServiceQuotations.Any(q => q.Id == l.QuotationId
-                            && db.ServiceRequests.Any(r => r.Id == q.RequestId && projects.Any(p => p.Id == r.ProjectId)))))
-            .Select(l => new { l.ItemType, l.Amount })
+        var attempts = await inZone.Select(a => new { a.Id, a.Status, a.AmountPaid, a.ContractId }).ToListAsync(cancellationToken);
+        var ids = attempts.Select(a => a.Id).ToList();
+        var attemptLines = await lines.Where(l => ids.Contains(l.PaymentAttemptId))
+            .Select(l => new { l.PaymentAttemptId, l.ItemType, l.Amount, l.Status })
             .ToListAsync(cancellationToken);
-        var legacyContractPayments = await paidInPeriod
-            .Where(a => a.ContractId != null && !db.PaymentAttemptItems.Any(i => i.PaymentAttemptId == a.Id))
-            .Where(a => zoneId == null || projects.Any(p => p.ContractId == a.ContractId))
-            .Select(a => a.AmountPaid ?? 0)
-            .ToListAsync(cancellationToken);
+        var byAttempt = attemptLines.ToLookup(l => l.PaymentAttemptId);
 
-        var contracts = lines.Where(l => l.ItemType == PaymentItemTypes.Contract).Sum(l => l.Amount) + legacyContractPayments.Sum(a => (decimal)a);
-        var packages = lines.Where(l => l.ItemType is PaymentItemTypes.MaintenancePackage or PaymentItemTypes.DisasterPackage).Sum(l => l.Amount);
-        var services = lines.Where(l => l.ItemType is PaymentItemTypes.RepairQuotation or PaymentItemTypes.MaintenanceQuotation).Sum(l => l.Amount);
-        return (contracts, packages, services);
+        decimal contracts = 0, packages = 0, services = 0, unapplied = 0;
+        foreach (var a in attempts)
+        {
+            var gross = (decimal)a.AmountPaid!.Value;
+            var mine = byAttempt[a.Id].ToList();
+            if (a.Status != PaymentStatuses.Paid)
+            {
+                unapplied += gross;
+                continue;
+            }
+            if (mine.Count == 0)
+            {
+                contracts += gross;   // contract-only attempt (online or cash) without lines
+                continue;
+            }
+            var settled = mine.Where(l => l.Status == PaymentItemStatuses.Settled).ToList();
+            contracts += settled.Where(l => l.ItemType == PaymentItemTypes.Contract).Sum(l => l.Amount);
+            packages += settled.Where(l => l.ItemType is PaymentItemTypes.MaintenancePackage or PaymentItemTypes.DisasterPackage).Sum(l => l.Amount);
+            services += settled.Where(l => l.ItemType is PaymentItemTypes.RepairQuotation or PaymentItemTypes.MaintenanceQuotation).Sum(l => l.Amount);
+            unapplied += gross - settled.Sum(l => l.Amount);
+        }
+        return (contracts, packages, services, unapplied);
     }
 
     /// <summary>Manual refunds actually returned in the period (refund date), not approvals.</summary>

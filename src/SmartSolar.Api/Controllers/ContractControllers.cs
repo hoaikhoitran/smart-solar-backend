@@ -123,6 +123,19 @@ public sealed class SalesContractsController(ContractHandlers handlers, Contract
         return Respond(await handlers.ReviewAsync(user, true, contractId, request.Revision, decision.Value, request.Reason, cancellationToken));
     }
 
+    /// <summary>
+    /// Paper contract: the Sales owner of the request (or a Manager/Admin) uploads the scan of the contract the customer signed in person
+    /// (VERIFIED <c>SIGNED_CONTRACT</c> PDF registered by the caller). The contract moves AWAITING_SIGNATURE / SIGNATURE_REJECTED → UNDER_REVIEW
+    /// exactly like a customer submission; a Manager/Admin still confirms the signature (<c>POST …/review</c>). 404 for Sales of another request.
+    /// </summary>
+    [HttpPost("contracts/{contractId:guid}/signed-document")]
+    [EnableRateLimiting(RateLimitingExtensions.ContractWritePolicy)]
+    public async Task<IActionResult> SubmitPaperSigned(Guid contractId, [FromBody] PaperSignedDocumentRequest request, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user
+            ? Respond(await handlers.SubmitPaperSignedDocumentAsync(user, IsManager(), contractId, request.FileId, request.OfficialDocumentSha256 ?? "",
+                request.SignedOn, request.Note, cancellationToken))
+            : UnauthorizedFailure();
+
     [HttpPost("contracts/{contractId:guid}/amendments")]
     [Authorize(Roles = StaffRoles)]
     [EnableRateLimiting(RateLimitingExtensions.ContractWritePolicy)]

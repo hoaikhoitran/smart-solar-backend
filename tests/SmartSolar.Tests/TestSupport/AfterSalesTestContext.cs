@@ -51,6 +51,14 @@ public sealed class AfterSalesTestContext : IAsyncDisposable
             new AfterSalesPaymentSettlement(data, Terms(data)), Installation.OrderCodes, Installation.Files(db));
     }
 
+    /// <summary>Full production payment wiring: after-sales settlement, cash evidence verification and the post-PAID schedule confirmation.</summary>
+    public PaymentService PaymentsWithSchedule(AppDbContext? db = null)
+    {
+        var data = Data(db);
+        return new(new PaymentUnitOfWork(db ?? Db), Installation.PayOs.Gateway(), Installation.PaymentOptions, Clock, NullLogger<PaymentService>.Instance,
+            new AfterSalesPaymentSettlement(data, Terms(data)), Installation.OrderCodes, Installation.Files(db), Installation.Schedules(db));
+    }
+
     public ServiceCustomerHandlers Customer(AppDbContext? db = null)
     {
         var data = Data(db);

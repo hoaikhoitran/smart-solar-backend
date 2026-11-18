@@ -44,10 +44,21 @@ public interface IPaymentItemSettlement
     /// wrong amount, contract no longer payable): open a refund request for a Manager, in the same confirmation transaction.
     /// </summary>
     Task RecordUnappliedPaymentAsync(PaymentAttempt attempt, decimal amount, string reason, DateTimeOffset now, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Before a Manager/Admin records cash for <paramref name="items"/>: null when every line can still be applied now (the package / quotation waits for
+    /// exactly this attempt, the quotation has not expired); otherwise the reason, and no money is recorded. Called inside the confirmation transaction.
+    /// </summary>
+    Task<string?> CashSettlementProblemAsync(PaymentAttempt attempt, IReadOnlyList<PaymentAttemptItem> items, DateTimeOffset now, CancellationToken cancellationToken)
+        => Task.FromResult<string?>(null);
 }
 
 /// <summary>One after-sales line of a checkout (the contract line is added by the payment service itself).</summary>
 public sealed record CheckoutItem(string ItemType, Guid? SubscriptionId, Guid? QuotationId, decimal Amount);
+
+/// <param name="Method">ONLINE or CASH.</param>
+public sealed record PaymentAttemptFilter(string? Method = null, string? Status = null, DateTimeOffset? CreatedFrom = null, DateTimeOffset? CreatedTo = null,
+    Guid? CustomerUserId = null);
 
 public interface IPaymentUnitOfWork : ITransactionalUnitOfWork
 {
@@ -67,6 +78,12 @@ public interface IPaymentUnitOfWork : ITransactionalUnitOfWork
 
     Task<IReadOnlyList<PaymentAttemptItem>> GetItemsAsync(Guid attemptId, bool track, CancellationToken cancellationToken);
     void AddItem(PaymentAttemptItem item);
+
+    /// <summary>One page of attempts filtered in SQL (each filter null = any; dates on created_at, [from, to)), newest first (id tie-breaker), with the total.</summary>
+    Task<(IReadOnlyList<PaymentAttempt> Rows, int Total)> PageAttemptsAsync(PaymentAttemptFilter filter, int skip, int take, CancellationToken cancellationToken);
+
+    /// <summary>The lines of several attempts at once (no per-row query).</summary>
+    Task<IReadOnlyList<PaymentAttemptItem>> GetItemsForAttemptsAsync(IReadOnlyCollection<Guid> attemptIds, CancellationToken cancellationToken);
 
     void AddAttempt(PaymentAttempt attempt);
     void AddEvent(PaymentEvent paymentEvent);

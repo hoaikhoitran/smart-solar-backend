@@ -81,6 +81,46 @@ public sealed class StaffPaymentsController(PaymentService payments) : Operation
 public sealed record CashConfirmationRequest(decimal? Amount, string? ReceiptReference, Guid? EvidenceFileId, string? Note);
 
 /// <summary>
+/// Manager/Admin payment desk (2026-11-18): every payment attempt (contract, combined checkout, package, after-sales quotation), paged, and the
+/// cash confirmation of one CASH attempt by its id (the route for after-sales cash; a contract attempt follows the contract rules).
+/// </summary>
+[ApiController]
+[Route("api/manager/payments")]
+[Authorize(Roles = $"{RoleCodes.Manager},{RoleCodes.Admin}")]
+[RequireFeature(FeatureOptions.InstallationWorkflow)]
+public sealed class StaffPaymentDeskController(PaymentService payments) : OperationResultControllerBase
+{
+    /// <summary>GET ?method=CASH|ONLINE&amp;status=PENDING&amp;from=&amp;to=&amp;page=1&amp;pageSize=20 — newest first; `from`/`to` are ISO instants on the creation time.</summary>
+    [HttpGet]
+    [EnableRateLimiting(RateLimitingExtensions.ContractReadPolicy)]
+    public async Task<IActionResult> List([FromQuery] string? method, [FromQuery] string? status, [FromQuery] DateTimeOffset? from, [FromQuery] DateTimeOffset? to,
+        [FromQuery] int? page, [FromQuery] int? pageSize, CancellationToken cancellationToken)
+    {
+        var paging = SmartSolar.Modules.Common.Paging.PageRequest.Parse(page ?? 1, pageSize);
+        if (!paging.Succeeded) return Respond(paging);
+        var m = string.IsNullOrWhiteSpace(method) ? null : method.Trim().ToUpperInvariant();
+        if (m is not (null or PaymentMethods.Cash or PaymentMethods.Online)) return Invalid("method", "'method' must be CASH or ONLINE.");
+        var s = string.IsNullOrWhiteSpace(status) ? null : status.Trim().ToUpperInvariant();
+        if (s is not null && !PaymentStatuses.All.Contains(s)) return Invalid("status", $"'status' must be one of {string.Join(", ", PaymentStatuses.All)}.");
+        if (from is { } f && to is { } t && t <= f) return Invalid("to", "'to' must be after 'from'.");
+        return Ok(ApiResponse<SmartSolar.Modules.Common.Paging.PagedResult<StaffPaymentAttemptView>>.Success(
+            await payments.PageForStaffAsync(new PaymentAttemptFilter(m, s, from?.ToUniversalTime(), to?.ToUniversalTime()), paging.Value!, cancellationToken),
+            HttpContext.GetTraceId()));
+    }
+
+    /// <summary>Records the cash received for one CASH attempt: exact amount due, unique receipt, VERIFIED PAYMENT_EVIDENCE of the caller.</summary>
+    [HttpPost("{attemptId:guid}/cash/confirm")]
+    [EnableRateLimiting(RateLimitingExtensions.ContractWritePolicy)]
+    public async Task<IActionResult> ConfirmCash(Guid attemptId, [FromBody] CashConfirmationRequest request, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (request.Amount is not { } amount) return Invalid("amount", "'amount' is required.");
+        if (request.EvidenceFileId is not { } evidence) return Invalid("evidenceFileId", "'evidenceFileId' is required.");
+        return Respond(await payments.ConfirmCashAttemptAsync(user, attemptId, new CashConfirmation(amount, request.ReceiptReference, evidence, request.Note), cancellationToken));
+    }
+}
+
+/// <summary>
 /// PayOS webhook. Anonymous by design: authenticity comes from the HMAC signature (not the caller IP),
 /// deliveries are deduplicated by payload hash (replays are harmless), and no per-user rate limit
 /// applies so legitimate provider retries are never blocked. Only a generous per-IP abuse guard

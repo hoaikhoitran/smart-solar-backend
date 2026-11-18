@@ -22,8 +22,15 @@ public sealed class AdminKnowledgeDocumentsController(KnowledgeDocumentHandlers 
 {
     [HttpGet]
     [EnableRateLimiting(RateLimitingExtensions.RagAdminReadPolicy)]
-    public async Task<IActionResult> List([FromQuery] string? status, [FromQuery] string? category, CancellationToken cancellationToken)
-        => Respond(Modules.Common.Results.OperationResult<IReadOnlyList<KnowledgeDocumentView>>.Ok(await handlers.ListAsync(status, category, cancellationToken)));
+    public async Task<IActionResult> List([FromQuery] string? status, [FromQuery] string? category, [FromQuery] int? page, [FromQuery] int? pageSize,
+        CancellationToken cancellationToken)
+    {
+        var paging = SmartSolar.Modules.Common.Paging.PageRequest.Parse(page, pageSize);
+        if (!paging.Succeeded) return Respond(paging);
+        return paging.Value is { } p
+            ? Respond(Modules.Common.Results.OperationResult<SmartSolar.Modules.Common.Paging.PagedResult<KnowledgeDocumentView>>.Ok(await handlers.PageAsync(status, category, p, cancellationToken)))
+            : Respond(Modules.Common.Results.OperationResult<IReadOnlyList<KnowledgeDocumentView>>.Ok(await handlers.ListAsync(status, category, cancellationToken)));
+    }
 
     [HttpGet("{documentId:guid}")]
     [EnableRateLimiting(RateLimitingExtensions.RagAdminReadPolicy)]

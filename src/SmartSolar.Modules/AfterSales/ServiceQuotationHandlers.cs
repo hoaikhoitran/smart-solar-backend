@@ -17,7 +17,7 @@ public sealed record IssueQuotationInput(IReadOnlyList<QuotationLineInput> Lines
 /// computed and reserved at issuance (shared per-incident cap across all quotations of the incident). The customer accepts or rejects
 /// the whole quotation and pays the customer share through PayOS before the work starts.
 /// </summary>
-public sealed class ServiceQuotationHandlers(
+public sealed partial class ServiceQuotationHandlers(
     IAfterSalesUnitOfWork data,
     PaymentService payments,
     ISchedulingPolicyProvider policies,
@@ -30,12 +30,28 @@ public sealed class ServiceQuotationHandlers(
     {
         var request = await data.FindRequestAsync(requestId, false, cancellationToken);
         if (request is null) return Fail(AfterSalesErrorCodes.RequestNotFound, "Request was not found.");
-        var taskType = request.Kind == ServiceRequestKinds.OneTimeMaintenance ? SalesTaskTypes.MaintenanceQuotation : SalesTaskTypes.RepairQuotation;
+        // An inspected one-time maintenance uses the repair queue task opened by the coverage decision; a legacy one uses its maintenance task.
+        var inspected = (await data.ListItemsAsync(requestId, false, cancellationToken)).Count > 0;
+        var taskType = request.Kind == ServiceRequestKinds.OneTimeMaintenance && !inspected ? SalesTaskTypes.MaintenanceQuotation : SalesTaskTypes.RepairQuotation;
         var task = await data.FindOpenTaskAsync(requestId, null, taskType, false, cancellationToken);
         // Superseding an issued quotation is done by the Sales user who issued it (no new task is opened for a correction).
         var open = (await data.ListQuotationsAsync(requestId, false, cancellationToken)).FirstOrDefault(q => QuotationStatuses.IsOpen(q.Status));
         var mayIssue = task is not null && task.AssignedSalesUserId == salesUserId || open is not null && open.SalesUserId == salesUserId;
         if (!mayIssue) return Fail(Common.Results.CommonErrorCodes.Forbidden, "Claim the quotation task in the Sales queue first.");
+        return await IssueCoreAsync(salesUserId, QuotationIssuers.Sales, request, open, taskType, input, null, cancellationToken);
+    }
+
+    /// <summary>
+    /// The shared issue step (Sales or technician): state and live-checkout checks, line validation (every open chargeable / disaster item priced
+    /// exactly once), repair warranty, supersede of the open version, disaster support reservation, items QUOTED, queue task closed, request
+    /// AWAITING_CUSTOMER, customer notified — one transaction. <paramref name="componentsByItem"/> carries the catalog snapshot of a technician
+    /// quotation (null for Sales: the stored line shape is unchanged).
+    /// </summary>
+    private async Task<OperationResult<ServiceRequestView>> IssueCoreAsync(Guid salesUserId, string issuerRole, ServiceRequest request, ServiceQuotation? open,
+        string taskType, IssueQuotationInput input, IReadOnlyDictionary<Guid, IReadOnlyList<QuotationComponentSnapshot>>? componentsByItem,
+        CancellationToken cancellationToken)
+    {
+        var requestId = request.Id;
         if (request.Status is not (ServiceRequestStatuses.AwaitingQuotation or ServiceRequestStatuses.AwaitingCustomer))
             return Fail(AfterSalesErrorCodes.InvalidState, $"A {request.Status} request does not need a quotation.");
         if (open?.CurrentPaymentAttemptId is { } liveAttempt && await data.FindPaymentAttemptAsync(liveAttempt, cancellationToken) is { } attempt
@@ -51,7 +67,8 @@ public sealed class ServiceQuotationHandlers(
                 return Invalid("lines", "Amounts are whole VND, not negative, and every line costs something.");
         }
         var items = await data.ListItemsAsync(requestId, false, cancellationToken);
-        if (request.Kind == ServiceRequestKinds.Fault)
+        // FAULT requests and inspected one-time maintenance price their diagnosed items; a legacy one-time maintenance (no inspection) has free lines.
+        if (request.Kind == ServiceRequestKinds.Fault || items.Count > 0)
         {
             // The customer accepts the WHOLE chargeable part: every open chargeable / disaster item must be priced exactly once.
             var quotable = items.Where(i => ItemCoverages.NeedsQuotation(i.Coverage) && i.Status is ItemStatuses.Open or ItemStatuses.Quoted).Select(i => i.Id).ToHashSet();
@@ -85,20 +102,30 @@ public sealed class ServiceQuotationHandlers(
                 // Free the "one open quotation" slot (and the released support) before the new version is inserted.
                 await data.SaveChangesAsync(token);
                 var trackedItems = await data.ListItemsAsync(requestId, true, token);
-                var lines = input.Lines.Select(l => new
-                {
-                    itemId = l.ItemId,
-                    description = Text.Trim(l.Description, 300) ?? trackedItems.First(i => i.Id == l.ItemId).Description,
-                    partsAmount = l.PartsAmount,
-                    laborAmount = l.LaborAmount,
-                }).ToList();
+                var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+                var linesJson = componentsByItem is null
+                    ? JsonSerializer.Serialize(input.Lines.Select(l => new
+                    {
+                        itemId = l.ItemId,
+                        description = Text.Trim(l.Description, 300) ?? trackedItems.First(i => i.Id == l.ItemId).Description,
+                        partsAmount = l.PartsAmount,
+                        laborAmount = l.LaborAmount,
+                    }).ToList(), json)
+                    : JsonSerializer.Serialize(input.Lines.Select(l => new
+                    {
+                        itemId = l.ItemId,
+                        description = Text.Trim(l.Description, 300) ?? trackedItems.First(i => i.Id == l.ItemId).Description,
+                        partsAmount = l.PartsAmount,
+                        laborAmount = l.LaborAmount,
+                        components = componentsByItem[l.ItemId!.Value],
+                    }).ToList(), json);
 
                 var quotation = new ServiceQuotation
                 {
                     Id = Guid.NewGuid(), RequestId = requestId, Version = quotations.Count == 0 ? 1 : quotations.Max(q => q.Version) + 1,
                     IsSupplementary = quotations.Any(q => q.Status == QuotationStatuses.Paid),
                     SupersedesQuotationId = quotations.Where(q => q.Status == QuotationStatuses.Superseded).OrderByDescending(q => q.Version).FirstOrDefault()?.Id,
-                    Status = QuotationStatuses.Issued, SalesUserId = salesUserId, LinesJson = JsonSerializer.Serialize(lines, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+                    Status = QuotationStatuses.Issued, SalesUserId = salesUserId, IssuedByRole = issuerRole, LinesJson = linesJson,
                     PartsAmount = input.Lines.Sum(l => l.PartsAmount), LaborAmount = input.Lines.Sum(l => l.LaborAmount), RepairWarrantyMonths = warrantyMonths,
                     Note = Text.Trim(input.Note, 1000), IssuedAt = now, ExpiresAt = now.AddDays(policy.Get(AfterSalesSettingKeys.QuotationValidityDays)), UpdatedAt = now,
                 };
@@ -129,14 +156,15 @@ public sealed class ServiceQuotationHandlers(
                 }
                 if (await data.FindOpenTaskAsync(requestId, null, taskType, true, token) is { } openTask)
                 {
-                    openTask.Status = SalesTaskStatuses.Done;
+                    // A task nobody claimed (the technician priced the request) is no longer needed: CANCELLED, never DONE without an owner.
+                    openTask.Status = openTask.AssignedSalesUserId is null ? SalesTaskStatuses.Cancelled : SalesTaskStatuses.Done;
                     openTask.CompletedAt = now;
-                    openTask.Outcome = "QUOTATION_ISSUED";
+                    openTask.Outcome = issuerRole == QuotationIssuers.Technician ? "QUOTATION_ISSUED_BY_TECHNICIAN" : "QUOTATION_ISSUED";
                     openTask.UpdatedAt = now;
                     openTask.Revision++;
                 }
                 AfterSalesHistory.Record(data, EventSubjects.Request, requestId, "QUOTATION_ISSUED", salesUserId,
-                    $"v{quotation.Version}: total {quotation.TotalAmount:0}, disaster support {quotation.DisasterSupportAmount:0}, customer {quotation.CustomerAmount:0}, expires {quotation.ExpiresAt:O}", now);
+                    $"v{quotation.Version} by {issuerRole}: total {quotation.TotalAmount:0}, disaster support {quotation.DisasterSupportAmount:0}, customer {quotation.CustomerAmount:0}, expires {quotation.ExpiresAt:O}", now);
                 AfterSalesWorkflow.Move(data, tracked, ServiceRequestStatuses.AwaitingCustomer, salesUserId, null, now);
                 AfterSalesHistory.Notify(data, tracked.CustomerUserId, "QUOTATION_ISSUED", $"A quotation for {tracked.RequestNumber} is ready ({quotation.CustomerAmount:N0} VND).", now, requestId);
                 await data.SaveChangesAsync(token);
@@ -214,8 +242,10 @@ public sealed class ServiceQuotationHandlers(
             return OperationResult<PaymentAttemptView>.Fail(AfterSalesErrorCodes.InvalidState, "Accept the quotation before paying.");
         if (quotation.ExpiresAt <= now) return OperationResult<PaymentAttemptView>.Fail(AfterSalesErrorCodes.QuotationExpired, "This quotation has expired.");
         if (quotation.CurrentPaymentAttemptId is { } current && await payments.GetAttemptForCustomerAsync(customerUserId, current, reconcile: true, cancellationToken) is { } live
-            && PaymentStatuses.Payable.Contains(live.Status) && live.ExpiresAt > now)
-            return OperationResult<PaymentAttemptView>.Ok(live);
+            && PaymentStatuses.Payable.Contains(live.Status) && (live.ExpiresAt > now || live.Method == PaymentMethods.Cash))
+            return live.Method == PaymentMethods.Cash
+                ? OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CashSelected, "Cash payment was chosen for this quotation. Cancel the cash choice first to pay online.")
+                : OperationResult<PaymentAttemptView>.Ok(live);
 
         var policy = await policies.GetAsync(cancellationToken);
         var expiresAt = now.AddMinutes(policy.Get(AfterSalesSettingKeys.CheckoutExpiryMinutes));
@@ -233,6 +263,68 @@ public sealed class ServiceQuotationHandlers(
                 tracked.Revision++;
                 return null;
             }, cancellationToken);
+    }
+
+    /// <summary>
+    /// The customer chooses to pay an ACCEPTED quotation in cash (2026-11-18): a pending CASH attempt for exactly the customer amount, not a payment.
+    /// A Manager/Admin confirms the receipt (<see cref="PaymentService.ConfirmCashAttemptAsync"/>) before the quotation expires; the choice never
+    /// extends the expiry (the sweep withdraws it when the quotation expires). An open online link is checked with PayOS first (paid → refused;
+    /// still open → cancel it first). Repeating the choice returns the same pending attempt.
+    /// </summary>
+    public async Task<OperationResult<PaymentAttemptView>> SelectCashAsync(Guid customerUserId, Guid quotationId, CancellationToken cancellationToken)
+    {
+        var quotation = await data.FindQuotationAsync(quotationId, false, cancellationToken);
+        var request = quotation is null ? null : await data.FindRequestAsync(quotation.RequestId, false, cancellationToken);
+        if (quotation is null || request?.CustomerUserId != customerUserId)
+            return OperationResult<PaymentAttemptView>.Fail(AfterSalesErrorCodes.QuotationNotFound, "Quotation was not found.");
+        var now = time.GetUtcNow();
+        if (quotation.Status == QuotationStatuses.Paid) return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This quotation is already paid.");
+        if (quotation.Status != QuotationStatuses.Accepted)
+            return OperationResult<PaymentAttemptView>.Fail(AfterSalesErrorCodes.InvalidState, "Accept the quotation before paying.");
+        if (quotation.ExpiresAt <= now) return OperationResult<PaymentAttemptView>.Fail(AfterSalesErrorCodes.QuotationExpired, "This quotation has expired.");
+        if (quotation.CurrentPaymentAttemptId is { } current && await payments.GetAttemptForCustomerAsync(customerUserId, current, reconcile: true, cancellationToken) is { } live)
+        {
+            if (live.Status == PaymentStatuses.Paid) return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This quotation is already paid.");
+            if (PaymentStatuses.Payable.Contains(live.Status))
+                return live.Method == PaymentMethods.Cash
+                    ? OperationResult<PaymentAttemptView>.Ok(live)
+                    : OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CheckoutInProgress,
+                        "An online payment is in progress. Cancel it first (its status is checked with the payment provider) to pay in cash.");
+        }
+        var itemType = request.Kind == ServiceRequestKinds.OneTimeMaintenance ? PaymentItemTypes.MaintenanceQuotation : PaymentItemTypes.RepairQuotation;
+        var created = await payments.CreateCashCheckoutAsync(customerUserId, null, [new CheckoutItem(itemType, null, quotation.Id, quotation.CustomerAmount)],
+            async (attemptId, token) =>
+            {
+                var tracked = await data.FindQuotationAsync(quotationId, true, token);
+                if (tracked is null || tracked.Status != QuotationStatuses.Accepted || tracked.Revision != quotation.Revision)
+                    return "The quotation changed meanwhile. Reload and try again.";
+                tracked.CurrentPaymentAttemptId = attemptId;
+                tracked.UpdatedAt = time.GetUtcNow();
+                tracked.Revision++;
+                AfterSalesHistory.Record(data, EventSubjects.Request, tracked.RequestId, "CASH_SELECTED", customerUserId, $"v{tracked.Version}: {tracked.CustomerAmount:0} VND", tracked.UpdatedAt);
+                return null;
+            }, cancellationToken);
+        if (created.ErrorCode == PaymentErrorCodes.CheckoutInProgress
+            && (await data.FindQuotationAsync(quotationId, false, cancellationToken))?.CurrentPaymentAttemptId is { } winner
+            && await payments.GetAttemptForCustomerAsync(customerUserId, winner, reconcile: false, cancellationToken) is { Method: PaymentMethods.Cash } same
+            && PaymentStatuses.Payable.Contains(same.Status))
+            return OperationResult<PaymentAttemptView>.Ok(same);   // a concurrent identical choice won: idempotent
+        return created;
+    }
+
+    /// <summary>The customer withdraws the pending cash choice of a quotation (to pay online instead). A confirmed one stays PAID.</summary>
+    public async Task<OperationResult<PaymentAttemptView>> CancelCashAsync(Guid customerUserId, Guid quotationId, CancellationToken cancellationToken)
+    {
+        var quotation = await data.FindQuotationAsync(quotationId, false, cancellationToken);
+        var request = quotation is null ? null : await data.FindRequestAsync(quotation.RequestId, false, cancellationToken);
+        if (quotation is null || request?.CustomerUserId != customerUserId)
+            return OperationResult<PaymentAttemptView>.Fail(AfterSalesErrorCodes.QuotationNotFound, "Quotation was not found.");
+        if (quotation.CurrentPaymentAttemptId is not { } current
+            || await payments.GetAttemptForCustomerAsync(customerUserId, current, reconcile: false, cancellationToken) is not { Method: PaymentMethods.Cash } cash
+            || !PaymentStatuses.Payable.Contains(cash.Status))
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CashNotSelected, "There is no pending cash choice for this quotation.");
+        await payments.CancelAttemptAsync(current, "cash choice cancelled by customer", cancellationToken);
+        return OperationResult<PaymentAttemptView>.Ok((await payments.GetAttemptForCustomerAsync(customerUserId, current, reconcile: false, cancellationToken))!);
     }
 
     // ================================================================== helpers
