@@ -20,8 +20,10 @@ public sealed record ContractedEquipment(Guid ProductId, string ProductType, str
 /// A SIGNED or PAID contract as the installation schedule sees it. <see cref="SurveyTechnicianUserId"/> = the technician of the request's
 /// latest COMPLETED on-site survey report (the technician responsible for agreeing the installation date); null when there is none.
 /// </summary>
+/// <param name="Prepaid">The contract was created from an installation quotation whose payment was verified (technician-led flow): paid before it was
+/// signed. Such a contract can be scheduled at once; its schedule is confirmed when the signed contract becomes PAID.</param>
 public sealed record ScheduleContractInfo(Guid ContractId, string ContractNumber, string Status, Guid SurveyRequestId, Guid CustomerUserId, Guid PropertySiteId,
-    Guid? SurveyTechnicianUserId, string PropertyName, string CustomerName);
+    Guid? SurveyTechnicianUserId, string PropertyName, string CustomerName, bool Prepaid = false);
 
 public interface IInstallationUnitOfWork : ITransactionalUnitOfWork, IInAppNotificationWriter
 {

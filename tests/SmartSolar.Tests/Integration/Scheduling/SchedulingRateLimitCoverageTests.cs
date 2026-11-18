@@ -50,7 +50,8 @@ public sealed class SchedulingRateLimitCoverageTests
     [InlineData(typeof(CustomerInstallationsController))]
     public void Every_installation_endpoint_has_an_installation_policy(Type controller)
     {
-        var policies = RateLimitingExtensions.InstallationWorkflowPolicies.Select(p => p.Name).ToHashSet();
+        // A retired customer step (410, 2026-11-18) keeps the shared retired-endpoint policy.
+        var policies = RateLimitingExtensions.InstallationWorkflowPolicies.Select(p => p.Name).Append(RateLimitingExtensions.RetiredEndpointPolicy).ToHashSet();
         Assert.All(Actions(controller), a => Assert.True(PolicyOf(a.Action) is { } policy && policies.Contains(policy),
             $"{controller.Name}.{a.Action.Name} has no installation rate-limit policy."));
     }

@@ -263,6 +263,50 @@ public sealed class ServiceCustomerHandlers(
         }
     }
 
+    /// <summary>
+    /// Technician-led closure (2026-11-18): after the work report the customer checks the result with the technician on site; the technician records
+    /// the customer's confirmation with their own account (note required: what was checked / said; optional verified SERVICE_EVIDENCE photos, e.g. the
+    /// signed service report). Same effect as the customer's acceptance — maintenance visit consumed, disaster support consumed — and COMPLETED, so the
+    /// customer never has to open the app to close it. Only a technician with a live visit on the request; anyone else gets 404. A customer who
+    /// disagrees is not recorded here: the request stays waiting (the customer may dispute it in the app, or a Manager follows up).
+    /// </summary>
+    public async Task<OperationResult<ServiceRequestView>> ConfirmCompletionOnSiteAsync(Guid technicianUserId, Guid requestId, string? note,
+        IReadOnlyList<Guid>? evidenceFileIds, CancellationToken cancellationToken)
+    {
+        var why = Text.Trim(note, 1000);
+        if (why is null) return Fail(AfterSalesErrorCodes.ReasonRequired, "Record how the customer confirmed the result on site.");
+        var request = await data.FindRequestAsync(requestId, false, cancellationToken);
+        var assigned = request is not null && (await data.ListVisitsAsync(requestId, false, cancellationToken))
+            .Any(v => v.TechnicianUserId == technicianUserId && v.Status is not (VisitStatuses.Declined or VisitStatuses.Cancelled));
+        if (!assigned) return NotFound();
+        var evidence = await VerifiedEvidenceAsync(technicianUserId, evidenceFileIds ?? [], cancellationToken);
+        if (!evidence.Succeeded) return evidence.As<ServiceRequestView>();
+        try
+        {
+            var result = await data.ExecuteInTransactionAsync<OperationResult<bool>>(async token =>
+            {
+                var tracked = (await data.FindRequestAsync(requestId, true, token))!;
+                if (tracked.Status != ServiceRequestStatuses.PendingCustomerAcceptance) return (Bad("The work is not waiting for the customer's confirmation."), false);
+                var now = time.GetUtcNow();
+                foreach (var fileId in evidence.Value!)
+                    data.Add(new ServiceEvidence { Id = Guid.NewGuid(), RequestId = requestId, FileId = fileId, Caption = "on-site confirmation", AddedByUserId = technicianUserId, AddedAt = now });
+                await FinalizeAcceptedAsync(tracked, technicianUserId, now, token);
+                tracked.CompletedAt = now;
+                AfterSalesHistory.Record(data, EventSubjects.Request, requestId, "COMPLETION_CONFIRMED_ON_SITE", technicianUserId, why, now);
+                AfterSalesWorkflow.Move(data, tracked, ServiceRequestStatuses.Completed, technicianUserId, "confirmed by the customer on site (recorded by the technician)", now);
+                await data.SaveChangesAsync(token);
+                return (OperationResult<bool>.Ok(true), true);
+            }, cancellationToken);
+            return result.Succeeded
+                ? OperationResult<ServiceRequestView>.Ok(await views.RequestAsync((await data.FindRequestAsync(requestId, false, cancellationToken))!, true, cancellationToken))
+                : result.As<ServiceRequestView>();
+        }
+        catch (PersistenceConflictException)
+        {
+            return Fail(AfterSalesErrorCodes.StaleRevision, "The request changed meanwhile. Reload and try again.");
+        }
+    }
+
     private async Task FinalizeAcceptedAsync(ServiceRequest request, Guid customerUserId, DateTimeOffset now, CancellationToken token)
     {
         // A maintenance visit counts as used only now (never on silence, absence or a rejected result).

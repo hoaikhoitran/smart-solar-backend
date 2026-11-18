@@ -34,3 +34,12 @@ public sealed record TechnicianCartCreateRequest(string? Notes);
 public sealed record CartLineRequest(int? Revision, Guid? ProductId, decimal Quantity);
 
 public sealed record CartLineQuantityRequest(int? Revision, decimal Quantity);
+
+/// <summary>
+/// The technician records what the customer decided on site: decision AGREED, DECLINED or REVISION_NEEDED; <c>revision</c> = the quotation revision
+/// shown to the customer; <c>note</c> is required for DECLINED / REVISION_NEEDED.
+/// </summary>
+public sealed record OnSiteDecisionRequest(string? Decision, int? Revision, string? Note);
+
+/// <summary>The technician opens the payment of the agreed quotation: method ONLINE (PayOS QR on the technician's device) or CASH.</summary>
+public sealed record QuotationPaymentRequest(string? Method);

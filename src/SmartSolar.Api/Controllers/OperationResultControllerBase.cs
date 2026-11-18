@@ -55,6 +55,12 @@ public abstract class OperationResultControllerBase : ControllerBase
         => StatusCode(StatusCodes.Status410Gone, ApiResponse<object>.Failure(new ApiError(EndpointRetiredCode,
             "This endpoint was retired by the simplified quotation, contract and payment flow (2026-11-17).", new { replacement }), HttpContext.GetTraceId()));
 
+    /// <summary>410 for a customer approval / selection step retired by the technician-led on-site flow (2026-11-18): the customer only follows progress.</summary>
+    protected IActionResult RetiredOnSite(string replacement)
+        => StatusCode(StatusCodes.Status410Gone, ApiResponse<object>.Failure(new ApiError(EndpointRetiredCode,
+            "This customer approval step was retired (2026-11-18): the technician presents, records and completes it on site; the customer app only follows progress.",
+            new { replacement }), HttpContext.GetTraceId()));
+
     protected IActionResult Invalid(string field, string message)
         => BadRequest(ApiResponse<object>.Failure(new ApiError(CommonErrorCodes.ValidationFailed, "One or more fields are invalid.",
             new Dictionary<string, string[]> { [field] = [message] }), HttpContext.GetTraceId()));

@@ -67,3 +67,12 @@ public sealed record WarrantyOptionRequest(string? Kind, int Months, bool IsActi
 
 /// <summary>Verified manufacturer-warranty activation: ISO 8601 date with offset, a verified PROJECT_DOCUMENT file, and a reason.</summary>
 public sealed record WarrantyActivationRequest(string? ActivatedAt, Guid? EvidenceFileId, string? Reason);
+
+/// <summary>On-site decision on a technician after-sales quotation: decision AGREED or DECLINED (note required for DECLINED).</summary>
+public sealed record ServiceOnSiteDecisionRequest(string? Decision, string? Note);
+
+/// <summary>Payment opened on site by the technician: method ONLINE (PayOS QR) or CASH.</summary>
+public sealed record ServicePaymentMethodRequest(string? Method);
+
+/// <summary>The customer confirmed the work on site: note required; optional verified SERVICE_EVIDENCE file ids (≤ 10).</summary>
+public sealed record OnSiteCompletionRequest(string? Note, IReadOnlyList<Guid>? EvidenceFileIds);

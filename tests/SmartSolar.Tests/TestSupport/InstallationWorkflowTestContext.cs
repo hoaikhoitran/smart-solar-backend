@@ -52,15 +52,22 @@ public sealed class InstallationWorkflowTestContext : IAsyncDisposable
     public LegacyAutomaticQuotationSurvey OnSiteWithAutomaticQuotation(AppDbContext? db = null)
         => new(new OnSiteSurveyHandlers(new OnSiteSurveyUnitOfWork(db ?? Db), Files(db), Scheduling.OnSiteOptions, Scheduling.Policies, Clock, Quotations(db)), Quotations(db));
 
-    /// <summary>The production wiring of the simplified flow: acceptance drafts the contract in the same transaction.</summary>
-    public SmartSolar.Modules.Quotations.QuotationHandlers QuotationsWithContracts(AppDbContext? db = null)
-        => new(new QuotationUnitOfWork(db ?? Db), Files(db), QuotationOptions, Clock, Contracts(db));
-
-    /// <summary>The production wiring of payments, including cash evidence verification.</summary>
+    /// <summary>The production wiring of payments, including cash evidence verification and the installation-quotation settlement.</summary>
     public SmartSolar.Modules.Payments.PaymentService PaymentsWithCash(AppDbContext? db = null) => new(new PaymentUnitOfWork(db ?? Db), PayOs.Gateway(), PaymentOptions, Clock,
-        NullLogger<SmartSolar.Modules.Payments.PaymentService>.Instance, orderCodes: OrderCodes, files: Files(db));
+        NullLogger<SmartSolar.Modules.Payments.PaymentService>.Instance, settlement: Settlement(db), orderCodes: OrderCodes, files: Files(db));
 
     public SmartSolar.Modules.CustomerContracts.ContractHandlers Contracts(AppDbContext? db = null) => new(new ContractUnitOfWork(db ?? Db), Files(db), Clock);
+
+    /// <summary>Production contract wiring: a prepaid contract whose signature is approved becomes PAID and its schedule is confirmed at once.</summary>
+    public SmartSolar.Modules.CustomerContracts.ContractHandlers ContractsWithFollowUp(AppDbContext? db = null)
+        => new(new ContractUnitOfWork(db ?? Db), Files(db), Clock, Schedules(db));
+
+    /// <summary>Production settlement of verified payments: an installation-quotation line creates the contract (no after-sales lines here).</summary>
+    public SmartSolar.Modules.CustomerContracts.InstallationQuotationPaymentSettlement Settlement(AppDbContext? db = null) => new(Contracts(db));
+
+    /// <summary>Technician-led on-site payment of an agreed installation quotation (production wiring).</summary>
+    public SmartSolar.Modules.Quotations.OnSiteQuotationPaymentHandlers OnSitePayments(AppDbContext? db = null)
+        => new(new QuotationUnitOfWork(db ?? Db), PaymentsWithCash(db), PaymentOptions, Clock);
     public FakePayOsServer PayOs { get; } = new();
     public SmartSolar.Modules.Payments.PaymentOptions PaymentOptions { get; } = new() { ReturnUrl = "https://app.test/payment/return", CancelUrl = "https://app.test/payment/cancel" };
     /// <summary>Replaces the random order-code source of every PaymentService built here (forces collisions in tests).</summary>
@@ -95,7 +102,7 @@ public sealed class InstallationWorkflowTestContext : IAsyncDisposable
 
     /// <summary>Production payment wiring: cash evidence verification and the post-PAID schedule confirmation.</summary>
     public SmartSolar.Modules.Payments.PaymentService PaymentsWithSchedule(AppDbContext? db = null) => new(new PaymentUnitOfWork(db ?? Db), PayOs.Gateway(), PaymentOptions,
-        Clock, NullLogger<SmartSolar.Modules.Payments.PaymentService>.Instance, orderCodes: OrderCodes, files: Files(db), paidFollowUp: Schedules(db));
+        Clock, NullLogger<SmartSolar.Modules.Payments.PaymentService>.Instance, settlement: Settlement(db), orderCodes: OrderCodes, files: Files(db), paidFollowUp: Schedules(db));
 
     /// <summary>Option B: direct survey booking (same booking rules as a pre-survey request).</summary>
     public SmartSolar.Modules.Scheduling.PreSurveyAppointments.DirectSurveyBookingHandler DirectBooking()

@@ -442,7 +442,7 @@ public sealed class InstallationTests
         Assert.Equal(InstallationErrorCodes.ProjectNotFound, (await RegisterPanelAndInverterAsync(ctx, project.ProjectId, stranger.Id)).ErrorCode);
         Assert.Equal(InstallationErrorCodes.ProjectNotFound, (await installs.ReportCompletionAsync(stranger.Id, project.ProjectId, "done", null, None)).ErrorCode);
         Assert.Equal(InstallationErrorCodes.ProjectNotFound, (await installs.GetForCustomerAsync(stranger.Id, project.ProjectId, None)).ErrorCode);
-        Assert.Equal(InstallationErrorCodes.ProjectNotFound, (await installs.DecideAcceptanceAsync(Guid.NewGuid(), project.ProjectId, true, null, None)).ErrorCode);
+        Assert.Equal(InstallationErrorCodes.ProjectNotFound, (await installs.AcceptInternallyAsync(paid.ManagerId, Guid.NewGuid(), 0, "accepted", null, None)).ErrorCode);
 
         ctx.Clock.Now = At(8, 30, Wed).ToUniversalTime();
         Assert.Equal(InstallationErrorCodes.AssignmentNotAccepted, (await installs.StartProjectAsync(tech.Id, project.ProjectId, None)).ErrorCode);
@@ -463,15 +463,15 @@ public sealed class InstallationTests
         var evidence = await AddCompletionEvidenceAsync(ctx, project.ProjectId, tech);
         Assert.True((await RegisterPanelAndInverterAsync(ctx, project.ProjectId, tech)).Succeeded);
         var reported = (await installs.ReportCompletionAsync(tech, project.ProjectId, "Done", null, None)).Value!;
-        var decided = (await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, false, "Loose cable", None)).Value!;
+        Assert.True((await InternalAcceptance.ReworkAsync(ctx, project.ProjectId, "Loose cable", paid.ManagerId)).Succeeded);
 
         static string Json(object value) => JsonSerializer.Serialize(value, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         var staffOnly = new[] { "\"checklist\"", "\"events\"", "\"assignments\"", "\"cancellationReason\"", "\"responsibleTechnician\"" };
-        foreach (var body in new[] { Json(evidence), Json(reported), Json(decided), Json((await installs.GetForCustomerAsync(paid.CustomerId, project.ProjectId, None)).Value!),
+        foreach (var body in new[] { Json(evidence), Json(reported), Json((await installs.GetForCustomerAsync(paid.CustomerId, project.ProjectId, None)).Value!),
                      Json(await installs.ListForCustomerAsync(paid.CustomerId, None)), Json(await installs.ListForTechnicianAsync(tech, None)) })
             Assert.All(staffOnly, field => Assert.DoesNotContain(field, body));
         // The customer never sees technician ids; the staff view has everything.
-        Assert.DoesNotContain(tech.ToString(), Json(decided));
+        Assert.DoesNotContain(tech.ToString(), Json((await installs.GetForCustomerAsync(paid.CustomerId, project.ProjectId, None)).Value!));
         var staff = Json((await installs.GetForManagerAsync(project.ProjectId, None)).Value!);
         Assert.All(staffOnly.Take(3), field => Assert.Contains(field, staff));
     }
@@ -652,7 +652,7 @@ public sealed class InstallationTests
         var revision = (await installs.GetForManagerAsync(project.ProjectId, None)).Value!.Revision;
         Assert.Equal(InstallationErrorCodes.ReasonRequired, (await installs.ApproveSubstitutionAsync(manager, project.ProjectId, revision, " ", None)).ErrorCode);
         var approved = (await installs.ApproveSubstitutionAsync(manager, project.ProjectId, revision, "One spare panel to fill the roof row", None)).Value!;
-        Assert.Equal(EquipmentComparisonStatuses.CustomerApprovalRequired, approved.Equipment!.Status);
+        Assert.Equal(EquipmentComparisonStatuses.Approved, approved.Equipment!.Status);   // internal decision, no customer step
         Assert.Equal(InstallationErrorCodes.InvalidState, (await installs.ApproveSubstitutionAsync(manager, project.ProjectId, approved.Revision, "again", None)).ErrorCode);
 
         var reported = (await installs.ReportCompletionAsync(tech, project.ProjectId, "All panels installed and commissioned.", null, None)).Value!;
@@ -664,7 +664,7 @@ public sealed class InstallationTests
     }
 
     [Fact]
-    public async Task Customer_rework_opens_a_new_round_that_needs_new_evidence_then_acceptance_completes_and_hands_over()
+    public async Task Internal_rework_opens_a_new_round_that_needs_new_evidence_then_internal_acceptance_completes_and_hands_over()
     {
         var ctx = InstallationWorkflowTestContext.Create();
         await using var _ = ctx;
@@ -674,14 +674,17 @@ public sealed class InstallationTests
         await AddCompletionEvidenceAsync(ctx, project.ProjectId, tech);
         Assert.True((await RegisterPanelAndInverterAsync(ctx, project.ProjectId, tech)).Succeeded);
         await installs.ReportCompletionAsync(tech, project.ProjectId, "Done", null, None);
-        // BL-17: while the customer judges round 1, round 1 is shown (not the next round).
+        // BL-17: while round 1 is judged, round 1 is shown (not the next round); the customer only follows it.
         Assert.Equal(1, (await installs.GetForCustomerAsync(paid.CustomerId, project.ProjectId, None)).Value!.CurrentRound);
 
-        Assert.Equal(CommonErrorCodes.ValidationFailed, (await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, false, " ", None)).ErrorCode);
-        var rework = (await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, false, "Cable tray loose on the east side", None)).Value!;
+        Assert.Equal(InstallationErrorCodes.ReasonRequired, (await InternalAcceptance.ReworkAsync(ctx, project.ProjectId, " ", paid.ManagerId)).ErrorCode);
+        Assert.Equal(InstallationErrorCodes.ReasonRequired, (await InternalAcceptance.AcceptAsync(ctx, project.ProjectId, paid.ManagerId, note: " ")).ErrorCode);
+        Assert.True((await InternalAcceptance.ReworkAsync(ctx, project.ProjectId, "Cable tray loose on the east side", paid.ManagerId)).Succeeded);
+        var rework = (await installs.GetForCustomerAsync(paid.CustomerId, project.ProjectId, None)).Value!;
         Assert.Equal(InstallationStatuses.ReworkRequired, rework.Status);
         Assert.Equal(2, rework.CurrentRound);
-        Assert.Equal(InstallationErrorCodes.InvalidState, (await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, false, "again", None)).ErrorCode);
+        Assert.Equal(InstallationErrorCodes.InvalidState, (await InternalAcceptance.ReworkAsync(ctx, project.ProjectId, "again", paid.ManagerId)).ErrorCode);
+        Assert.Equal(InstallationErrorCodes.InvalidState, (await InternalAcceptance.AcceptAsync(ctx, project.ProjectId, paid.ManagerId)).ErrorCode);
 
         // Round-1 evidence does not count for round 2.
         Assert.Equal(InstallationErrorCodes.EvidenceRequired, (await installs.ReportCompletionAsync(tech, project.ProjectId, "Fixed", null, None)).ErrorCode);
@@ -689,13 +692,15 @@ public sealed class InstallationTests
         Assert.Equal(new[] { 1, 2 }, fixedView.Evidence.Select(e => e.Round));
         Assert.True((await installs.ReportCompletionAsync(tech, project.ProjectId, "Cable tray fixed.", null, None)).Succeeded);
 
-        var completed = (await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, true, null, None)).Value!;
+        Assert.True((await InternalAcceptance.AcceptAsync(ctx, project.ProjectId, paid.ManagerId)).Succeeded);
+        var completed = (await installs.GetForCustomerAsync(paid.CustomerId, project.ProjectId, None)).Value!;
         Assert.Equal(InstallationStatuses.Completed, completed.Status);
         Assert.Equal(new[] { AcceptanceDecisions.ReworkRequested, AcceptanceDecisions.Accepted }, completed.Acceptances.Select(a => a.Decision));
-        var repeated = (await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, true, null, None)).Value!;   // idempotent
-        Assert.Equal(completed.Revision, repeated.Revision);
-        Assert.Equal(InstallationErrorCodes.InvalidState, (await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, false, "late", None)).ErrorCode);
-        Assert.Single(await ctx.Db.InstallationEvents.Where(e => e.ProjectId == project.ProjectId && e.EventType == InstallationEventTypes.CustomerAccepted).ToListAsync());
+        Assert.Equal(InstallationErrorCodes.InvalidState, (await InternalAcceptance.AcceptAsync(ctx, project.ProjectId, paid.ManagerId)).ErrorCode);   // decided once
+        Assert.Equal(InstallationErrorCodes.InvalidState, (await InternalAcceptance.ReworkAsync(ctx, project.ProjectId, "late", paid.ManagerId)).ErrorCode);
+        var accepted = Assert.Single(await ctx.Db.InstallationEvents.Where(e => e.ProjectId == project.ProjectId && e.EventType == InstallationEventTypes.InternallyAccepted).ToListAsync());
+        Assert.Equal(paid.ManagerId, accepted.ActorUserId);   // the deciding Manager, never the customer
+        Assert.Empty(await ctx.Db.InstallationEvents.Where(e => e.ProjectId == project.ProjectId && e.EventType == InstallationEventTypes.CustomerAccepted).ToListAsync());
         Assert.Equal(AssignmentStatuses.Completed, (await ctx.Db.InstallationAssignments.SingleAsync(a => a.TechnicianUserId == tech)).Status);
         // The technician still sees the completed job; the interval is no longer a busy commitment.
         Assert.Equal(AssignmentStatuses.Completed, (await installs.GetForTechnicianAsync(tech, project.ProjectId, None)).Value!.MyAssignmentStatus);
@@ -732,7 +737,7 @@ public sealed class InstallationTests
         await AddCompletionEvidenceAsync(ctx, project.ProjectId, tech);
         Assert.True((await RegisterPanelAndInverterAsync(ctx, project.ProjectId, tech)).Succeeded);
         await installs.ReportCompletionAsync(tech, project.ProjectId, "Done", null, None);
-        await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, false, "Fix the conduit", None);
+        Assert.True((await InternalAcceptance.ReworkAsync(ctx, project.ProjectId, "Fix the conduit", paid.ManagerId)).Succeeded);
         Assert.Equal(InstallationErrorCodes.InvalidState, (await installs.CancelAsync(paid.ManagerId, project.ProjectId,
             (await installs.GetForManagerAsync(project.ProjectId, None)).Value!.Revision, "too late", None)).ErrorCode);
 

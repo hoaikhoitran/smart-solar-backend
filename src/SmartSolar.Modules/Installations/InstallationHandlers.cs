@@ -379,9 +379,9 @@ public sealed partial class InstallationHandlers(
     }
 
     /// <summary>
-    /// Manager/Admin: PENDING_CUSTOMER_ACCEPTANCE → REWORK_REQUIRED without the customer (e.g. the report is incomplete or wrong).
-    /// The pending acceptance round is closed as REWORK_REQUESTED with the manager as decider and the reason, exactly like a customer
-    /// rework, so the next completion report needs new evidence. Completion itself stays a customer decision.
+    /// Manager/Admin: awaiting internal acceptance (stored PENDING_CUSTOMER_ACCEPTANCE) → REWORK_REQUIRED (the report is incomplete or the result
+    /// is not acceptable). The pending acceptance round is closed as REWORK_REQUESTED with the manager as decider and the reason, so the next
+    /// completion report needs new evidence. The other outcome is <see cref="AcceptInternallyAsync"/>.
     /// </summary>
     public async Task<OperationResult<InstallationStaffView>> ReturnToReworkAsync(Guid managerUserId, Guid projectId, int expectedRevision, string? reason,
         CancellationToken cancellationToken)
@@ -392,7 +392,7 @@ public sealed partial class InstallationHandlers(
         var result = await MutateAsync(projectId, expectedRevision, null, async (p, now, token) =>
         {
             if (p.Status != InstallationStatuses.PendingCustomerAcceptance)
-                return Fail(InstallationErrorCodes.InvalidState, "Only an installation waiting for the customer's acceptance can be returned to rework.");
+                return Fail(InstallationErrorCodes.InvalidState, "Only an installation waiting for its acceptance can be returned to rework.");
             var pending = (await unitOfWork.GetAcceptancesAsync(projectId, true, token)).SingleOrDefault(a => a.Decision == AcceptanceDecisions.Pending);
             if (pending is null) return Fail(InstallationErrorCodes.InvalidState, "There is no pending completion report.");
             pending.Decision = AcceptanceDecisions.ReworkRequested;
@@ -404,6 +404,62 @@ public sealed partial class InstallationHandlers(
             Event(projectId, InstallationEventTypes.ReturnedToRework, managerUserId, from, p.Status, $"round {pending.Round}: {why}", now);
             unitOfWork.AddNotification(p.CustomerUserId, CustomerNotificationTypes.InstallationReworkRequired,
                 $"SmartSolar returned the completion report of your installation for rework: {why} A new completion report will follow.", now);
+            return OperationResult<bool>.Ok(true);
+        }, cancellationToken);
+        return await ThenAsync(result, () => StaffViewAsync(projectId, cancellationToken));
+    }
+
+    /// <summary>
+    /// Internal acceptance (2026-11-18, replaces the customer's in-app acceptance): a Manager/Admin accepts the reported completion — awaiting internal
+    /// acceptance (stored PENDING_CUSTOMER_ACCEPTANCE) → COMPLETED (handover; assignment COMPLETED). Never by default: the completion report of the
+    /// current round must exist (with its verified photos and registered panels / inverter, checked when reported), every required prerequisite
+    /// (EVN / PCCC / structural …) must be SATISFIED or NOT_APPLICABLE, and installed equipment that differs from the contract must have a Manager
+    /// approval of exactly that comparison. The basis of the acceptance (e.g. the on-site handover done with the customer) is required and recorded
+    /// with the decider and time; an optional verified PROJECT_DOCUMENT (handover minutes) is recorded too. The customer is informed, not asked.
+    /// </summary>
+    public async Task<OperationResult<InstallationStaffView>> AcceptInternallyAsync(Guid managerUserId, Guid projectId, int expectedRevision, string? note,
+        Guid? evidenceFileId, CancellationToken cancellationToken)
+    {
+        var basis = Trim(note, 500);
+        if (basis is null)
+            return OperationResult<InstallationStaffView>.Fail(InstallationErrorCodes.ReasonRequired,
+                "Record the basis of the acceptance (e.g. handover done on site with the customer, checklist and photos reviewed).");
+        if (evidenceFileId is { } fileId)
+        {
+            var verified = await files.RequireVerifiedAsync([fileId], FilePurposes.ProjectDocument, null, cancellationToken);
+            if (!verified.Succeeded) return verified.As<InstallationStaffView>();
+        }
+        var result = await MutateAsync(projectId, expectedRevision, null, async (p, now, token) =>
+        {
+            if (p.Status != InstallationStatuses.PendingCustomerAcceptance)
+                return Fail(InstallationErrorCodes.InvalidState, $"Only an installation whose completion was reported can be accepted; this one is {p.Status}.");
+            var pending = (await unitOfWork.GetAcceptancesAsync(projectId, true, token)).SingleOrDefault(a => a.Decision == AcceptanceDecisions.Pending);
+            if (pending is null) return Fail(InstallationErrorCodes.InvalidState, "There is no pending completion report.");
+            var open = (await unitOfWork.GetChecklistAsync(projectId, false, token))
+                .Where(i => i.IsRequired && i.Status is not (ChecklistStatuses.Satisfied or ChecklistStatuses.NotApplicable)).Select(i => i.Code).ToList();
+            if (open.Count > 0)
+                return OperationResult<bool>.Fail(InstallationErrorCodes.ChecklistIncomplete, "Required prerequisites are not satisfied.", new { missing = open });
+            if (await EquipmentComparisonAsync(p, token) is { Status: EquipmentComparisonStatuses.ApprovalRequired } comparison)
+                return OperationResult<bool>.Fail(InstallationErrorCodes.SubstitutionApprovalRequired,
+                    "The installed panels / inverters differ from the contract. Approve the substitution (with its reason) first, or return the work to rework.",
+                    new { differences = comparison.Differences });
+            pending.Decision = AcceptanceDecisions.Accepted;
+            pending.DecidedByUserId = managerUserId;
+            pending.DecidedAt = now;
+            pending.Reason = evidenceFileId is { } file ? Trim($"{basis} (handover document {file})", 2000) : basis;
+            var from = p.Status;
+            p.Status = InstallationStatuses.Completed;
+            p.CompletedAt = now;
+            p.HandoverAt = now;
+            if (await unitOfWork.GetCurrentAssignmentAsync(projectId, true, token) is { } current)
+            {
+                current.Status = AssignmentStatuses.Completed;
+                current.ClosedAt = now;
+            }
+            Event(projectId, InstallationEventTypes.InternallyAccepted, managerUserId, from, p.Status,
+                Trim($"round {pending.Round}: {basis}" + (evidenceFileId is { } doc ? $"; document {doc}" : ""), 500), now);
+            unitOfWork.AddNotification(p.CustomerUserId, CustomerNotificationTypes.InstallationCompleted,
+                "Công trình điện mặt trời của bạn đã được nghiệm thu và bàn giao. Bạn có thể xem hồ sơ bàn giao và bảo hành trong ứng dụng.", now);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
         return await ThenAsync(result, () => StaffViewAsync(projectId, cancellationToken));
@@ -716,7 +772,7 @@ public sealed partial class InstallationHandlers(
             if (options.RequirePanelAndInverterAssets && missing.Count > 0)
                 return OperationResult<bool>.Fail(InstallationErrorCodes.AssetsRequired, "Register the installed panels and inverter before reporting completion.", new { missing });
             if ((await unitOfWork.GetAcceptancesAsync(projectId, false, token)).Any(a => a.Decision == AcceptanceDecisions.Pending))
-                return Fail(InstallationErrorCodes.InvalidState, "A completion report is already waiting for the customer.");
+                return Fail(InstallationErrorCodes.InvalidState, "A completion report is already waiting for its acceptance.");
             if (await EquipmentComparisonAsync(p, token) is { Status: EquipmentComparisonStatuses.ApprovalRequired } comparison)
                 return OperationResult<bool>.Fail(InstallationErrorCodes.SubstitutionApprovalRequired,
                     "The installed panels / inverters differ from the contract. A Manager must approve the substitution first.", new { differences = comparison.Differences });
@@ -731,8 +787,9 @@ public sealed partial class InstallationHandlers(
             p.Status = InstallationStatuses.PendingCustomerAcceptance;
             p.AcceptanceRequestedAt = now;
             Event(projectId, InstallationEventTypes.CompletionReported, technicianUserId, from, p.Status, $"round {round}", now);
-            unitOfWork.AddNotification(p.CustomerUserId, CustomerNotificationTypes.InstallationAcceptanceRequired,
-                $"The installation team reported completion (round {round}). Please review the result and accept it or request rework.", now);
+            // Information only: SmartSolar accepts the completion internally; the customer is not asked to approve anything in the app.
+            unitOfWork.AddNotification(p.CustomerUserId, CustomerNotificationTypes.InstallationCompletionReported,
+                $"Đội thi công đã báo cáo hoàn thành (lượt {round}). SmartSolar đang nghiệm thu nội bộ; bạn có thể theo dõi tiến độ trong ứng dụng.", now);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
     }
@@ -752,56 +809,6 @@ public sealed partial class InstallationHandlers(
         return project is null || project.CustomerUserId != customerUserId
             ? NotFound<InstallationCustomerView>()
             : OperationResult<InstallationCustomerView>.Ok(await CustomerViewAsync(projectId, cancellationToken));
-    }
-
-    /// <summary>
-    /// PENDING_CUSTOMER_ACCEPTANCE → COMPLETED (handover; assignment COMPLETED) or → REWORK_REQUIRED (reason required; the next
-    /// report needs new evidence). Decisions are immutable; repeating an acceptance of a completed project is a no-op.
-    /// </summary>
-    public async Task<OperationResult<InstallationCustomerView>> DecideAcceptanceAsync(Guid customerUserId, Guid projectId, bool accept, string? reason, CancellationToken cancellationToken)
-    {
-        if (!accept && string.IsNullOrWhiteSpace(reason))
-            return OperationResult<InstallationCustomerView>.Fail(CommonErrorCodes.ValidationFailed, "Describe what needs to be fixed.");
-        var project = await unitOfWork.FindProjectAsync(projectId, false, cancellationToken);
-        if (project is null || project.CustomerUserId != customerUserId) return NotFound<InstallationCustomerView>();
-
-        var result = await MutateAsync(projectId, null, null, async (p, now, token) =>
-        {
-            if (accept && p.Status == InstallationStatuses.Completed) return OperationResult<bool>.Fail(Noop, "already accepted");
-            if (p.Status != InstallationStatuses.PendingCustomerAcceptance) return Fail(InstallationErrorCodes.InvalidState, "There is no installation waiting for your acceptance.");
-            var pending = (await unitOfWork.GetAcceptancesAsync(projectId, true, token)).SingleOrDefault(a => a.Decision == AcceptanceDecisions.Pending);
-            if (pending is null) return Fail(InstallationErrorCodes.InvalidState, "There is no pending completion report.");
-            pending.DecidedByUserId = customerUserId;
-            pending.DecidedAt = now;
-            pending.Reason = Trim(reason, 2000);
-            var from = p.Status;
-            if (accept && await EquipmentComparisonAsync(p, token) is { Status: EquipmentComparisonStatuses.ApprovalRequired or EquipmentComparisonStatuses.CustomerApprovalRequired } comparison)
-                return OperationResult<bool>.Fail(InstallationErrorCodes.SubstitutionCustomerApprovalRequired,
-                    "The installed equipment differs from your contract. Review and approve the substitution first, or ask for rework.",
-                    new { differences = comparison.Differences });
-            if (accept)
-            {
-                pending.Decision = AcceptanceDecisions.Accepted;
-                p.Status = InstallationStatuses.Completed;
-                p.CompletedAt = now;
-                p.HandoverAt = now;
-                if (await unitOfWork.GetCurrentAssignmentAsync(projectId, true, token) is { } current)
-                {
-                    current.Status = AssignmentStatuses.Completed;
-                    current.ClosedAt = now;
-                }
-                Event(projectId, InstallationEventTypes.CustomerAccepted, customerUserId, from, p.Status, $"round {pending.Round}", now);
-            }
-            else
-            {
-                pending.Decision = AcceptanceDecisions.ReworkRequested;
-                p.Status = InstallationStatuses.ReworkRequired;
-                await DeclineActiveSubstitutionAsync(projectId, customerUserId, Trim(reason, 2000), now, token);
-                Event(projectId, InstallationEventTypes.ReworkRequested, customerUserId, from, p.Status, $"round {pending.Round}: {Trim(reason, 400)}", now);
-            }
-            return OperationResult<bool>.Ok(true);
-        }, cancellationToken);
-        return await ThenAsync(result, () => CustomerViewAsync(projectId, cancellationToken));
     }
 
     /// <summary>Handover of a COMPLETED project (customer owner or staff): assets with warranty end dates, evidence and acceptance history.</summary>

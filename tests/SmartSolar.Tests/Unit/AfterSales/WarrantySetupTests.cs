@@ -17,18 +17,19 @@ public sealed class WarrantySetupTests
     [Fact]
     public async Task A_contract_needs_an_admin_warranty_option_before_it_can_be_issued()
     {
-        // Arrange: an accepted quotation and no warranty options yet.
+        // Arrange: a contract draft (legacy data: accepted quotation) and no warranty options yet.
         await using var ctx = AfterSalesTestContext.Create();
         var (survey, quotation) = await QuotationTests.IssuedAsync(ctx.Installation);
-        Assert.True((await ctx.Installation.Quotations().AcceptAsync(survey.Request.Customer.Id, quotation.QuotationId, None)).Succeeded);
+        var contractId = await LegacyFlowData.CustomerAcceptedWithDraftAsync(ctx.Installation.Db, quotation.QuotationId, ctx.Installation.Clock.GetUtcNow());
         var contracts = ctx.Installation.Contracts();
         var sales = survey.Sales.Id;
+        var initial = (await contracts.GetForStaffAsync(sales, true, contractId, None)).Value!;
 
         // Act / Assert: nothing to choose from yet.
-        var refused = await contracts.CreateAsync(sales, quotation.QuotationId, "Terms", None, warrantyMonths: 24);
+        var refused = await contracts.UpdateTermsAsync(sales, contractId, initial.Revision, "Terms", None, warrantyMonths: 24);
         Assert.Equal(ContractErrorCodes.InvalidWarranty, refused.ErrorCode);
         Assert.Contains("an Admin must add them", refused.Message);
-        var draft = (await contracts.CreateAsync(sales, quotation.QuotationId, "Terms", None)).Value!;
+        var draft = (await contracts.UpdateTermsAsync(sales, contractId, initial.Revision, "Terms", None)).Value!;
         Assert.Null(draft.WarrantyMonths);
         Assert.Equal(ContractErrorCodes.WarrantyRequired, (await contracts.IssueAsync(sales, draft.ContractId, draft.Revision, None)).ErrorCode);
 

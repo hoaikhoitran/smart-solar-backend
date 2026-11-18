@@ -2927,7 +2927,7 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.HasIndex("ProjectId")
                         .IsUnique()
                         .HasDatabaseName("ux_installation_equipment_substitution_active")
-                        .HasFilter("status IN ('CUSTOMER_APPROVAL_PENDING', 'APPROVED')");
+                        .HasFilter("status IN ('CUSTOMER_APPROVAL_PENDING', 'APPROVED', 'INTERNALLY_APPROVED')");
 
                     b.HasIndex("QuotationId");
 
@@ -2942,7 +2942,7 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
 
                             t.HasCheckConstraint("ck_installation_equipment_substitution_declined", "status <> 'CUSTOMER_DECLINED' OR customer_declined_at IS NOT NULL");
 
-                            t.HasCheckConstraint("ck_installation_equipment_substitution_status", "status IN ('CUSTOMER_APPROVAL_PENDING', 'APPROVED', 'CUSTOMER_DECLINED', 'SUPERSEDED')");
+                            t.HasCheckConstraint("ck_installation_equipment_substitution_status", "status IN ('CUSTOMER_APPROVAL_PENDING', 'APPROVED', 'CUSTOMER_DECLINED', 'SUPERSEDED', 'INTERNALLY_APPROVED')");
 
                             t.HasCheckConstraint("ck_installation_equipment_substitution_superseded", "(status = 'SUPERSEDED') = (superseded_at IS NOT NULL)");
                         });
@@ -5689,6 +5689,10 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("contract_id");
 
+                    b.Property<Guid?>("InstallationQuotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("installation_quotation_id");
+
                     b.Property<string>("ItemType")
                         .IsRequired()
                         .HasMaxLength(30)
@@ -5722,6 +5726,9 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("ContractId");
 
+                    b.HasIndex("InstallationQuotationId")
+                        .HasDatabaseName("ix_payment_attempt_item_installation_quotation");
+
                     b.HasIndex("PaymentAttemptId")
                         .HasDatabaseName("ix_payment_attempt_item_attempt");
 
@@ -5735,6 +5742,10 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .IsUnique()
                         .HasFilter("contract_id IS NOT NULL");
 
+                    b.HasIndex(new[] { "PaymentAttemptId", "InstallationQuotationId" }, "ux_payment_attempt_item_attempt_installation_quotation")
+                        .IsUnique()
+                        .HasFilter("installation_quotation_id IS NOT NULL");
+
                     b.HasIndex(new[] { "PaymentAttemptId", "QuotationId" }, "ux_payment_attempt_item_attempt_quotation")
                         .IsUnique()
                         .HasFilter("quotation_id IS NOT NULL");
@@ -5742,6 +5753,10 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.HasIndex(new[] { "PaymentAttemptId", "SubscriptionId" }, "ux_payment_attempt_item_attempt_subscription")
                         .IsUnique()
                         .HasFilter("subscription_id IS NOT NULL");
+
+                    b.HasIndex(new[] { "InstallationQuotationId" }, "ux_payment_attempt_item_settled_installation_quotation")
+                        .IsUnique()
+                        .HasFilter("installation_quotation_id IS NOT NULL AND status = 'SETTLED'");
 
                     b.HasIndex(new[] { "QuotationId" }, "ux_payment_attempt_item_settled_quotation")
                         .IsUnique()
@@ -5755,11 +5770,13 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         {
                             t.HasCheckConstraint("ck_payment_attempt_item_amount", "amount > 0");
 
+                            t.HasCheckConstraint("ck_payment_attempt_item_installation_quotation", "(item_type = 'INSTALLATION_QUOTATION') = (installation_quotation_id IS NOT NULL)");
+
                             t.HasCheckConstraint("ck_payment_attempt_item_status", "status IN ('PENDING', 'SETTLED', 'REVIEW_REQUIRED')");
 
-                            t.HasCheckConstraint("ck_payment_attempt_item_target", "(CASE WHEN contract_id IS NULL THEN 0 ELSE 1 END) + (CASE WHEN subscription_id IS NULL THEN 0 ELSE 1 END) + (CASE WHEN quotation_id IS NULL THEN 0 ELSE 1 END) = 1");
+                            t.HasCheckConstraint("ck_payment_attempt_item_target", "(CASE WHEN contract_id IS NULL THEN 0 ELSE 1 END) + (CASE WHEN subscription_id IS NULL THEN 0 ELSE 1 END) + (CASE WHEN quotation_id IS NULL THEN 0 ELSE 1 END) + (CASE WHEN installation_quotation_id IS NULL THEN 0 ELSE 1 END) = 1");
 
-                            t.HasCheckConstraint("ck_payment_attempt_item_type", "item_type IN ('CONTRACT', 'MAINTENANCE_PACKAGE', 'DISASTER_PACKAGE', 'REPAIR_QUOTATION', 'MAINTENANCE_QUOTATION')");
+                            t.HasCheckConstraint("ck_payment_attempt_item_type", "item_type IN ('CONTRACT', 'MAINTENANCE_PACKAGE', 'DISASTER_PACKAGE', 'REPAIR_QUOTATION', 'MAINTENANCE_QUOTATION', 'INSTALLATION_QUOTATION')");
                         });
                 });
 
@@ -9213,6 +9230,12 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasForeignKey("ContractId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .HasConstraintName("fk_payment_attempt_item_contract");
+
+                    b.HasOne("SmartSolar.Modules.Quotations.Quotation", null)
+                        .WithMany()
+                        .HasForeignKey("InstallationQuotationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_payment_attempt_item_installation_quotation");
 
                     b.HasOne("SmartSolar.Modules.Payments.PaymentAttempt", null)
                         .WithMany()

@@ -42,7 +42,7 @@ public sealed class LotReplacementTests
             [InstallationLotRegistrationTests.Lot(panel, "PANEL", 12), InstallationLotRegistrationTests.Serialised(inverter, "INVERTER", "HW-LOT-INV")], None);
         Assert.True(registered.Succeeded, registered.Message);
         Assert.True((await installs.ReportCompletionAsync(technician.Id, project.ProjectId, "Done", null, None)).Succeeded);
-        var accepted = await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, true, null, None);
+        var accepted = await InternalAcceptance.AcceptAsync(ctx.Installation, project.ProjectId, paid.ManagerId);
         Assert.True(accepted.Succeeded, accepted.Message);
         var sales = await ctx.Installation.Scheduling.SeedSalesAsync("After-sales Sales");
         var assets = await ctx.Db.InstalledAssets.AsNoTracking().Where(a => a.ProjectId == project.ProjectId).ToListAsync();

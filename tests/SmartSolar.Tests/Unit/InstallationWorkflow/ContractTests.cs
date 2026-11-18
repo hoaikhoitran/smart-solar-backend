@@ -9,19 +9,29 @@ public sealed class ContractTests
 {
     public sealed record Ready(ConfirmedSurvey Survey, Guid QuotationId, decimal Total);
 
+    /// <summary>LEGACY data (previous flow): an issued quotation the customer accepted in the app, with its contract DRAFT.</summary>
     public static async Task<Ready> AcceptedQuotationAsync(InstallationWorkflowTestContext ctx, string customer = "Customer")
     {
         var (s, issued) = await QuotationTests.IssuedAsync(ctx, customer);
-        Assert.True((await ctx.Quotations().AcceptAsync(s.Request.Customer.Id, issued.QuotationId, CancellationToken.None)).Succeeded);
         await ctx.EnsureInstallationWarrantyOptionAsync();
+        await LegacyFlowData.CustomerAcceptedWithDraftAsync(ctx.Db, issued.QuotationId, ctx.Clock.GetUtcNow());
         return new Ready(s, issued.QuotationId, issued.TotalAmount);
+    }
+
+    /// <summary>The quotation's contract DRAFT (legacy data), with <paramref name="terms"/> entered by staff when given.</summary>
+    public static async Task<ContractView> DraftAsync(InstallationWorkflowTestContext ctx, Ready r, string? terms)
+    {
+        var id = (await ctx.Db.CustomerContracts.AsNoTracking().SingleAsync(x => x.QuotationId == r.QuotationId && x.Status == ContractStatuses.Draft)).Id;
+        var c = ctx.Contracts();
+        var draft = (await c.GetForStaffAsync(Guid.Empty, true, id, CancellationToken.None)).Value!;
+        return terms is null ? draft : (await c.UpdateTermsAsync(r.Survey.Sales.Id, id, draft.Revision, terms, CancellationToken.None)).Value!;
     }
 
     /// <summary>Created, issued, official PDF attached with the canonical hash, published: AWAITING_SIGNATURE.</summary>
     public static async Task<ContractView> PublishedAsync(InstallationWorkflowTestContext ctx, Ready r)
     {
         var c = ctx.Contracts();
-        var draft = (await c.CreateAsync(r.Survey.Sales.Id, r.QuotationId, "Standard terms", CancellationToken.None)).Value!;
+        var draft = await DraftAsync(ctx, r, "Standard terms");
         var issued = (await c.IssueAsync(r.Survey.Sales.Id, draft.ContractId, draft.Revision, CancellationToken.None)).Value!;
         var pdf = await ctx.VerifiedFileAsync(r.Survey.Sales.Id, FilePurposes.ContractDocument, "pdf");
         var attached = await c.AttachOfficialDocumentAsync(r.Survey.Sales.Id, issued.ContractId, issued.Revision, pdf, issued.CanonicalHash!, CancellationToken.None);
@@ -68,18 +78,23 @@ public sealed class ContractTests
     }
 
     [Fact]
-    public async Task Contracts_need_an_accepted_quotation_and_only_one_live_contract_exists()
+    public async Task Contracts_need_an_agreed_and_paid_quotation_and_only_one_live_contract_exists()
     {
         var ctx = InstallationWorkflowTestContext.Create();
         await using var _ = ctx;
         var (s, issued) = await QuotationTests.IssuedAsync(ctx);
+        await ctx.EnsureInstallationWarrantyOptionAsync();
         var c = ctx.Contracts();
 
         Assert.Equal(ContractErrorCodes.QuotationNotAccepted, (await c.CreateAsync(s.Sales.Id, issued.QuotationId, null, CancellationToken.None)).ErrorCode);
-        await ctx.Quotations().AcceptAsync(s.Request.Customer.Id, issued.QuotationId, CancellationToken.None);
+        Assert.True((await OnSiteDecision.AgreeAsync(ctx, s.Technician.Id, issued.QuotationId)).Succeeded);
         Assert.Equal(ContractErrorCodes.NotFound, (await c.CreateAsync(s.Sales.Id, Guid.NewGuid(), null, CancellationToken.None)).ErrorCode);
-        Assert.True((await c.CreateAsync(s.Sales.Id, issued.QuotationId, null, CancellationToken.None)).Succeeded);
+        // Agreed is not paid: no contract yet.
+        Assert.Equal(ContractErrorCodes.PaymentRequired, (await c.CreateAsync(s.Sales.Id, issued.QuotationId, null, CancellationToken.None)).ErrorCode);
+        var manager = await ctx.Scheduling.Inner.SeedUserAsync("Manager");
+        await OnSiteDecision.PayInCashAsync(ctx, s.Technician.Id, issued.QuotationId, manager.Id);
         Assert.Equal(ContractErrorCodes.AlreadyExists, (await c.CreateAsync(s.Sales.Id, issued.QuotationId, null, CancellationToken.None)).ErrorCode);
+        Assert.Equal(1, await ctx.Db.CustomerContracts.CountAsync());
     }
 
     [Fact]
@@ -89,7 +104,7 @@ public sealed class ContractTests
         await using var _ = ctx;
         var r = await AcceptedQuotationAsync(ctx);
         var c = ctx.Contracts();
-        var draft = (await c.CreateAsync(r.Survey.Sales.Id, r.QuotationId, "Terms", CancellationToken.None)).Value!;
+        var draft = await DraftAsync(ctx, r, "Terms");
         var pdf = await ctx.VerifiedFileAsync(r.Survey.Sales.Id, FilePurposes.ContractDocument, "pdf");
 
         Assert.Equal(ContractErrorCodes.InvalidState, (await c.AttachOfficialDocumentAsync(r.Survey.Sales.Id, draft.ContractId, draft.Revision, pdf, "x", CancellationToken.None)).ErrorCode);

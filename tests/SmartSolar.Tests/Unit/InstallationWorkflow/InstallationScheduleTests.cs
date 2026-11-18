@@ -140,7 +140,7 @@ public sealed class InstallationScheduleTests
     {
         await using var ctx = InstallationWorkflowTestContext.Create();
         var cart = await SimplifiedFlowFixture.IssuedAsync(ctx);
-        var draft = await SimplifiedFlowFixture.AcceptAsync(ctx, cart);
+        var draft = await SimplifiedFlowFixture.LegacyAcceptAsync(ctx, cart);
         var schedules = ctx.Schedules();
         var other = await ctx.Scheduling.SeedTechnicianAsync("Other tech", BinhTan);
 

@@ -18,8 +18,9 @@ public static class AfterSalesModuleExtensions
         services.AddScoped<AdminOverview>();
         services.AddScoped<AfterSalesViews>();
         services.AddScoped<SubscriptionTerms>();
-        // Applies the after-sales lines of verified PayOS payments inside the payment confirmation transaction.
-        services.AddScoped<SmartSolar.Modules.Payments.IPaymentItemSettlement, AfterSalesPaymentSettlement>();
+        // Applies the after-sales lines of verified payments inside the payment confirmation transaction (wrapped by the installation-quotation
+        // settlement registered as IPaymentItemSettlement in AddInstallationWorkflow).
+        services.AddScoped<AfterSalesPaymentSettlement>();
         services.AddScoped<ServiceCustomerHandlers>();
         services.AddScoped<ServiceManagerHandlers>();
         services.AddScoped<TechnicianServiceHandlers>();

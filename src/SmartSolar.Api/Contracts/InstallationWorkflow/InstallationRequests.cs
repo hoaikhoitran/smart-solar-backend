@@ -38,7 +38,11 @@ public sealed record AssetsRequest(IReadOnlyList<AssetRequest>? Assets);
 public sealed record CompletionReportRequest(string? CompletionReport, int? ExpectedRevision);
 
 /// <summary>decision: ACCEPT or REQUEST_REWORK (reason required).</summary>
-public sealed record AcceptanceDecisionRequest(string? Decision, string? Reason);
+/// <summary>
+/// Manager/Admin internal acceptance of a reported completion: <c>note</c> = basis of the acceptance (required, ≤ 500), <c>evidenceFileId</c> = optional
+/// VERIFIED PROJECT_DOCUMENT (e.g. handover minutes signed on site).
+/// </summary>
+public sealed record InternalAcceptanceRequest(int? ExpectedRevision, string? Note, Guid? EvidenceFileId);
 
 /// <summary>
 /// The installation date the technician agreed with the customer. <c>technicianUserId</c> is used only for a Manager/Admin; <c>reason</c> is
@@ -50,9 +54,3 @@ public sealed record InstallationScheduleRequest(DateTimeOffset? StartsAt, DateT
 public sealed record InstallationScheduleReasonRequest(string? Reason);
 
 public sealed record InstallationScheduleChangeRequest(string? Note);
-
-/// <summary>One offered interval (ISO-8601 with offset).</summary>
-public sealed record InstallationSlotRequest(DateTimeOffset? StartsAt, DateTimeOffset? EndsAt);
-
-/// <summary>The responsible technician offers 1–5 intervals for the customer to choose; <c>note</c> (≤ 500) is shown to the customer.</summary>
-public sealed record InstallationSlotOffersRequest(IReadOnlyList<InstallationSlotRequest>? Slots, string? Note);

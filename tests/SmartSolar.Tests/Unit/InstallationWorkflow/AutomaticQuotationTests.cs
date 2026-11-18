@@ -54,10 +54,8 @@ public sealed class AutomaticQuotationTests
         Assert.Equal((QuotationStatuses.Issued, QuotationOrigins.Automatic, s.Sales.Id), (stored.Status, stored.Origin, stored.SalesUserId));
         Assert.Equal((16_000_000m, 2_000_000m, 500_000m, 0m, 18_500_000m, 0m, 18_500_000m),
             (stored.EquipmentSubtotal, stored.LaborCost, stored.TransportCost, stored.DiscountAmount, stored.Subtotal, stored.TaxAmount, stored.TotalAmount));
-        var customerView = (await ctx.Quotations().GetForCustomerAsync(s.Request.Customer.Id, stored.Id, None)).Value!;
-        Assert.True(customerView.CanAccept);
-        Assert.Null(customerView.PricingBasis);   // internal diagnostics are staff-only
-        Assert.Null(customerView.PricingReview);
+        var shown = (await ctx.Quotations().GetForTechnicianAsync(s.Technician.Id, stored.Id, None)).Value!;
+        Assert.True(shown.CanAccept);   // ready to be presented and agreed on site
         var view = (await ctx.Quotations().GetForSalesAsync(s.Sales.Id, false, stored.Id, None)).Value!;
         Assert.Equal(new[] { (catalog.Panel.Sku, 2m, 3_000_000m, 6_000_000m), (catalog.Inverter.Sku, 1m, 10_000_000m, 10_000_000m) },
             view.Lines.Select(l => (l.Sku!, l.Quantity, l.UnitPrice, l.LineTotal)));
@@ -100,12 +98,11 @@ public sealed class AutomaticQuotationTests
         // Act
         var completed = await AutomaticQuotationFixture.CompleteAsync(ctx, s, catalog.StandardBill());
 
-        // Assert: nothing invented, nothing visible to the customer, a reviewable draft for Sales.
+        // Assert: nothing invented, nothing to decide on site, a reviewable draft for Sales.
         Assert.Equal(AutomaticQuotationOutcomes.PendingSalesReview, completed.Value!.AutomaticQuotationOutcome);
         var draft = Assert.Single(await AutomaticQuotationFixture.QuotationsAsync(ctx, s.Request.Request.Id));
         Assert.Equal((QuotationStatuses.Draft, 0m), (draft.Status, draft.LaborCost));
-        Assert.Empty(await ctx.Quotations().ListForCustomerAsync(s.Request.Customer.Id, None));
-        Assert.Equal(QuotationErrorCodes.NotFound, (await ctx.Quotations().AcceptAsync(s.Request.Customer.Id, draft.Id, None)).ErrorCode);
+        Assert.Equal(QuotationErrorCodes.NotIssued, (await OnSiteDecision.AgreeAsync(ctx, s.Technician.Id, draft.Id)).ErrorCode);
         var queue = await ctx.Quotations().ListPendingReviewAsync(s.Sales.Id, false, None);
         var issue = Assert.Single(Assert.Single(queue).PricingBasis!.Issues);
         Assert.Equal((PricingIssueCodes.PriceMissing, catalog.Labor.Id), (issue.Code, issue.ProductId!.Value));

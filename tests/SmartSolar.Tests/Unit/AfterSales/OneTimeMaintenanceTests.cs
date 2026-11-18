@@ -137,13 +137,13 @@ public sealed class OneTimeMaintenanceTests
         await using var ctx = Create();
         var m = await InspectedAsync(ctx);
         var q = await PricedAsync(ctx, m);
-        Assert.True((await ctx.Quotations().AcceptAsync(m.H.CustomerId, q.QuotationId, None)).Succeeded);
+        Assert.True((await ctx.Quotations().RecordOnSiteDecisionAsync(m.H.TechnicianId, q.QuotationId, ServiceOnSiteDecisions.Agreed, null, None)).Succeeded);
         Assert.Equal(QuotationStatuses.Accepted, (await ctx.Db.ServiceQuotations.AsNoTracking().SingleAsync()).Status);
 
         await using var other = Create();
         var r = await InspectedAsync(other);
         var rq = await PricedAsync(other, r);
-        var rejected = await other.Quotations().RejectAsync(r.H.CustomerId, rq.QuotationId, "Too expensive", None);
+        var rejected = await other.Quotations().RecordOnSiteDecisionAsync(r.H.TechnicianId, rq.QuotationId, ServiceOnSiteDecisions.Declined, "Too expensive", None);
         Assert.True(rejected.Succeeded, rejected.Message);
         Assert.Equal(ServiceRequestStatuses.Cancelled, rejected.Value!.Status);
         Assert.All(await other.Db.ServiceItems.AsNoTracking().ToListAsync(), i => Assert.Equal(ItemStatuses.Declined, i.Status));
@@ -156,7 +156,7 @@ public sealed class OneTimeMaintenanceTests
         await using var ctx = Create();
         var m = await InspectedAsync(ctx);
         var q = await PricedAsync(ctx, m);
-        Assert.True((await ctx.Quotations().AcceptAsync(m.H.CustomerId, q.QuotationId, None)).Succeeded);
+        Assert.True((await ctx.Quotations().RecordOnSiteDecisionAsync(m.H.TechnicianId, q.QuotationId, ServiceOnSiteDecisions.Agreed, null, None)).Succeeded);
         var cash = (await ctx.Quotations().SelectCashAsync(m.H.CustomerId, q.QuotationId, None)).Value!;
         var evidence = await ctx.Installation.VerifiedFileAsync(m.H.ManagerId, FilePurposes.PaymentEvidence);
 
@@ -176,7 +176,7 @@ public sealed class OneTimeMaintenanceTests
         await using var ctx = Create();
         var m = await InspectedAsync(ctx);
         var q = await PricedAsync(ctx, m);
-        Assert.True((await ctx.Quotations().AcceptAsync(m.H.CustomerId, q.QuotationId, None)).Succeeded);
+        Assert.True((await ctx.Quotations().RecordOnSiteDecisionAsync(m.H.TechnicianId, q.QuotationId, ServiceOnSiteDecisions.Agreed, null, None)).Succeeded);
         var link = (await ctx.Quotations().CheckoutAsync(m.H.CustomerId, q.QuotationId, None)).Value!;
         var webhook = ctx.Installation.PayOs.Webhook(link.OrderCode, (long)link.Amount, "FT-M9");
 
@@ -213,7 +213,7 @@ public sealed class OneTimeMaintenanceTests
         await using var ctx = Create();
         var m = await InspectedAsync(ctx);
         var q = await PricedAsync(ctx, m);
-        Assert.True((await ctx.Quotations().AcceptAsync(m.H.CustomerId, q.QuotationId, None)).Succeeded);
+        Assert.True((await ctx.Quotations().RecordOnSiteDecisionAsync(m.H.TechnicianId, q.QuotationId, ServiceOnSiteDecisions.Agreed, null, None)).Succeeded);
         await ctx.PayAsync((await ctx.Quotations().CheckoutAsync(m.H.CustomerId, q.QuotationId, None)).Value!);
 
         var visit = await ctx.VisitStartedAsync(m.H, m.RequestId, ctx.Clock.GetUtcNow().AddDays(2));
@@ -242,7 +242,7 @@ public sealed class OneTimeMaintenanceTests
         await using var ctx = Create();
         var m = await InspectedAsync(ctx);
         var q = await PricedAsync(ctx, m);
-        Assert.True((await ctx.Quotations().AcceptAsync(m.H.CustomerId, q.QuotationId, None)).Succeeded);
+        Assert.True((await ctx.Quotations().RecordOnSiteDecisionAsync(m.H.TechnicianId, q.QuotationId, ServiceOnSiteDecisions.Agreed, null, None)).Succeeded);
         var cash = (await ctx.Quotations().SelectCashAsync(m.H.CustomerId, q.QuotationId, None)).Value!;
         var evidence = await ctx.Installation.VerifiedFileAsync(m.H.ManagerId, FilePurposes.PaymentEvidence);
 

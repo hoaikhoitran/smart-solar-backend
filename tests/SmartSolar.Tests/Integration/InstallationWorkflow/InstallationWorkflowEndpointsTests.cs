@@ -18,12 +18,12 @@ public sealed class InstallationWorkflowEndpointsTests
         var customer = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Customer);
 
         await AssertFailureAsync(await customer.GetAsync($"/api/customers/me/contracts/{Guid.NewGuid()}/payments"), HttpStatusCode.ServiceUnavailable, "FEATURE_PENDING_MIGRATION");
-        await AssertFailureAsync(await customer.GetAsync("/api/customers/me/quotations"), HttpStatusCode.ServiceUnavailable, "FEATURE_PENDING_MIGRATION");
+        await AssertFailureAsync(await customer.GetAsync("/api/customers/me/contracts"), HttpStatusCode.ServiceUnavailable, "FEATURE_PENDING_MIGRATION");
         await AssertFailureAsync(await customer.GetAsync($"/api/files/{Guid.NewGuid()}"), HttpStatusCode.ServiceUnavailable, "FEATURE_PENDING_MIGRATION");
         await AssertFailureAsync(await factory.CreateClient().PostAsync("/api/payments/payos/webhook", JsonContent.Create(new { })), HttpStatusCode.ServiceUnavailable,
             "FEATURE_PENDING_MIGRATION");
         // Authentication still comes first.
-        Assert.Equal(HttpStatusCode.Unauthorized, (await factory.CreateClient().GetAsync("/api/customers/me/quotations")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await factory.CreateClient().GetAsync("/api/customers/me/contracts")).StatusCode);
     }
 
     [Fact]
@@ -35,7 +35,7 @@ public sealed class InstallationWorkflowEndpointsTests
         });
         var customer = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Customer);
 
-        Assert.Equal(HttpStatusCode.OK, (await customer.GetAsync("/api/customers/me/quotations")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await customer.GetAsync("/api/customers/me/contracts")).StatusCode);
         await AssertFailureAsync(await customer.GetAsync("/api/chat/sessions"), HttpStatusCode.ServiceUnavailable, "FEATURE_PENDING_MIGRATION");
         Assert.NotEqual(HttpStatusCode.ServiceUnavailable, (await customer.GetAsync($"/api/files/{Guid.NewGuid()}")).StatusCode);
     }
@@ -46,7 +46,7 @@ public sealed class InstallationWorkflowEndpointsTests
         using var factory = new AuthApiFactory(new Dictionary<string, string?> { ["Features:Flow2Enabled"] = "true", ["Rag:Enabled"] = "false" });
         var customer = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Customer);
 
-        Assert.Equal(HttpStatusCode.OK, (await customer.GetAsync("/api/customers/me/quotations")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await customer.GetAsync("/api/customers/me/contracts")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await customer.GetAsync("/api/chat/sessions")).StatusCode);
         Assert.True(factory.Services.GetRequiredService<SmartSolar.Modules.Common.Features.FeatureOptions>().UsesLegacyFlag);
     }

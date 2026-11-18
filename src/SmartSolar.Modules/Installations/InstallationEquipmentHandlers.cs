@@ -29,11 +29,9 @@ public static class EquipmentComparisonStatuses
     public const string Matches = "MATCHES";
     /// <summary>The accepted quotation lists no catalog panel / inverter (legacy or custom lines): nothing to compare against.</summary>
     public const string NotComparable = "NOT_COMPARABLE";
-    /// <summary>Differences without a Manager approval: completion cannot be reported.</summary>
+    /// <summary>Differences without a Manager approval: completion cannot be reported or accepted.</summary>
     public const string ApprovalRequired = "SUBSTITUTION_APPROVAL_REQUIRED";
-    /// <summary>The Manager approved the differences; the customer has not yet: no handover.</summary>
-    public const string CustomerApprovalRequired = "CUSTOMER_APPROVAL_REQUIRED";
-    /// <summary>Manager and customer approved exactly these differences.</summary>
+    /// <summary>A Manager approved exactly these differences (internal decision; no customer step since 2026-11-18).</summary>
     public const string Approved = "SUBSTITUTION_APPROVED";
     /// <summary>
     /// A project handed over before the equipment check existed, with differences nobody approved: shown as history, never as a pending
@@ -46,9 +44,9 @@ public sealed partial class InstallationHandlers
 {
     /// <summary>
     /// Manager approves the differences between installed and contracted equipment (substitution, other quantity) with a reason, while the
-    /// work is in progress or in rework, or while a completion waits for the customer (a report made before this check existed). Any
-    /// technically different product is a substitution: there is no approved equivalence rule, so the customer must approve it as well
-    /// before handover.
+    /// work is in progress or in rework, or while a completion waits for the internal acceptance. The decision is internal and final
+    /// (INTERNALLY_APPROVED, actor + reason + exact comparison fingerprint): the customer is informed — the technician discusses it on site —
+    /// and approves nothing in the app (2026-11-18).
     /// </summary>
     public async Task<OperationResult<InstallationStaffView>> ApproveSubstitutionAsync(Guid managerUserId, Guid projectId, int expectedRevision, string? reason,
         CancellationToken cancellationToken)
@@ -58,7 +56,7 @@ public sealed partial class InstallationHandlers
         var result = await MutateAsync(projectId, expectedRevision, null, async (p, now, token) =>
         {
             if (!InstallationStatuses.IsStarted(p.Status) && p.Status != InstallationStatuses.PendingCustomerAcceptance)
-                return Fail(InstallationErrorCodes.InvalidState, "Substitutions are approved before the handover, while work or the customer's acceptance is open.");
+                return Fail(InstallationErrorCodes.InvalidState, "Substitutions are approved before the handover, while work or the internal acceptance is open.");
             var comparison = await EquipmentComparisonAsync(p, token);
             if (comparison.Status is EquipmentComparisonStatuses.Matches or EquipmentComparisonStatuses.NotComparable)
                 return Fail(InstallationErrorCodes.NoSubstitution, "The installed equipment does not differ from the contract.");
@@ -72,7 +70,7 @@ public sealed partial class InstallationHandlers
             var substitution = new EquipmentSubstitution
             {
                 Id = Guid.NewGuid(), ProjectId = projectId, ContractId = p.ContractId, QuotationId = await unitOfWork.GetContractQuotationIdAsync(p.ContractId, token),
-                Fingerprint = comparison.Fingerprint, Status = EquipmentSubstitutionStatuses.CustomerApprovalPending, ManagerUserId = managerUserId,
+                Fingerprint = comparison.Fingerprint, Status = EquipmentSubstitutionStatuses.InternallyApproved, ManagerUserId = managerUserId,
                 ManagerReason = why, ManagerApprovedAt = now, CreatedAt = now, UpdatedAt = now,
             };
             unitOfWork.Add(substitution);
@@ -83,36 +81,11 @@ public sealed partial class InstallationHandlers
                     Name = Trim(d.Name, 255), ContractedQuantity = d.ContractedQuantity, InstalledQuantity = d.InstalledQuantity,
                 });
             Event(projectId, InstallationEventTypes.SubstitutionApproved, managerUserId, null, null, $"fp:{comparison.Fingerprint}; {why}", now);
-            unitOfWork.AddNotification(p.CustomerUserId, CustomerNotificationTypes.EquipmentSubstitutionApprovalRequired,
-                $"The installed equipment differs from your contract ({why}). Please review and approve the substitution before accepting the installation.", now);
+            unitOfWork.AddNotification(p.CustomerUserId, CustomerNotificationTypes.EquipmentSubstitutionRecorded,
+                $"Thiết bị lắp đặt khác với hợp đồng đã được SmartSolar phê duyệt nội bộ: {why}. Chi tiết có trong hồ sơ bàn giao.", now);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
         return await ThenAsync(result, () => StaffViewAsync(projectId, cancellationToken));
-    }
-
-    /// <summary>The customer agrees to the Manager-approved differences of the completion waiting for them (then accepts or asks for rework).</summary>
-    public async Task<OperationResult<InstallationCustomerView>> CustomerApproveSubstitutionAsync(Guid customerUserId, Guid projectId, CancellationToken cancellationToken)
-    {
-        var project = await unitOfWork.FindProjectAsync(projectId, false, cancellationToken);
-        if (project is null || project.CustomerUserId != customerUserId) return NotFound<InstallationCustomerView>();
-        var result = await MutateAsync(projectId, null, null, async (p, now, token) =>
-        {
-            if (p.Status != InstallationStatuses.PendingCustomerAcceptance)
-                return Fail(InstallationErrorCodes.InvalidState, "There is no installation waiting for your acceptance.");
-            var comparison = await EquipmentComparisonAsync(p, token);
-            if (comparison.Status == EquipmentComparisonStatuses.Approved) return OperationResult<bool>.Fail(Noop, "already approved");
-            if (comparison.Status != EquipmentComparisonStatuses.CustomerApprovalRequired)
-                return Fail(InstallationErrorCodes.NoSubstitution, "There is no approved substitution waiting for your agreement.");
-            var active = (await unitOfWork.GetActiveSubstitutionAsync(projectId, true, token))!;
-            active.Status = EquipmentSubstitutionStatuses.Approved;
-            active.CustomerUserId = customerUserId;
-            active.CustomerApprovedAt = now;
-            active.UpdatedAt = now;
-            active.Revision++;
-            Event(projectId, InstallationEventTypes.SubstitutionCustomerApproved, customerUserId, null, null, $"fp:{comparison.Fingerprint}", now);
-            return OperationResult<bool>.Ok(true);
-        }, cancellationToken);
-        return await ThenAsync(result, () => CustomerViewAsync(projectId, cancellationToken));
     }
 
     /// <summary>
@@ -144,11 +117,11 @@ public sealed partial class InstallationHandlers
         var active = await unitOfWork.GetActiveSubstitutionAsync(p.Id, false, cancellationToken);
         var current = active is not null && active.Fingerprint == fingerprint ? active : null;
         var manager = current is null ? null : new InstallationApprovalStep(current.ManagerUserId, current.ManagerReason, current.ManagerApprovedAt);
-        var customer = current is { Status: EquipmentSubstitutionStatuses.Approved }
-            ? new InstallationApprovalStep(current.CustomerUserId, null, current.CustomerApprovedAt!.Value) : null;
+        // Legacy rows may carry the customer's approval; it is shown as history, it is no longer required.
+        var customer = current is { Status: EquipmentSubstitutionStatuses.Approved, CustomerApprovedAt: { } approvedAt }
+            ? new InstallationApprovalStep(current.CustomerUserId, null, approvedAt) : null;
         var status = manager is null && p.Status == InstallationStatuses.Completed ? EquipmentComparisonStatuses.NotCheckedAtHandover
             : manager is null ? EquipmentComparisonStatuses.ApprovalRequired
-            : customer is null ? EquipmentComparisonStatuses.CustomerApprovalRequired
             : EquipmentComparisonStatuses.Approved;
         return new(status, differences, fingerprint, manager, customer);
     }
@@ -173,13 +146,6 @@ public sealed partial class InstallationHandlers
     {
         if (await unitOfWork.GetActiveSubstitutionAsync(projectId, true, cancellationToken) is { } active)
             End(active, EquipmentSubstitutionStatuses.Superseded, now);
-    }
-
-    /// <summary>The customer asks for rework instead of agreeing to the pending substitution.</summary>
-    private async Task DeclineActiveSubstitutionAsync(Guid projectId, Guid customerUserId, string? reason, DateTimeOffset now, CancellationToken cancellationToken)
-    {
-        if (await unitOfWork.GetActiveSubstitutionAsync(projectId, true, cancellationToken) is { Status: EquipmentSubstitutionStatuses.CustomerApprovalPending } active)
-            End(active, EquipmentSubstitutionStatuses.CustomerDeclined, now, customerUserId, reason);
     }
 
     /// <summary>Stored substitution decisions of the project, oldest first (staff only).</summary>

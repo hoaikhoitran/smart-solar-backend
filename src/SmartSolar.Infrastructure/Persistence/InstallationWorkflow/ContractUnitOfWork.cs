@@ -22,7 +22,7 @@ public sealed class ContractUnitOfWork(AppDbContext db) : TransactionalUnitOfWor
         }, Json);
         var surveyVersion = await Db.OnSiteSurveyReports.AsNoTracking().Where(r => r.SurveyRequestId == q.SurveyRequestId).Select(r => r.Version).FirstOrDefaultAsync(cancellationToken);
         return new AcceptedQuotationSource(q.Id, q.Version, q.QuoteNumber, q.Status, q.SurveyRequestId, q.CustomerUserId, sale, q.Currency, q.TotalAmount,
-            pricing, q.CustomerSnapshot, q.Terms, q.OnSiteSurveyVersion, surveyVersion);
+            pricing, q.CustomerSnapshot, q.Terms, q.OnSiteSurveyVersion, surveyVersion, q.ValidUntil);
     }
 
     /// <summary>
@@ -47,6 +47,17 @@ public sealed class ContractUnitOfWork(AppDbContext db) : TransactionalUnitOfWor
 
     public Task<CustomerContract?> FindAsync(Guid contractId, bool track, CancellationToken cancellationToken)
         => (track ? Db.CustomerContracts : Db.CustomerContracts.AsNoTracking()).FirstOrDefaultAsync(c => c.Id == contractId, cancellationToken);
+
+    public async Task<ContractPrepayment?> GetPrepaymentAsync(Guid contractId, CancellationToken cancellationToken)
+        => await Db.PaymentAttempts.AsNoTracking()
+            .Where(a => a.ContractId == contractId && a.Status == SmartSolar.Modules.Payments.PaymentStatuses.Paid
+                        && Db.PaymentAttemptItems.Any(i => i.PaymentAttemptId == a.Id && i.ItemType == SmartSolar.Modules.Payments.PaymentItemTypes.InstallationQuotation))
+            .Select(a => new ContractPrepayment(a.Id, a.PaidAt!.Value, a.Amount, a.Provider == SmartSolar.Modules.Payments.PaymentProviders.Cash ? "CASH" : "ONLINE"))
+            .FirstOrDefaultAsync(cancellationToken);
+
+    public Task<bool> HasSettledQuotationPaymentAsync(Guid quotationId, CancellationToken cancellationToken)
+        => Db.PaymentAttemptItems.AsNoTracking().AnyAsync(i => i.InstallationQuotationId == quotationId
+            && i.Status == SmartSolar.Modules.Payments.PaymentItemStatuses.Settled, cancellationToken);
 
     public async Task<IReadOnlyList<CustomerContract>> ListByQuotationAsync(Guid quotationId, CancellationToken cancellationToken)
         => await Db.CustomerContracts.AsNoTracking().Where(c => c.QuotationId == quotationId).OrderBy(c => c.Version).ToListAsync(cancellationToken);

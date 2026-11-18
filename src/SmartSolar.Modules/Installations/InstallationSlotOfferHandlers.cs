@@ -18,20 +18,14 @@ public sealed record InstallationSlotOfferView(Guid OfferId, Guid ContractId, Gu
 public sealed record SlotInterval(DateTimeOffset StartsAt, DateTimeOffset EndsAt);
 
 /// <summary>
-/// INSTALL-SCHEDULE customer choice (2026-11-18). After the contract is SIGNED (or PAID) the responsible technician consults the backend's
-/// availability for the contract (<see cref="AvailabilityAsync"/>: working-day intervals checked with the same eligibility as a plan) and offers
-/// 1–5 intervals (<see cref="PublishOffersAsync"/>). The customer sees the open offers, each re-checked at read time, and selects one
-/// (<see cref="SelectOfferAsync"/>): under the contract lock and the technician lock the offer must still be OPEN, still valid, the technician still
-/// eligible and not planned for another customer in that interval; then the normal PLANNED schedule is recorded (agreement = the customer's
-/// selection in the portal), the offer becomes SELECTED and the other open offers are withdrawn, in one transaction. Two customers selecting
-/// the same technician interval: the technician lock serialises them and the second one is refused (409 INSTALLATION_SLOT_OFFER_UNAVAILABLE).
-/// Payment confirmation, rescheduling and the start prerequisites are those of <see cref="InstallationScheduleHandlers"/>, unchanged.
+/// Technician-led scheduling (2026-11-18). The responsible technician consults the backend's availability for the contract
+/// (<see cref="AvailabilityAsync"/>: working-day intervals checked with the same eligibility as a plan), agrees the date with the customer in person
+/// and records it (<see cref="ProposeAsync"/>). The customer no longer selects offered slots in the app: publishing offers and the customer's selection
+/// were retired; existing offers stay as read-only history and any OPEN legacy offer is withdrawn when the technician records the agreed date.
 /// </summary>
 public sealed partial class InstallationScheduleHandlers
 {
-    public const int MaxOffers = 5;
     public const int MaxAvailabilityDays = 31;
-    private const string CustomerUnavailable = "This time is no longer available. Please choose another one or ask the technician for new dates.";
 
     // ================================================================== Technician
 
@@ -62,68 +56,6 @@ public sealed partial class InstallationScheduleHandlers
         return OperationResult<IReadOnlyList<InstallationSlotAvailabilityView>>.Ok(views);
     }
 
-    /// <summary>
-    /// Publishes 1–5 intervals for the customer to choose (each must be possible now). The previous open offers of the contract are withdrawn
-    /// (history kept) and the customer is notified. Allowed while the installation has not started; it never changes the live schedule.
-    /// </summary>
-    public async Task<OperationResult<IReadOnlyList<InstallationSlotOfferView>>> PublishOffersAsync(Guid technicianUserId, Guid contractId,
-        IReadOnlyList<SlotInterval> slots, string? note, CancellationToken cancellationToken)
-    {
-        var normalized = slots.Select(s => new SlotInterval(s.StartsAt.ToUniversalTime(), s.EndsAt.ToUniversalTime())).ToList();
-        if (normalized.Count is 0 or > MaxOffers || normalized.Distinct().Count() != normalized.Count)
-            return OperationResult<IReadOnlyList<InstallationSlotOfferView>>.Fail(CommonErrorCodes.ValidationFailed, "One or more fields are invalid.",
-                new Dictionary<string, string[]> { ["slots"] = [$"Offer between 1 and {MaxOffers} different intervals."] });
-        if (note is { Length: > MaxNote })
-            return OperationResult<IReadOnlyList<InstallationSlotOfferView>>.Fail(CommonErrorCodes.ValidationFailed, "One or more fields are invalid.",
-                new Dictionary<string, string[]> { ["note"] = [$"At most {MaxNote} characters."] });
-
-        var target = await TargetForTechnicianAsync(technicianUserId, contractId, cancellationToken);
-        if (!target.Succeeded) return target.As<IReadOnlyList<InstallationSlotOfferView>>();
-        var (contract, zoneIds, ignore) = target.Value!;
-        foreach (var slot in normalized)
-        {
-            if (await UnavailabilityAsync(contract, technicianUserId, slot, zoneIds, ignore, cancellationToken) is { } reason)
-                return OperationResult<IReadOnlyList<InstallationSlotOfferView>>.Fail(InstallationScheduleErrorCodes.OfferUnavailable,
-                    $"{Local(slot.StartsAt):dd/MM/yyyy HH:mm} – {Local(slot.EndsAt):dd/MM/yyyy HH:mm} is not possible: {reason}.",
-                    new { startsAt = slot.StartsAt, endsAt = slot.EndsAt, reason });
-        }
-
-        try
-        {
-            var written = await unitOfWork.ExecuteInTransactionAsync<OperationResult<bool>>(async token =>
-            {
-                await unitOfWork.LockContractAsync(contractId, token);
-                var fresh = await unitOfWork.GetScheduleContractAsync(contractId, token);
-                if (fresh is null || !Schedulable(fresh))
-                    return (OperationResult<bool>.Fail(InstallationScheduleErrorCodes.ContractNotSigned, "The contract is no longer SIGNED or PAID."), false);
-                var now = time.GetUtcNow();
-                foreach (var open in await unitOfWork.ListSlotOffersAsync(contractId, InstallationSlotOfferStatuses.Open, true, token))
-                    Withdraw(open, "REPLACED_BY_NEW_OFFERS", now);
-                // The withdrawn rows leave the "one open interval" index before the new ones are inserted.
-                await unitOfWork.SaveChangesAsync(token);
-                foreach (var slot in normalized.OrderBy(s => s.StartsAt))
-                {
-                    unitOfWork.Add(new InstallationSlotOffer
-                    {
-                        Id = Guid.NewGuid(), ContractId = contractId, TechnicianUserId = technicianUserId, StartsAt = slot.StartsAt, EndsAt = slot.EndsAt,
-                        Status = InstallationSlotOfferStatuses.Open, Note = Trim(note), CreatedByUserId = technicianUserId, CreatedAt = now, UpdatedAt = now,
-                    });
-                }
-                unitOfWork.AddNotification(fresh.CustomerUserId, CustomerNotificationTypes.InstallationSlotsOffered,
-                    $"Kỹ thuật viên đã đề xuất {normalized.Count} khung thời gian thi công cho hợp đồng {fresh.ContractNumber}. Vui lòng chọn một khung phù hợp.", now);
-                await unitOfWork.SaveChangesAsync(token);
-                return (OperationResult<bool>.Ok(true), true);
-            }, cancellationToken);
-            if (!written.Succeeded) return written.As<IReadOnlyList<InstallationSlotOfferView>>();
-        }
-        catch (PersistenceConflictException)
-        {
-            return OperationResult<IReadOnlyList<InstallationSlotOfferView>>.Fail(InstallationScheduleErrorCodes.StaleRevision,
-                "The offers changed meanwhile. Reload and try again.");
-        }
-        return OperationResult<IReadOnlyList<InstallationSlotOfferView>>.Ok(await OfferViewsAsync(contract, true, InstallationSlotOfferStatuses.Open, cancellationToken));
-    }
-
     /// <summary>Every offer of the contract (history included) for its responsible technician; another technician gets 404.</summary>
     public async Task<OperationResult<IReadOnlyList<InstallationSlotOfferView>>> ListOffersForTechnicianAsync(Guid technicianUserId, Guid contractId,
         CancellationToken cancellationToken)
@@ -134,75 +66,9 @@ public sealed partial class InstallationScheduleHandlers
         return OperationResult<IReadOnlyList<InstallationSlotOfferView>>.Ok(await OfferViewsAsync(contract, true, null, cancellationToken));
     }
 
-    // ================================================================== Customer
-
-    /// <summary>The OPEN offers of the customer's own contract, each re-checked now (another customer's contract: 404).</summary>
-    public async Task<OperationResult<IReadOnlyList<InstallationSlotOfferView>>> ListOffersForCustomerAsync(Guid customerUserId, Guid contractId,
-        CancellationToken cancellationToken)
-    {
-        var contract = await unitOfWork.GetScheduleContractAsync(contractId, cancellationToken);
-        if (contract is null || contract.CustomerUserId != customerUserId)
-            return OperationResult<IReadOnlyList<InstallationSlotOfferView>>.Fail(InstallationScheduleErrorCodes.ContractNotFound, "Contract was not found.");
-        return OperationResult<IReadOnlyList<InstallationSlotOfferView>>.Ok(await OfferViewsAsync(contract, false, InstallationSlotOfferStatuses.Open, cancellationToken));
-    }
-
-    /// <summary>
-    /// The customer selects one OPEN offer: re-validated under the contract and technician locks, then recorded as the PLANNED schedule (confirmed at
-    /// once when the contract is already PAID). Repeating the selection of the same offer returns its schedule (idempotent).
-    /// </summary>
-    public async Task<OperationResult<InstallationScheduleView>> SelectOfferAsync(Guid customerUserId, Guid offerId, CancellationToken cancellationToken)
-    {
-        var offer = await unitOfWork.FindSlotOfferAsync(offerId, false, cancellationToken);
-        var contract = offer is null ? null : await unitOfWork.GetScheduleContractAsync(offer.ContractId, cancellationToken);
-        if (offer is null || contract is null || contract.CustomerUserId != customerUserId)
-            return Fail(InstallationScheduleErrorCodes.OfferNotFound, "The offered time was not found.");
-        if (offer.Status == InstallationSlotOfferStatuses.Selected && offer.SelectedScheduleId is { } chosen
-            && await unitOfWork.FindProposalAsync(chosen, false, cancellationToken) is { } schedule && InstallationScheduleStatuses.IsLive(schedule.Status))
-            return OperationResult<InstallationScheduleView>.Ok(await ViewAsync(schedule, null, cancellationToken));
-        if (offer.Status != InstallationSlotOfferStatuses.Open)
-            return Fail(InstallationScheduleErrorCodes.OfferNotOpen, "This offered time was replaced or already chosen. Reload the offers.");
-        if (!Schedulable(contract))
-            return Fail(InstallationScheduleErrorCodes.ContractNotSigned, "An installation date can be chosen only after the contract is SIGNED.");
-
-        var target = await TargetAsync(contract, offer.TechnicianUserId, cancellationToken);
-        if (!target.Succeeded) return target.As<InstallationScheduleView>();
-        var (zoneIds, ignore) = target.Value!;
-        var interval = new SlotInterval(offer.StartsAt, offer.EndsAt);
-        if (await UnavailabilityAsync(contract, offer.TechnicianUserId, interval, zoneIds, ignore, cancellationToken) is not null)
-            return Fail(InstallationScheduleErrorCodes.OfferUnavailable, CustomerUnavailable);
-
-        InstallationSlotOffer? tracked = null;
-        IReadOnlyList<InstallationSlotOffer> siblings = [];
-        return await RecordPlanAsync(customerUserId, contract, offer.TechnicianUserId, offer.StartsAt, offer.EndsAt,
-            $"Khách hàng tự chọn khung thời gian kỹ thuật viên đề xuất trên cổng khách hàng (đề xuất {offer.Id}).",
-            "Customer selected an offered installation time", null,
-            guard: async (_, token) =>
-            {
-                // Serialises two customers choosing the same technician interval (same lock as every booking/assignment of the technician).
-                await unitOfWork.LockTechniciansAsync([offer.TechnicianUserId], token);
-                tracked = await unitOfWork.FindSlotOfferAsync(offerId, true, token);
-                if (tracked?.Status != InstallationSlotOfferStatuses.Open)
-                    return OperationResult<bool>.Fail(InstallationScheduleErrorCodes.OfferNotOpen, "This offered time was replaced or already chosen. Reload the offers.");
-                if ((await unitOfWork.ListOverlappingLiveProposalsAsync(offer.TechnicianUserId, offer.ContractId, offer.StartsAt, offer.EndsAt, token)).Count > 0)
-                    return OperationResult<bool>.Fail(InstallationScheduleErrorCodes.OfferUnavailable, CustomerUnavailable);
-                siblings = (await unitOfWork.ListSlotOffersAsync(offer.ContractId, InstallationSlotOfferStatuses.Open, true, token)).Where(o => o.Id != offerId).ToList();
-                return OperationResult<bool>.Ok(true);
-            },
-            onRecorded: (proposal, now) =>
-            {
-                tracked!.Status = InstallationSlotOfferStatuses.Selected;
-                tracked.SelectedAt = now;
-                tracked.SelectedScheduleId = proposal.Id;
-                tracked.UpdatedAt = now;
-                tracked.Revision++;
-                foreach (var other in siblings) Withdraw(other, "ANOTHER_OFFER_SELECTED", now);
-            },
-            cancellationToken);
-    }
-
     // ================================================================== internals
 
-    private static void Withdraw(InstallationSlotOffer offer, string reason, DateTimeOffset now)
+    internal static void Withdraw(InstallationSlotOffer offer, string reason, DateTimeOffset now)
     {
         offer.Status = InstallationSlotOfferStatuses.Withdrawn;
         offer.WithdrawnAt = now;
@@ -230,7 +96,7 @@ public sealed partial class InstallationScheduleHandlers
             return OperationResult<(ScheduleContractInfo, IReadOnlyCollection<Guid>, IReadOnlySet<Guid>?)>.Fail(InstallationScheduleErrorCodes.ContractNotFound, "Contract was not found.");
         if (!Schedulable(contract))
             return OperationResult<(ScheduleContractInfo, IReadOnlyCollection<Guid>, IReadOnlySet<Guid>?)>.Fail(InstallationScheduleErrorCodes.ContractNotSigned,
-                "Installation times can be offered only after the contract is SIGNED.");
+                "Installation times can be consulted once the contract exists and is paid (or SIGNED for a contract of the previous flow).");
         var target = await TargetAsync(contract, technicianUserId, cancellationToken);
         return target.Succeeded
             ? OperationResult<(ScheduleContractInfo, IReadOnlyCollection<Guid>, IReadOnlySet<Guid>?)>.Ok((contract, target.Value!.Zones, target.Value.Ignore))
@@ -286,7 +152,6 @@ public sealed partial class InstallationScheduleHandlers
                 var target = await TargetAsync(contract, o.TechnicianUserId, cancellationToken);
                 reason = !target.Succeeded ? target.Message
                     : await UnavailabilityAsync(contract, o.TechnicianUserId, new SlotInterval(o.StartsAt, o.EndsAt), target.Value!.Zones, target.Value.Ignore, cancellationToken);
-                if (reason is not null && !forTechnician) reason = CustomerUnavailable;
             }
             views.Add(new InstallationSlotOfferView(o.Id, o.ContractId, o.TechnicianUserId, names.GetValueOrDefault(o.TechnicianUserId, ""), o.StartsAt, o.EndsAt,
                 o.Status, o.Status == InstallationSlotOfferStatuses.Open && reason is null, reason, o.Note, o.CreatedAt, o.SelectedAt, o.SelectedScheduleId,

@@ -243,12 +243,11 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
         var catalogPanel = await ctx.ProductAsync("PG-ASSET-PNL", 2_000_000m);
         Assert.True((await installs.RegisterAssetsAsync(leader, projectId,
             [new AssetInput("PANEL", catalogPanel.Id, "Jinko", "Tiger Neo 550", "JK-CATALOG-001", "R2-C1", null)], None)).Succeeded);
-        // The extra, uncontracted panel is a substitution: Manager approval before the report, customer agreement before the handover.
+        // The extra, uncontracted panel is a substitution: the Manager's internal approval before the report, then the internal acceptance.
         var revision = (await installs.GetForManagerAsync(projectId, None)).Value!.Revision;
         Assert.True((await installs.ApproveSubstitutionAsync(paid.ManagerId, projectId, revision, "Extra panel agreed on site", None)).Succeeded);
         Assert.True((await installs.ReportCompletionAsync(leader, projectId, "All panels installed.", null, None)).Succeeded);
-        Assert.True((await installs.CustomerApproveSubstitutionAsync(paid.CustomerId, projectId, None)).Succeeded);
-        var accepted = await installs.DecideAcceptanceAsync(paid.CustomerId, projectId, true, null, None);
+        var accepted = await InternalAcceptance.AcceptAsync(ctx, projectId, paid.ManagerId);
         Assert.True(accepted.Succeeded, accepted.Message);
 
         // Flow 3: an after-sales repair that replaced an asset (replacement lineage + source request on installed_asset).
@@ -296,13 +295,13 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
         await PopulateTerminalBranchAsync(ctx);
     }
 
-    /// <summary>A third request: its quotation rejected by the customer, a revision draft, then the request withdrawn (M-1 rows and foreign keys).</summary>
+    /// <summary>A third request: its quotation declined on site, a revision draft, then the request withdrawn (M-1 rows and foreign keys).</summary>
     private static async Task PopulateTerminalBranchAsync(InstallationWorkflowTestContext ctx)
     {
         ctx.Clock.Now = DefaultNow.ToUniversalTime();
         var (survey, issued) = await QuotationTests.IssuedAsync(ctx, "Third customer");
         var quotations = ctx.Quotations();
-        Assert.True((await quotations.RejectAsync(survey.Request.Customer.Id, issued.QuotationId, "Too expensive", None)).Succeeded);
+        Assert.True((await OnSiteDecision.DeclineAsync(ctx, survey.Technician.Id, issued.QuotationId, "Too expensive")).Succeeded);
         Assert.True((await quotations.CreateRevisionAsync(survey.Sales.Id, issued.QuotationId, None)).Succeeded);
         var withdrawn = await quotations.WithdrawRequestAsync(survey.Request.Customer.Id, survey.Request.Request.Id, "Moving", None);
         Assert.True(withdrawn.Succeeded, withdrawn.Message);
@@ -310,7 +309,7 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
         // M-7: a fourth request whose initial DRAFT contract is discarded, then the request is closed.
         ctx.Clock.Now = DefaultNow.ToUniversalTime();
         var ready = await ContractTests.AcceptedQuotationAsync(ctx, "Fourth customer");
-        var draft = (await ctx.Contracts().CreateAsync(ready.Survey.Sales.Id, ready.QuotationId, "Terms", None)).Value!;
+        var draft = await ContractTests.DraftAsync(ctx, ready, "Terms");
         Assert.True((await ctx.Contracts().DiscardAsync(ready.Survey.Sales.Id, draft.ContractId, draft.Revision, "Customer withdrew", None)).Succeeded);
         Assert.True((await quotations.CloseRequestAsync(ready.Survey.Sales.Id, ready.Survey.Request.Request.Id, "CUSTOMER_DECLINED", null, None)).Succeeded);
         // A legacy contract that still carries its Sales owner (rows written before the 2026-11-17 simplified flow).
@@ -343,17 +342,19 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
         var quotations = ctx.Quotations();
         var pdf = await ctx.VerifiedFileAsync(survey.Sales.Id, SmartSolar.Modules.Files.FilePurposes.QuotationDocument, "pdf");
         Assert.True((await quotations.AttachDocumentAsync(survey.Sales.Id, issued.QuotationId, pdf, None)).Succeeded);
-        // The amendment made the issued v1 outdated: Sales revises it, confirms the lines against survey v2, issues and the customer accepts v2.
+        // The amendment made the issued v1 outdated: Sales revises it, confirms the lines against survey v2, issues; v2 was accepted in the app (legacy data).
         var revision = await quotations.CreateRevisionAsync(survey.Sales.Id, issued.QuotationId, None);
         Assert.True(revision.Succeeded, revision.Message);
         var confirmed = await quotations.ConfirmSurveyVersionAsync(survey.Sales.Id, revision.Value!.QuotationId, revision.Value.Revision, "Re-measured roof checked", None);
         Assert.True(confirmed.Succeeded, confirmed.Message);
         var v2 = await quotations.IssueAsync(survey.Sales.Id, confirmed.Value!.QuotationId, confirmed.Value.Revision, None);
         Assert.True(v2.Succeeded, v2.Message);
-        Assert.True((await quotations.AcceptAsync(survey.Request.Customer.Id, v2.Value!.QuotationId, None)).Succeeded);
+        await ctx.EnsureInstallationWarrantyOptionAsync();
+        var draftId = await LegacyFlowData.CustomerAcceptedWithDraftAsync(ctx.Db, v2.Value!.QuotationId, ctx.Clock.GetUtcNow());
 
         var contracts = ctx.Contracts();
-        var draft = (await contracts.CreateAsync(survey.Sales.Id, v2.Value.QuotationId, "Terms", None)).Value!;
+        var draft = (await contracts.UpdateTermsAsync(survey.Sales.Id, draftId, (await contracts.GetForStaffAsync(survey.Sales.Id, true, draftId, None)).Value!.Revision,
+            "Terms", None)).Value!;
         var contract = (await contracts.IssueAsync(survey.Sales.Id, draft.ContractId, draft.Revision, None)).Value!;
         var amendment = await contracts.CreateAmendmentAsync(survey.Sales.Id, contract.ContractId, "Amended terms", None);
         Assert.True(amendment.Succeeded, amendment.Message);

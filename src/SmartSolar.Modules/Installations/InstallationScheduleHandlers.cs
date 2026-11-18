@@ -25,7 +25,8 @@ public sealed record InstallationScheduleView(
     Guid TechnicianUserId, string TechnicianName, DateTimeOffset StartsAt, DateTimeOffset EndsAt, string Status, bool IsConfirmed,
     string CustomerAgreementNote, string? ChangeReason, Guid? ProjectId, string? ProjectStatus, DateTimeOffset? ConfirmedAt,
     string? RescheduleReasonCode, string? RescheduleDetail, DateTimeOffset? CustomerChangeRequestedAt, string? CustomerChangeRequestNote,
-    DateTimeOffset? CancelledAt, string? CancellationReason, DateTimeOffset CreatedAt, int Revision, bool AwaitingPayment);
+    DateTimeOffset? CancelledAt, string? CancellationReason, DateTimeOffset CreatedAt, int Revision, bool AwaitingPayment,
+    bool AwaitingContractSignature = false);
 
 /// <summary>A SIGNED / PAID contract the technician surveyed, with its live schedule (null = none recorded yet).</summary>
 public sealed record TechnicianScheduleContractView(Guid ContractId, string ContractNumber, string ContractStatus, string PropertyName, string CustomerName,
@@ -38,8 +39,9 @@ public interface IContractPaidFollowUp
 }
 
 /// <summary>
-/// Technician-agreed installation schedules (business 2026-11-17). After the contract is SIGNED the responsible technician (the one who did
-/// the on-site survey) records the date agreed with the customer: the interval is validated (future, horizon, length) and the technician's
+/// Technician-agreed installation schedules (business 2026-11-17, technician-led 2026-11-18). Once the contract exists and is paid (a contract created
+/// from a paid quotation) — or is SIGNED for a contract of the previous flow — the responsible technician (the one who did the on-site survey) records
+/// the date agreed with the customer in person; the customer does not choose or confirm anything in the app: the interval is validated (future, horizon, length) and the technician's
 /// eligibility is checked (active technician, member of the site's zone, working day and hours, no leave, no other commitment within the
 /// buffer). The plan is PLANNED and holds no capacity. When the contract is PAID the system creates (or reuses) the contract's single
 /// installation project and turns the plan into the technician's assignment through <see cref="InstallationHandlers.AssignAsync"/> (same
@@ -94,7 +96,8 @@ public sealed partial class InstallationScheduleHandlers(
         if (contract is null || (!isStaff && contract.SurveyTechnicianUserId != actorUserId))
             return Fail(InstallationScheduleErrorCodes.ContractNotFound, "Contract was not found.");
         if (!Schedulable(contract))
-            return Fail(InstallationScheduleErrorCodes.ContractNotSigned, "An installation date can be agreed only after the contract is SIGNED.");
+            return Fail(InstallationScheduleErrorCodes.ContractNotSigned,
+                "An installation date can be agreed once the contract exists and is paid (or SIGNED for a contract of the previous flow).");
         var technicianId = isStaff ? input.TechnicianUserId ?? contract.SurveyTechnicianUserId : actorUserId;
         if (technicianId is not { } technician)
             return Fail(CommonErrorCodes.ValidationFailed, "'technicianUserId' is required: this contract has no surveying technician.");
@@ -126,7 +129,24 @@ public sealed partial class InstallationScheduleHandlers(
         if (ineligible is not null)
             return Fail(InstallationScheduleErrorCodes.TechnicianIneligible, $"{name} cannot take this interval: {ineligible}.", new { reason = ineligible });
 
-        return await RecordPlanAsync(actorUserId, contract, technician, startsAt, endsAt, agreement, Trim(input.Reason), input.ExpectedRevision, null, null,
+        // The date agreed in person replaces any OPEN offer of the retired customer-selection flow (kept as WITHDRAWN history).
+        IReadOnlyList<InstallationSlotOffer> openOffers = [];
+        return await RecordPlanAsync(actorUserId, contract, technician, startsAt, endsAt, agreement, Trim(input.Reason), input.ExpectedRevision,
+            guard: async (_, token) =>
+            {
+                // Two agreed dates never overlap for one technician: the technician lock serialises concurrent recordings (any contract), then the
+                // technician's other live plans are checked (a PLANNED date holds no assignment capacity yet, so the planner alone does not see it).
+                await unitOfWork.LockTechniciansAsync([technician], token);
+                if ((await unitOfWork.ListOverlappingLiveProposalsAsync(technician, contractId, startsAt, endsAt, token)).Count > 0)
+                    return OperationResult<bool>.Fail(InstallationScheduleErrorCodes.TechnicianIneligible,
+                        "The technician already has another installation agreed in this interval.", new { reason = "PLANNED_CONFLICT" });
+                openOffers = await unitOfWork.ListSlotOffersAsync(contractId, InstallationSlotOfferStatuses.Open, true, token);
+                return OperationResult<bool>.Ok(true);
+            },
+            onRecorded: (_, now) =>
+            {
+                foreach (var offer in openOffers) Withdraw(offer, "REPLACED_BY_TECHNICIAN_SCHEDULE", now);
+            },
             cancellationToken);
     }
 
@@ -151,7 +171,7 @@ public sealed partial class InstallationScheduleHandlers(
                 await unitOfWork.LockContractAsync(contractId, token);
                 var fresh = await unitOfWork.GetScheduleContractAsync(contractId, token);
                 if (fresh is null || !Schedulable(fresh))
-                    return (OperationResult<bool>.Fail(InstallationScheduleErrorCodes.ContractNotSigned, "The contract is no longer SIGNED or PAID."), false);
+                    return (OperationResult<bool>.Fail(InstallationScheduleErrorCodes.ContractNotSigned, "The contract can no longer be scheduled (not paid, superseded or discarded)."), false);
                 if (guard is not null && await guard(fresh, token) is { Succeeded: false } refused) return (refused, false);
                 var live = await unitOfWork.GetLiveProposalAsync(contractId, true, token);
                 if (live is not null && expectedRevision is { } expected && live.Revision != expected)
@@ -194,7 +214,9 @@ public sealed partial class InstallationScheduleHandlers(
                     live is null ? CustomerNotificationTypes.InstallationSchedulePlanned : CustomerNotificationTypes.InstallationScheduleChanged,
                     fresh.Status == ContractStatuses.Paid
                         ? $"Lịch thi công dự kiến {when} đã được ghi nhận; hệ thống đang xác nhận với kỹ thuật viên."
-                        : $"Lịch thi công dự kiến {when} đã được ghi nhận. Lịch chỉ được xác nhận sau khi hợp đồng được thanh toán.",
+                        : fresh.Prepaid
+                            ? $"Lịch thi công dự kiến {when} đã được ghi nhận. Lịch được xác nhận tự động khi hồ sơ hợp đồng hoàn tất."
+                            : $"Lịch thi công dự kiến {when} đã được ghi nhận. Lịch chỉ được xác nhận sau khi hợp đồng được thanh toán.",
                     now);
                 await unitOfWork.SaveChangesAsync(token);
                 createdId = proposal.Id;
@@ -401,7 +423,7 @@ public sealed partial class InstallationScheduleHandlers(
             if ((await ConfirmForContractAsync(contractId, cancellationToken)).Value?.Status == InstallationScheduleStatuses.Confirmed) confirmed++;
         var expired = 0;
         foreach (var id in await unitOfWork.ListExpiredPlannedProposalIdsAsync(time.GetUtcNow(), limit, cancellationToken))
-            if ((await RescheduleAsync(id, InstallationScheduleRescheduleReasons.InvalidSchedule, "The agreed start passed before the contract was paid.",
+            if ((await RescheduleAsync(id, InstallationScheduleRescheduleReasons.InvalidSchedule, "The agreed start passed before the contract was completed (paid and signed).",
                     cancellationToken)).Succeeded) expired++;
         return (confirmed, expired);
     }
@@ -504,10 +526,16 @@ public sealed partial class InstallationScheduleHandlers(
             p.ConfirmedAt is { } c ? Local(c) : null, p.RescheduleReasonCode, p.RescheduleDetail,
             p.CustomerChangeRequestedAt is { } r ? Local(r) : null, p.CustomerChangeRequestNote, p.CancelledAt is { } x ? Local(x) : null, p.CancellationReason,
             Local(p.CreatedAt), p.Revision,
-            AwaitingPayment: p.Status == InstallationScheduleStatuses.Planned && contract?.Status != ContractStatuses.Paid);
+            AwaitingPayment: p.Status == InstallationScheduleStatuses.Planned && contract?.Status != ContractStatuses.Paid && contract?.Prepaid != true,
+            AwaitingContractSignature: p.Status == InstallationScheduleStatuses.Planned && contract?.Status != ContractStatuses.Paid && contract?.Prepaid == true);
     }
 
-    private static bool Schedulable(ScheduleContractInfo c) => c.Status is ContractStatuses.Signed or ContractStatuses.Paid;
+    /// <summary>
+    /// SIGNED / PAID (previous flow: signed, then paid), or any live contract created from a paid quotation (technician-led flow: paid first,
+    /// signed after). Superseded and discarded contracts are never scheduled.
+    /// </summary>
+    private static bool Schedulable(ScheduleContractInfo c)
+        => c.Status is ContractStatuses.Signed or ContractStatuses.Paid || (c.Prepaid && ContractStatuses.IsLive(c.Status));
     private DateTimeOffset Local(DateTimeOffset at) => TimeZoneInfo.ConvertTime(at, calendar.TimeZone);
     private static string? Trim(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim().Length <= MaxNote ? value.Trim() : value.Trim()[..MaxNote];
     private static OperationResult<InstallationScheduleView> Fail(string code, string message, object? details = null)

@@ -20,6 +20,8 @@ public static class SalesOutcomeErrorCodes
     public const string AppointmentOpen = "SURVEY_REQUEST_APPOINTMENT_OPEN";
     /// <summary>NOT_FEASIBLE is only a closure reason when the on-site survey concluded NOT_FEASIBLE (409).</summary>
     public const string NotFeasibleUnconfirmed = "SURVEY_REQUEST_NOT_FEASIBLE_UNCONFIRMED";
+    /// <summary>A payment of the request's agreed quotation is open or verified: closing would strand the money (409).</summary>
+    public const string PaymentInProgress = "SURVEY_REQUEST_PAYMENT_IN_PROGRESS";
     /// <summary>A quotation of the request changed while it was being closed (e.g. accepted meanwhile): nothing was closed (409).</summary>
     public const string Conflict = "SURVEY_REQUEST_CLOSURE_CONFLICT";
 }
@@ -32,35 +34,6 @@ public static class SalesOutcomeErrorCodes
 /// </summary>
 public sealed partial class QuotationHandlers
 {
-    /// <summary>ISSUED → REJECTED by the customer (reason optional). Atomic against a concurrent acceptance: exactly one of them wins.</summary>
-    public async Task<OperationResult<QuotationView>> RejectAsync(Guid customerUserId, Guid quotationId, string? reason, CancellationToken cancellationToken)
-    {
-        if (reason is { Length: > 2000 }) return Invalid(new() { ["reason"] = ["At most 2000 characters."] });
-        var quotation = await unitOfWork.FindAsync(quotationId, false, cancellationToken);
-        if (quotation is null || quotation.CustomerUserId != customerUserId || quotation.Status == QuotationStatuses.Draft) return NotFound();
-        if (quotation.Status == QuotationStatuses.Rejected) return OperationResult<QuotationView>.Ok(await ViewAsync(quotation, false, cancellationToken, forCustomer: true));
-
-        var why = Trim(reason, 2000);
-        try
-        {
-            var outcome = await unitOfWork.ExecuteInTransactionAsync<OperationResult<bool>>(async token =>
-            {
-                var now = time.GetUtcNow();
-                if (!await unitOfWork.TryCloseQuotationAsync(quotationId, QuotationStatuses.Issued, QuotationStatuses.Rejected, customerUserId, why, now, token))
-                    return (OperationResult<bool>.Fail(QuotationErrorCodes.NotIssued, "Only an issued quotation can be rejected (it was accepted, revised or closed)."), false);
-                AddEvent(quotationId, QuotationEventTypes.Rejected, customerUserId, Trim(why, 500), now);
-                await unitOfWork.SaveChangesAsync(token);
-                return (OperationResult<bool>.Ok(true), true);
-            }, cancellationToken);
-            if (!outcome.Succeeded) return outcome.As<QuotationView>();
-        }
-        catch (PersistenceConflictException)
-        {
-            return OperationResult<QuotationView>.Fail(QuotationErrorCodes.StaleRevision, "The quotation was changed meanwhile. Reload and try again.");
-        }
-        return OperationResult<QuotationView>.Ok(await ViewAsync((await unitOfWork.FindAsync(quotationId, false, cancellationToken))!, false, cancellationToken, forCustomer: true));
-    }
-
     /// <summary>The customer withdraws their own open request (no contract, no open appointment). Repeating it returns the same outcome.</summary>
     public async Task<OperationResult<SalesOutcomeView>> WithdrawRequestAsync(Guid customerUserId, Guid surveyRequestId, string? reason, CancellationToken cancellationToken)
     {
@@ -170,6 +143,9 @@ public sealed partial class QuotationHandlers
                 new { contractStatus = state.LiveContractStatus });
         if (state.HasOpenAppointment)
             return OperationResult<bool>.Fail(SalesOutcomeErrorCodes.AppointmentOpen, "Cancel the open survey appointment first.");
+        if (state.HasPaymentInProgressOrPaid)
+            return OperationResult<bool>.Fail(SalesOutcomeErrorCodes.PaymentInProgress,
+                "A payment of this request's agreed quotation is open or verified; cancel the open payment first (a verified one creates the contract).");
         return null;
     }
 

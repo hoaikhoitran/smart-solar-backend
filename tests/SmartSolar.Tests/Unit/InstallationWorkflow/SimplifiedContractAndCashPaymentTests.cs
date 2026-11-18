@@ -22,45 +22,54 @@ public sealed class SimplifiedContractAndCashPaymentTests
 {
     private static readonly CancellationToken None = CancellationToken.None;
 
-    // ------------------------------------------------------------------ contract draft on acceptance
+    // ------------------------------------------------------------------ contract only after a verified payment (2026-11-18)
 
     [Fact]
-    public async Task Accepting_creates_exactly_one_contract_draft_from_the_accepted_snapshot()
+    public async Task A_verified_payment_creates_exactly_one_contract_from_the_paid_snapshot()
     {
         await using var ctx = InstallationWorkflowTestContext.Create();
         var cart = await IssuedAsync(ctx);
+        var manager = await ctx.Scheduling.Inner.SeedUserAsync("Manager");
 
-        var draft = await AcceptAsync(ctx, cart);
+        var draft = await PaidOnSiteAsync(ctx, cart, manager);
         Assert.Equal(ContractStatuses.Draft, draft.Status);
+        Assert.True(draft.PaymentCompleted);
+        Assert.NotNull(draft.PaymentAttemptId);
         Assert.Equal(cart.Quotation.TotalAmount, draft.TotalAmount);
         Assert.Equal(cart.Quotation.Version, draft.QuotationVersion);
         Assert.Equal(cart.Quotation.Lines.Count, draft.PricingSnapshot.GetProperty("lines").GetArrayLength());
         Assert.Equal(120, draft.WarrantyMonths);
-        Assert.Contains(draft.Events!, e => e.EventType == "AUTO_DRAFTED" && e.ActorUserId == cart.CustomerId);
+        Assert.Contains(draft.Events!, e => e.EventType == "PAID_BEFORE_CONTRACT" && e.ActorUserId == manager.Id);
 
-        // Repeating the acceptance, or a manual creation, never makes a second contract.
-        Assert.True((await ctx.QuotationsWithContracts().AcceptAsync(cart.CustomerId, cart.Quotation.QuotationId, None)).Succeeded);
-        var manager = await ctx.Scheduling.Inner.SeedUserAsync("Manager");
+        // A manual creation never makes a second contract; the customer does not see the draft (Manager/Admin prepare it).
         Assert.Equal(ContractErrorCodes.AlreadyExists, (await ctx.Contracts().CreateAsync(manager.Id, cart.Quotation.QuotationId, null, None)).ErrorCode);
         Assert.Equal(1, await ctx.Db.CustomerContracts.CountAsync());
-        // The customer does not see the draft; Manager/Admin prepare it.
         Assert.Empty(await ctx.Contracts().ListForCustomerAsync(cart.CustomerId, None));
     }
 
     [Fact]
-    public async Task A_quotation_accepted_before_the_change_gets_its_contract_through_the_manager()
+    public async Task An_agreed_or_legacy_accepted_quotation_gets_no_contract_before_its_payment()
     {
         await using var ctx = InstallationWorkflowTestContext.Create();
         var cart = await IssuedAsync(ctx);
-        // Legacy wiring (no contract hook): an ACCEPTED quotation without a contract, as data accepted before 2026-11-17.
-        Assert.True((await ctx.Quotations().AcceptAsync(cart.CustomerId, cart.Quotation.QuotationId, None)).Succeeded);
-        Assert.Equal(0, await ctx.Db.CustomerContracts.CountAsync());
         await ctx.EnsureInstallationWarrantyOptionAsync();
         var manager = await ctx.Scheduling.Inner.SeedUserAsync("Manager");
 
-        var created = await ctx.Contracts().CreateAsync(manager.Id, cart.Quotation.QuotationId, "Terms", None);
-        Assert.True(created.Succeeded, created.Message);
-        Assert.Null((await ctx.Db.CustomerContracts.SingleAsync()).SalesUserId);
+        await AgreedAsync(ctx, cart);
+        Assert.Equal(0, await ctx.Db.CustomerContracts.CountAsync());
+        Assert.Equal(ContractErrorCodes.PaymentRequired, (await ctx.Contracts().CreateAsync(manager.Id, cart.Quotation.QuotationId, "Terms", None)).ErrorCode);
+
+        // A quotation accepted in the app before the change (no contract) is paid on site the same way, then gets its contract.
+        ctx.Clock.Now = SchedulingTestContext.DefaultNow.ToUniversalTime();   // each journey books its survey on the fixture day
+        var legacy = await IssuedAsync(ctx, "Legacy customer");
+        await LegacyFlowData.AcceptedWithoutContractAsync(ctx.Db, legacy.Quotation.QuotationId, ctx.Clock.GetUtcNow());
+        Assert.Equal(ContractErrorCodes.PaymentRequired, (await ctx.Contracts().CreateAsync(manager.Id, legacy.Quotation.QuotationId, "Terms", None)).ErrorCode);
+        var opened = await ctx.OnSitePayments().StartAsync(legacy.TechnicianId, legacy.Quotation.QuotationId, "CASH", None);
+        Assert.True(opened.Succeeded, opened.Message);
+        var evidence = await ctx.VerifiedFileAsync(manager.Id, FilePurposes.PaymentEvidence);
+        Assert.True((await ctx.PaymentsWithCash().ConfirmCashAttemptAsync(manager.Id, opened.Value!.Current!.PaymentAttemptId,
+            new CashConfirmation(opened.Value.Amount, "PT-LEGACY", evidence, null), None)).Succeeded);
+        Assert.Equal(1, await ctx.Db.CustomerContracts.CountAsync(c => c.QuotationId == legacy.Quotation.QuotationId));
     }
 
     [Fact]
@@ -82,7 +91,7 @@ public sealed class SimplifiedContractAndCashPaymentTests
     {
         await using var ctx = InstallationWorkflowTestContext.Create();
         var cart = await IssuedAsync(ctx);
-        var draft = await AcceptAsync(ctx, cart);
+        var draft = await LegacyAcceptAsync(ctx, cart);
         var payments = ctx.PaymentsWithCash();
         Assert.Equal(PaymentErrorCodes.ContractNotSigned, (await payments.SelectCashAsync(cart.CustomerId, draft.ContractId, None)).ErrorCode);
 

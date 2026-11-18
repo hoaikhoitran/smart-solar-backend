@@ -146,4 +146,6 @@ public static class ContractErrorCodes
     public const string ReasonRequired = "CONTRACT_REJECTION_REASON_REQUIRED";
     public const string InvalidWarranty = "CONTRACT_WARRANTY_VALIDATION_FAILED";
     public const string WarrantyRequired = "CONTRACT_WARRANTY_REQUIRED";
+    /// <summary>A contract is created only from an installation quotation whose payment was verified (409).</summary>
+    public const string PaymentRequired = "CONTRACT_PAYMENT_REQUIRED";
 }

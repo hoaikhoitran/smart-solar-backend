@@ -97,13 +97,17 @@ public sealed class InstallationLifecycleE2ETests
         return (await AutomaticQuotationFixture.QuotationsAsync(j.Ctx, j.RequestId)).Last();
     }
 
-    /// <summary>Customer accepts the quotation; Sales prepares and publishes the contract (AWAITING_SIGNATURE).</summary>
+    /// <summary>
+    /// LEGACY contract path (previous flow, data production still holds): the quotation accepted in the app with its contract DRAFT, signed first and
+    /// paid by the customer afterwards; staff prepare and publish the contract (AWAITING_SIGNATURE). The technician-led flow (agreement on site,
+    /// payment before the contract) is covered by <see cref="TechnicianLedSalesE2ETests"/>.
+    /// </summary>
     private static async Task<(ContractTests.Ready Ready, ContractView Contract)> AcceptAndPublishAsync(Journey j, Guid quotationId)
     {
-        var accepted = await j.Ctx.Quotations().AcceptAsync(j.CustomerId, quotationId, None);
-        Assert.True(accepted.Succeeded, accepted.Message);
         await j.Ctx.EnsureInstallationWarrantyOptionAsync();
-        var ready = new ContractTests.Ready(j.Survey, quotationId, accepted.Value!.TotalAmount);
+        await LegacyFlowData.CustomerAcceptedWithDraftAsync(j.Ctx.Db, quotationId, j.Ctx.Clock.GetUtcNow());
+        var total = (await j.Ctx.Db.Quotations.AsNoTracking().SingleAsync(q => q.Id == quotationId)).TotalAmount;
+        var ready = new ContractTests.Ready(j.Survey, quotationId, total);
         return (ready, await ContractTests.PublishedAsync(j.Ctx, ready));
     }
 
@@ -155,7 +159,8 @@ public sealed class InstallationLifecycleE2ETests
 
         if (reworkFirst)
         {
-            var rework = (await installs.DecideAcceptanceAsync(j.CustomerId, project.ProjectId, false, "Cable tray loose on the east side", None)).Value!;
+            Assert.True((await InternalAcceptance.ReworkAsync(ctx, project.ProjectId, "Cable tray loose on the east side", manager.Id)).Succeeded);
+            var rework = (await installs.GetForCustomerAsync(j.CustomerId, project.ProjectId, None)).Value!;
             Assert.Equal((InstallationStatuses.ReworkRequired, 2), (rework.Status, rework.CurrentRound));
             // Round-1 evidence does not count for round 2.
             Assert.Equal(InstallationErrorCodes.EvidenceRequired, (await installs.ReportCompletionAsync(installer.Id, project.ProjectId, "Fixed", null, None)).ErrorCode);
@@ -163,8 +168,8 @@ public sealed class InstallationLifecycleE2ETests
             Assert.True((await installs.ReportCompletionAsync(installer.Id, project.ProjectId, "Cable tray fixed.", null, None)).Succeeded);
         }
 
-        var completed = (await installs.DecideAcceptanceAsync(j.CustomerId, project.ProjectId, true, null, None)).Value!;
-        Assert.Equal(InstallationStatuses.Completed, completed.Status);
+        Assert.True((await InternalAcceptance.AcceptAsync(ctx, project.ProjectId, manager.Id)).Succeeded);
+        Assert.Equal(InstallationStatuses.Completed, (await installs.GetForCustomerAsync(j.CustomerId, project.ProjectId, None)).Value!.Status);
         var handover = await installs.GetHandoverAsync(j.CustomerId, false, project.ProjectId, None);
         Assert.True(handover.Succeeded, handover.Message);
         return ((await installs.GetForManagerAsync(project.ProjectId, None)).Value!, handover.Value!);
@@ -262,10 +267,9 @@ public sealed class InstallationLifecycleE2ETests
         await using var _ = j.Ctx;
         var draft = await CompleteSurveyAsync(j, j.Catalog.StandardBill(), AutomaticQuotationOutcomes.PendingSalesReview);
 
-        // The customer never sees a draft; Sales finds it in the review queue with the reason.
+        // A draft cannot be presented or agreed; Sales finds it in the review queue with the reason.
         Assert.Equal(QuotationStatuses.Draft, draft.Status);
-        Assert.Equal(QuotationErrorCodes.NotFound, (await j.Ctx.Quotations().GetForCustomerAsync(j.CustomerId, draft.Id, None)).ErrorCode);
-        Assert.Equal(QuotationErrorCodes.NotFound, (await j.Ctx.Quotations().AcceptAsync(j.CustomerId, draft.Id, None)).ErrorCode);
+        Assert.Equal(QuotationErrorCodes.NotIssued, (await OnSiteDecision.AgreeAsync(j.Ctx, j.Survey.Technician.Id, draft.Id)).ErrorCode);
         var queued = Assert.Single(await j.Ctx.Quotations().ListPendingReviewAsync(j.Survey.Sales.Id, false, None));
         Assert.Contains(queued.PricingBasis!.Issues, i => i.Code == PricingIssueCodes.PriceMissing && i.ProductId == j.Catalog.Labor.Id);
         Assert.Equal(ContractErrorCodes.QuotationNotAccepted,
@@ -296,7 +300,7 @@ public sealed class InstallationLifecycleE2ETests
         var quotations = j.Ctx.Quotations();
         var otherSales = await j.Ctx.Scheduling.SeedSalesAsync("Other sales");
 
-        Assert.True((await quotations.RequestRevisionAsync(j.CustomerId, v1.Id, "Please apply the 500,000 VND promotion", None)).Succeeded);
+        Assert.True((await OnSiteDecision.RevisionAsync(j.Ctx, j.Survey.Technician.Id, v1.Id, "Please apply the 500,000 VND promotion")).Succeeded);
         var v2 = (await quotations.CreateRevisionAsync(j.Survey.Sales.Id, v1.Id, None)).Value!;
         var discounted = new QuotationHeaderInput(v2.LaborCost, v2.TransportCost, v2.OtherServiceCost, 500_000m, 0m, v2.ValidUntil, v2.Terms, "Promotion");
 
@@ -314,8 +318,8 @@ public sealed class InstallationLifecycleE2ETests
         Assert.Equal(PricingApprovalStatuses.Approved, approved.PricingApproval!.Status);
         var issued = (await quotations.IssueAsync(j.Survey.Sales.Id, v2.QuotationId, approved.Revision, None)).Value!;
 
-        // The old version can no longer be accepted; the contract is built from version 2.
-        Assert.Equal(QuotationErrorCodes.NotIssued, (await quotations.AcceptAsync(j.CustomerId, v1.Id, None)).ErrorCode);
+        // The old version can no longer be agreed; the contract is built from version 2.
+        Assert.Equal(QuotationErrorCodes.NotIssued, (await OnSiteDecision.AgreeAsync(j.Ctx, j.Survey.Technician.Id, v1.Id)).ErrorCode);
         var (ready, published) = await AcceptAndPublishAsync(j, issued.QuotationId);
 
         Assert.Equal((2, 18_500_000m, 500_000m, 18_000_000m), (issued.Version, issued.Subtotal, issued.DiscountAmount, issued.TotalAmount));
@@ -439,7 +443,7 @@ public sealed class InstallationLifecycleE2ETests
         Assert.Equal(new[] { 1, 2 }, await j.Ctx.Db.InstallationEvidence.Where(e => e.ProjectId == project.ProjectId).OrderBy(e => e.Round).Select(e => e.Round).ToListAsync());
         Assert.Equal(2, handover.Evidence.Count);
         Assert.Equal(2, await j.Ctx.Db.InstallationAcceptances.CountAsync(a => a.ProjectId == project.ProjectId));
-        Assert.Single(await j.Ctx.Db.InstallationEvents.Where(e => e.ProjectId == project.ProjectId && e.EventType == InstallationEventTypes.CustomerAccepted).ToListAsync());
+        Assert.Single(await j.Ctx.Db.InstallationEvents.Where(e => e.ProjectId == project.ProjectId && e.EventType == InstallationEventTypes.InternallyAccepted).ToListAsync());
     }
 
     // ------------------------------------------------------------------ E2E-09
@@ -482,7 +486,6 @@ public sealed class InstallationLifecycleE2ETests
         Assert.True(panels > 0);
 
         var quotation = await CompleteSurveyAsync(j, j.Catalog.StandardBill(panels), AutomaticQuotationOutcomes.Issued);
-        Assert.Null((await j.Ctx.Quotations().GetForCustomerAsync(j.CustomerId, quotation.Id, None)).Value!.PricingBasis);
         var view = (await j.Ctx.Quotations().GetForSalesAsync(j.Survey.Sales.Id, false, quotation.Id, None)).Value!;
 
         // The simulation is a reference (capacity, link); the price comes from catalog units × the technician's quantities, never from kWh.

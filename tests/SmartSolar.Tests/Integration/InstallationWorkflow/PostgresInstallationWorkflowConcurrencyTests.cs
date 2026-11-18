@@ -44,22 +44,23 @@ public sealed class PostgresInstallationWorkflowConcurrencyTests
     }
 
     [PostgresFact]
-    public async Task Acceptance_and_revision_request_race_to_exactly_one_outcome()
+    public async Task On_site_agreement_and_revision_recordings_race_to_exactly_one_outcome()
     {
         var (database, ctx) = await WorldAsync();
         await using var _ = database;
         await using var __ = ctx;
         var (survey, issued) = await QuotationTests.IssuedAsync(ctx);
-        var customer = survey.Request.Customer.Id;
+        var technician = survey.Technician.Id;
 
-        var results = await RaceAsync(database, 6, (db, i) => i % 2 == 0
-            ? ctx.Quotations(db).AcceptAsync(customer, issued.QuotationId, None)
-            : ctx.Quotations(db).RequestRevisionAsync(customer, issued.QuotationId, "Please lower the price", None));
+        // Two taps on the technician's device (or two devices) from the same displayed revision.
+        var results = await RaceAsync(database, 6, (db, i) => ctx.Quotations(db).RecordOnSiteDecisionAsync(technician, issued.QuotationId,
+            new OnSiteDecisionInput(i % 2 == 0 ? OnSiteDecisions.Agreed : OnSiteDecisions.RevisionNeeded, issued.Revision, "Please lower the price"), None));
 
         await using var check = database.NewContext();
         var status = (await check.Quotations.SingleAsync(q => q.Id == issued.QuotationId)).Status;
         var outcomeEvents = await check.QuotationEvents.AsNoTracking()
-            .Where(e => e.QuotationId == issued.QuotationId && (e.EventType == "ACCEPTED" || e.EventType == "REVISION_REQUESTED")).ToListAsync();
+            .Where(e => e.QuotationId == issued.QuotationId && (e.EventType == QuotationEventTypes.AgreedOnSite || e.EventType == QuotationEventTypes.RevisionRequestedOnSite))
+            .ToListAsync();
         // Every racer's outcome and the stored state, so a failure is diagnosable from the test output alone.
         var evidence = $"stored={status}; events=[{string.Join(", ", outcomeEvents.Select(e => $"{e.EventType}@{e.CreatedAt:O}"))}]; results=[{string.Join(" | ",
             results.Select((r, i) => $"{(i % 2 == 0 ? "accept" : "revise")}:{(r.Succeeded ? "OK " + r.Value!.Status : r.ErrorCode + " " + r.Message)}"))}]";

@@ -86,28 +86,6 @@ public sealed class QuotationIntegrityTests
         Assert.Contains("Scaffolding included", issuedEvent.Detail);
     }
 
-    [Fact]
-    public async Task Customers_never_receive_pricing_diagnostics_or_the_event_history()
-    {
-        var (ctx, s, catalog) = await ReadyAsync();
-        await using var _ = ctx;
-        var quotation = await IssuedAutomaticAsync(ctx, s, catalog);
-        var q = ctx.Quotations();
-        var customer = s.Request.Customer.Id;
-
-        var read = (await q.GetForCustomerAsync(customer, quotation.Id, None)).Value!;
-        var listed = Assert.Single(await q.ListForCustomerAsync(customer, None));
-        var revision = (await q.RequestRevisionAsync(customer, quotation.Id, "Cheaper inverter please", None)).Value!;
-
-        Assert.All(new[] { read, listed, revision }, v =>
-        {
-            Assert.Null(v.PricingBasis);
-            Assert.Null(v.PricingReview);
-            Assert.Null(v.Events);
-        });
-        Assert.NotNull((await q.GetForSalesAsync(s.Sales.Id, false, quotation.Id, None)).Value!.PricingBasis);
-    }
-
     // ------------------------------------------------------------------ BL-02 / BL-05
 
     [Fact]
@@ -122,10 +100,10 @@ public sealed class QuotationIntegrityTests
         await ctx.Quotations().RecordSurveyAmendedAsync(s.Request.Request.Id, amended.Value!.Version, s.Technician.Id, None);   // retried
 
         var q = ctx.Quotations();
-        var accept = await q.AcceptAsync(s.Request.Customer.Id, quotation.Id, None);
+        var accept = await OnSiteDecision.AgreeAsync(ctx, s.Technician.Id, quotation.Id);
         Assert.Equal(QuotationErrorCodes.SurveyChanged, accept.ErrorCode);
-        var customerView = (await q.GetForCustomerAsync(s.Request.Customer.Id, quotation.Id, None)).Value!;
-        Assert.Equal((false, true, 2), (customerView.CanAccept, customerView.SurveyChanged, customerView.CurrentSurveyVersion!.Value));
+        var shown = (await q.GetForTechnicianAsync(s.Technician.Id, quotation.Id, None)).Value!;
+        Assert.Equal((false, true, 2), (shown.CanAccept, shown.SurveyChanged, shown.CurrentSurveyVersion!.Value));
         var queued = Assert.Single(await q.ListPendingReviewAsync(s.Sales.Id, false, None));
         Assert.Equal((quotation.Id, true), (queued.QuotationId, queued.SurveyChanged));
         Assert.Single(await ctx.Db.QuotationEvents.Where(e => e.QuotationId == quotation.Id && e.EventType == QuotationEventTypes.SurveyAmended).ToListAsync());
@@ -138,7 +116,7 @@ public sealed class QuotationIntegrityTests
         var (ctx, s, catalog) = await ReadyAsync();
         await using var _ = ctx;
         var quotation = await IssuedAutomaticAsync(ctx, s, catalog);
-        Assert.True((await ctx.Quotations().AcceptAsync(s.Request.Customer.Id, quotation.Id, None)).Succeeded);
+        Assert.True((await OnSiteDecision.AgreeAsync(ctx, s.Technician.Id, quotation.Id)).Succeeded);
         await ctx.EnsureInstallationWarrantyOptionAsync();
         Assert.True((await AmendBillAsync(ctx, s, catalog.StandardBill(panels: 4))).Succeeded);
 
@@ -156,7 +134,7 @@ public sealed class QuotationIntegrityTests
         var (ctx, s, catalog) = await ReadyAsync();
         await using var _ = ctx;
         var v1 = await IssuedAutomaticAsync(ctx, s, catalog);
-        Assert.True((await ctx.Quotations().AcceptAsync(s.Request.Customer.Id, v1.Id, None)).Succeeded);
+        Assert.True((await OnSiteDecision.AgreeAsync(ctx, s.Technician.Id, v1.Id)).Succeeded);
         Assert.True((await AmendBillAsync(ctx, s, catalog.StandardBill(panels: 4))).Succeeded);
         var q = ctx.Quotations();
 
@@ -174,12 +152,11 @@ public sealed class QuotationIntegrityTests
         Assert.Equal((2, false), (confirmed.OnSiteSurveyVersion, confirmed.SurveyChanged));
 
         var issued = (await q.IssueAsync(s.Sales.Id, v2.QuotationId, confirmed.Revision, None)).Value!;
-        Assert.True((await q.AcceptAsync(s.Request.Customer.Id, issued.QuotationId, None)).Succeeded);
-        await ctx.EnsureInstallationWarrantyOptionAsync();
-        var contract = await ctx.Contracts().CreateAsync(s.Sales.Id, issued.QuotationId, "Standard terms", None);
+        Assert.True((await OnSiteDecision.AgreeAsync(ctx, s.Technician.Id, issued.QuotationId)).Succeeded);
+        var manager = await ctx.Scheduling.Inner.SeedUserAsync("Manager");
+        var contractId = await OnSiteDecision.PayInCashAsync(ctx, s.Technician.Id, issued.QuotationId, manager.Id);
 
-        Assert.True(contract.Succeeded, contract.Message);
-        Assert.Equal(24_500_000m, contract.Value!.TotalAmount);   // 4 × 3,000,000 + 10,000,000 + 2,000,000 + 500,000
+        Assert.Equal(24_500_000m, (await ctx.Db.CustomerContracts.AsNoTracking().SingleAsync(c => c.Id == contractId)).TotalAmount);   // 4 × 3,000,000 + 10,000,000 + 2,000,000 + 500,000
         var stored = await AutomaticQuotationFixture.QuotationsAsync(ctx, s.Request.Request.Id);
         Assert.Equal(new[] { (1, QuotationStatuses.Superseded, 1), (2, QuotationStatuses.Accepted, 2) }, stored.Select(x => (x.Version, x.Status, x.OnSiteSurveyVersion)));
         Assert.Contains(issued.Events!, e => e.EventType == QuotationEventTypes.SurveyVersionConfirmed && e.Detail!.StartsWith("survey v1 → v2"));
@@ -191,9 +168,8 @@ public sealed class QuotationIntegrityTests
         var (ctx, s, catalog) = await ReadyAsync();
         await using var _ = ctx;
         var v1 = await IssuedAutomaticAsync(ctx, s, catalog);
-        Assert.True((await ctx.Quotations().AcceptAsync(s.Request.Customer.Id, v1.Id, None)).Succeeded);
         await ctx.EnsureInstallationWarrantyOptionAsync();
-        Assert.True((await ctx.Contracts().CreateAsync(s.Sales.Id, v1.Id, "Standard terms", None)).Succeeded);
+        await LegacyFlowData.CustomerAcceptedWithDraftAsync(ctx.Db, v1.Id, ctx.Clock.GetUtcNow());
         // D-02: once a contract exists the survey is locked; the commercial snapshot is never changed underneath it.
         Assert.Equal(OnSiteSurveyErrorCodes.CommerciallyLocked, (await AmendBillAsync(ctx, s, catalog.StandardBill(panels: 4))).ErrorCode);
         Assert.Equal(1, (await ctx.Db.OnSiteSurveyReports.AsNoTracking().SingleAsync(r => r.SurveyRequestId == s.Request.Request.Id)).Version);
@@ -210,10 +186,9 @@ public sealed class QuotationIntegrityTests
         var (ctx, s, catalog) = await ReadyAsync();
         await using var _ = ctx;
         var quotation = await IssuedAutomaticAsync(ctx, s, catalog);   // automatic quotations carry no terms by default
-        Assert.True((await ctx.Quotations().AcceptAsync(s.Request.Customer.Id, quotation.Id, None)).Succeeded);
         await ctx.EnsureInstallationWarrantyOptionAsync();
         var c = ctx.Contracts();
-        var draft = (await c.CreateAsync(s.Sales.Id, quotation.Id, null, None)).Value!;
+        var draft = (await c.GetForStaffAsync(s.Sales.Id, true, await LegacyFlowData.CustomerAcceptedWithDraftAsync(ctx.Db, quotation.Id, ctx.Clock.GetUtcNow()), None)).Value!;
         Assert.Null(draft.Terms);
 
         Assert.Equal(ContractErrorCodes.TermsRequired, (await c.IssueAsync(s.Sales.Id, draft.ContractId, draft.Revision, None)).ErrorCode);

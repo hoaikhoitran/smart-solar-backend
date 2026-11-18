@@ -20,21 +20,24 @@ public static class CustomerNotificationTypes
     /// <summary>The confirmed technician released the appointment; it keeps its time and waits for another technician (or staff).</summary>
     public const string SurveyTechnicianReleased = "SURVEY_TECHNICIAN_RELEASED";
     public const string SurveyAppointmentCancelled = "SURVEY_APPOINTMENT_CANCELLED";
-    public const string QuotationIssued = "INSTALLATION_QUOTATION_ISSUED";
+    /// <summary>The technician-agreed installation quotation was paid and its contract created (information only).</summary>
+    public const string ContractCreatedAfterPayment = "CONTRACT_CREATED_AFTER_PAYMENT";
     public const string ContractAwaitingSignature = "CONTRACT_AWAITING_SIGNATURE";
     public const string ContractSigned = "CONTRACT_SIGNED";
     public const string ContractSignatureRejected = "CONTRACT_SIGNATURE_REJECTED";
     public const string InstallationScheduled = "INSTALLATION_SCHEDULED";
-    /// <summary>The technician recorded the installation date agreed with the customer (PLANNED; confirmed only after payment).</summary>
+    /// <summary>The technician recorded the installation date agreed with the customer (PLANNED; confirmed once the contract is paid and signed).</summary>
     public const string InstallationSchedulePlanned = "INSTALLATION_SCHEDULE_PLANNED";
     public const string InstallationScheduleChanged = "INSTALLATION_SCHEDULE_CHANGED";
     public const string InstallationScheduleRescheduleRequired = "INSTALLATION_SCHEDULE_RESCHEDULE_REQUIRED";
     public const string InstallationScheduleCancelled = "INSTALLATION_SCHEDULE_CANCELLED";
-    /// <summary>The technician offered installation intervals for the customer to choose in the portal.</summary>
-    public const string InstallationSlotsOffered = "INSTALLATION_SLOTS_OFFERED";
     public const string InstallationStarted = "INSTALLATION_STARTED";
-    public const string InstallationAcceptanceRequired = "INSTALLATION_ACCEPTANCE_REQUIRED";
+    /// <summary>The technician reported completion; SmartSolar accepts it internally (information only, no customer action).</summary>
+    public const string InstallationCompletionReported = "INSTALLATION_COMPLETION_REPORTED";
+    /// <summary>A Manager/Admin accepted the installation internally: handover done (information only).</summary>
+    public const string InstallationCompleted = "INSTALLATION_COMPLETED";
     public const string InstallationReworkRequired = "INSTALLATION_REWORK_REQUIRED";
     public const string InstallationCancelled = "INSTALLATION_CANCELLED";
-    public const string EquipmentSubstitutionApprovalRequired = "EQUIPMENT_SUBSTITUTION_APPROVAL_REQUIRED";
+    /// <summary>A Manager approved installed equipment that differs from the contract (information only, with the reason).</summary>
+    public const string EquipmentSubstitutionRecorded = "EQUIPMENT_SUBSTITUTION_RECORDED";
 }

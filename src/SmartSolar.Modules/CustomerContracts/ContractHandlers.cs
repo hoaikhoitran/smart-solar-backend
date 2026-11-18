@@ -21,7 +21,7 @@ public sealed record ContractView(
     ContractDocumentView? OfficialDocument, ContractDocumentView? SignedDocument, string? RejectionReason, DateTimeOffset? IssuedAt,
     DateTimeOffset? PublishedAt, DateTimeOffset? SignedAt, DateTimeOffset? PaidAt, int Revision,
     IReadOnlyList<SignatureSubmissionView>? Submissions, IReadOnlyList<ContractEventView>? Events, int? WarrantyMonths = null,
-    ContractDiscardView? Discard = null);
+    ContractDiscardView? Discard = null, bool PaymentCompleted = false, Guid? PaymentAttemptId = null, DateTimeOffset? PaymentConfirmedAt = null);
 
 /// <summary>Staff-only record of a discarded draft (customers never see drafts, discarded or not).</summary>
 public sealed record ContractDiscardView(DateTimeOffset DiscardedAt, Guid DiscardedByUserId, string Reason);
@@ -37,33 +37,56 @@ public enum ReviewDecision { Approve = 1, Reject = 2 }
 /// Since 2026-11-17 every staff step is a Manager/Admin step (the API restricts the roles); Sales is consult-only and has read access to the
 /// contracts of the requests it owns. Every transition is a conditional update with an audit event.
 /// </summary>
-public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService files, TimeProvider time) : Quotations.IAcceptedQuotationContracts
+/// <param name="paidFollowUp">Runs after a review made a prepaid contract PAID (the technician-agreed installation schedule is confirmed there); the
+/// installation sweep retries it when it fails.</param>
+public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService files, TimeProvider time, Installations.IContractPaidFollowUp? paidFollowUp = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    // ------------------------------------------------------------------ Automatic draft (customer acceptance)
+    // ------------------------------------------------------------------ Contract from a PAID quotation (technician-led flow, 2026-11-18)
 
     /// <summary>
-    /// Called inside the quotation-acceptance transaction (after ISSUED → ACCEPTED): adds the contract DRAFT built from the accepted snapshot
-    /// (lines, totals, customer data, default installation warranty). Idempotent: a quotation that already has a contract gets no second one.
+    /// Settles a verified payment of an installation quotation (PayOS webhook / reconciliation or a Manager's cash confirmation), inside the payment
+    /// confirmation transaction: the contract DRAFT is created ONCE from the paid quotation's snapshot (lines, totals, customer data, default
+    /// installation warranty) and the payment attempt is linked to it, so the contract is born paid and is never charged again. Takes the
+    /// survey-request lock first (same order as closure and manual creation). Returns null when settled, otherwise why the money cannot be applied
+    /// (nothing is written; the caller flags the line for a manual refund). With <paramref name="checkOnly"/> it only answers whether it could settle.
     /// </summary>
-    public async Task<OperationResult<bool>> CreateDraftForAcceptedQuotationAsync(Guid quotationId, Guid actorUserId, DateTimeOffset now, CancellationToken cancellationToken)
+    public async Task<string?> CreateForPaidQuotationAsync(Guid quotationId, Payments.PaymentAttempt attempt, decimal amount, DateTimeOffset providerPaidAt,
+        DateTimeOffset now, CancellationToken cancellationToken, bool checkOnly = false)
     {
         var quotation = await unitOfWork.GetQuotationAsync(quotationId, cancellationToken);
-        if (quotation?.Status != "ACCEPTED")
-            return Fail(ContractErrorCodes.QuotationNotAccepted, "Contracts are created only from a quotation the customer accepted.");
-        if ((await unitOfWork.ListByQuotationAsync(quotationId, cancellationToken)).Count > 0) return OperationResult<bool>.Ok(false);
+        if (quotation is null) return "The installation quotation was not found.";
+        await unitOfWork.LockSurveyRequestAsync(quotation.SurveyRequestId, cancellationToken);
+        if (await unitOfWork.IsSurveyRequestClosedAsync(quotation.SurveyRequestId, cancellationToken)) return "The survey request was withdrawn or closed.";
+        quotation = (await unitOfWork.GetQuotationAsync(quotationId, cancellationToken))!;
+        if (quotation.Status != "ACCEPTED") return $"The quotation is {quotation.Status}; only a quotation agreed on site can be paid.";
+        if (quotation.QuotationSurveyVersion != quotation.CurrentSurveyVersion) return "The on-site survey was amended after this quotation was agreed.";
+        if (quotation.CustomerUserId != attempt.CustomerUserId) return "The payment was made for another customer.";
+        if (quotation.TotalAmount != amount) return $"The paid amount {amount:0} does not equal the quotation total {quotation.TotalAmount:0}.";
+        if (quotation.ValidUntil is { } validUntil && validUntil < providerPaidAt) return "The quotation expired before it was paid.";
+        if ((await unitOfWork.ListByQuotationAsync(quotationId, cancellationToken)).Count > 0)
+            return "A contract already exists for this quotation (it was paid already, or is a contract of the previous flow).";
+        if (checkOnly) return null;
+
         var (_, defaultMonths) = await unitOfWork.GetInstallationWarrantyOptionsAsync(cancellationToken);
-        var contract = NewContract(quotation, terms: null, defaultMonths, now);
+        var contract = BuildFromQuotation(quotation, terms: null, defaultMonths, now);
         unitOfWork.AddContract(contract);
-        Event(contract, "CREATED", null, ContractStatuses.Draft, actorUserId,
-            $"automatically from accepted quotation {quotation.QuoteNumber} v{quotation.QuotationVersion}", now);
-        unitOfWork.AddEvent(new ContractEvent { Id = Guid.NewGuid(), ContractId = contract.Id, EventType = "AUTO_DRAFTED", ActorUserId = actorUserId,
-            Detail = "drafted on customer acceptance; Manager/Admin review and issue it", CreatedAt = now });
-        return OperationResult<bool>.Ok(true);
+        var method = attempt.Provider == Payments.PaymentProviders.Cash ? "cash confirmed by staff" : "online payment verified by the provider";
+        Event(contract, "CREATED", null, ContractStatuses.Draft, attempt.ConfirmedByUserId ?? quotation.CustomerUserId,
+            $"from paid quotation {quotation.QuoteNumber} v{quotation.QuotationVersion} (payment {attempt.OrderCode}, {method})", now);
+        unitOfWork.AddEvent(new ContractEvent { Id = Guid.NewGuid(), ContractId = contract.Id, EventType = "PAID_BEFORE_CONTRACT",
+            ActorUserId = attempt.ConfirmedByUserId ?? quotation.CustomerUserId, Detail = $"payment {attempt.OrderCode}: {amount:0} VND, {method}; Manager/Admin prepare the contract document",
+            CreatedAt = now });
+        attempt.ContractId = contract.Id;
+        unitOfWork.AddNotification(quotation.CustomerUserId, CustomerNotificationTypes.ContractCreatedAfterPayment,
+            $"SmartSolar đã nhận đủ {amount:N0} VND cho báo giá {quotation.QuoteNumber}. Hợp đồng {contract.ContractNumber} đã được lập từ báo giá đã thanh toán; bạn có thể theo dõi tiến độ trong ứng dụng.",
+            now);
+        return null;
     }
 
-    private static CustomerContract NewContract(AcceptedQuotationSource quotation, string? terms, int? warrantyMonths, DateTimeOffset now) => new()
+    /// <summary>The contract DRAFT built from a quotation snapshot (pricing, customer, terms, warranty months). Pure factory, nothing stored.</summary>
+    public static CustomerContract BuildFromQuotation(AcceptedQuotationSource quotation, string? terms, int? warrantyMonths, DateTimeOffset now) => new()
     {
         Id = Guid.NewGuid(), ContractNumber = NewNumber(now), Version = 1, QuotationId = quotation.QuotationId, QuotationVersion = quotation.QuotationVersion,
         SurveyRequestId = quotation.SurveyRequestId, CustomerUserId = quotation.CustomerUserId, SalesUserId = null, Status = ContractStatuses.Draft,
@@ -75,8 +98,8 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
     // ------------------------------------------------------------------ Manager / Admin
 
     /// <summary>
-    /// Manual creation for an ACCEPTED quotation that has no contract yet (quotations accepted before the automatic draft existed).
-    /// Normally the draft already exists (409 CONTRACT_ALREADY_EXISTS).
+    /// Manual creation (recovery) for an ACCEPTED quotation that has a settled payment but no contract. Since 2026-11-18 a contract is created only
+    /// after the quotation was paid (normally by the payment settlement itself): without a settled payment this answers 409 CONTRACT_PAYMENT_REQUIRED.
     /// </summary>
     /// <param name="warrantyMonths">Installation warranty from the Admin's active options; omitted = the default option. A draft without months cannot be issued.</param>
     public async Task<OperationResult<ContractView>> CreateAsync(Guid staffUserId, Guid quotationId, string? terms, CancellationToken cancellationToken,
@@ -92,11 +115,14 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
                 $"The on-site survey was amended (version {quotation.QuotationSurveyVersion} → {quotation.CurrentSurveyVersion}) after this quotation was made; issue a revised quotation first.",
                 new { quotationSurveyVersion = quotation.QuotationSurveyVersion, currentSurveyVersion = quotation.CurrentSurveyVersion });
         if (ExistingContractError(await unitOfWork.ListByQuotationAsync(quotationId, cancellationToken)) is { } existing) return existing.As<ContractView>();
+        if (!await unitOfWork.HasSettledQuotationPaymentAsync(quotationId, cancellationToken))
+            return OperationResult<ContractView>.Fail(ContractErrorCodes.PaymentRequired,
+                "A contract is created only after the quotation agreed on site was paid (the payment creates it automatically).");
         var warranty = await WarrantyMonthsAsync(warrantyMonths, null, cancellationToken);
         if (!warranty.Succeeded) return warranty.As<ContractView>();
 
         var now = time.GetUtcNow();
-        var contract = NewContract(quotation, terms, warranty.Value, now);
+        var contract = BuildFromQuotation(quotation, terms, warranty.Value, now);
         // The checks above are a fast path; the decisive ones run again under the survey-request lock that withdrawal and closure also take,
         // so a contract is never created for a request closed meanwhile, and a closure never misses a contract created meanwhile.
         return await AddNewAsync(contract, staffUserId, "CREATED", $"from quotation {quotation.QuoteNumber} v{quotation.QuotationVersion}", cancellationToken,
@@ -274,7 +300,8 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
                 }
             }
         }
-        return await RunAsStaffAsync(contractId, revision, async (c, now, token) =>
+        var becamePaid = false;
+        var reviewed = await RunAsStaffAsync(contractId, revision, async (c, now, token) =>
         {
             if (c.Status != ContractStatuses.UnderReview) return Fail(ContractErrorCodes.InvalidState, "Only submitted signatures can be reviewed.");
             var submission = (await unitOfWork.GetSubmissionsAsync(c.Id, true, token)).FirstOrDefault(s => s.Outcome == SignatureOutcomes.Pending);
@@ -291,6 +318,14 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
                 Move(c, ContractStatuses.Signed, reviewerUserId, now, "signed scan approved after internal review");
                 unitOfWork.AddNotification(c.CustomerUserId, CustomerNotificationTypes.ContractSigned,
                     $"Your signed copy of contract {c.ContractNumber} was accepted after review; the contract is now signed.", now);
+                // Paid before it existed (technician-led flow): the verified payment completes the signed contract at once — it is never charged again.
+                if (await unitOfWork.GetPrepaymentAsync(c.Id, token) is { } prepaid)
+                {
+                    c.PaidAt = now;
+                    Move(c, ContractStatuses.Paid, reviewerUserId, now,
+                        $"paid before the contract (payment attempt {prepaid.PaymentAttemptId}, {prepaid.Method}, {prepaid.Amount:0} VND verified {prepaid.PaidAt:O})");
+                    becamePaid = true;
+                }
             }
             else
             {
@@ -303,6 +338,19 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
             }
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
+        if (becamePaid && reviewed.Succeeded && paidFollowUp is not null)
+        {
+            try
+            {
+                await paidFollowUp.ContractPaidAsync(contractId, cancellationToken);
+            }
+            catch (Exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                // The installation sweep confirms the schedule of PAID contracts every minute; the review itself stands.
+            }
+            return OperationResult<ContractView>.Ok(await ViewAsync((await unitOfWork.FindAsync(contractId, false, cancellationToken))!, true, cancellationToken));
+        }
+        return reviewed;
     }
 
     /// <summary>New DRAFT version with changed terms; pricing stays the accepted quotation's. Not possible once PAID.</summary>
@@ -522,6 +570,7 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
         var submissions = (await unitOfWork.GetSubmissionsAsync(c.Id, false, cancellationToken))
             .OrderBy(s => s.SubmittedAt)
             .Select(s => new SignatureSubmissionView(s.Id, s.FileId, s.FileSha256, s.OfficialDocumentSha256, s.SubmittedAt, s.Outcome, s.ReviewedAt, s.RejectionReason)).ToList();
+        var prepayment = await unitOfWork.GetPrepaymentAsync(c.Id, cancellationToken);
         var events = staff ? (await unitOfWork.GetEventsAsync(c.Id, cancellationToken))
             .Select(e => new ContractEventView(e.EventType, e.FromStatus, e.ToStatus, e.ActorUserId, e.Detail, e.CreatedAt)).ToList() : null;
         return new ContractView(c.Id, c.ContractNumber, c.Version, c.PreviousContractId, c.QuotationId, c.QuotationVersion, c.SurveyRequestId, c.Status,
@@ -530,7 +579,9 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
             c.OfficialDocumentFileId is { } official ? new ContractDocumentView(official, c.OfficialDocumentSha256, c.OfficialDocumentConfirmedAt) : null,
             c.SignedDocumentFileId is { } signed ? new ContractDocumentView(signed, c.SignedDocumentSha256, c.SignedSubmittedAt) : null,
             c.RejectionReason, c.IssuedAt, c.PublishedAt, c.SignedAt, c.PaidAt, c.Revision, submissions, events, c.WarrantyMonths,
-            staff && c.DiscardedAt is { } discardedAt ? new ContractDiscardView(discardedAt, c.DiscardedByUserId!.Value, c.DiscardReason!) : null);
+            staff && c.DiscardedAt is { } discardedAt ? new ContractDiscardView(discardedAt, c.DiscardedByUserId!.Value, c.DiscardReason!) : null,
+            // Payment completion is separate from the contract status: a contract created from a paid quotation is DRAFT … SIGNED and already paid.
+            prepayment is not null || c.Status == ContractStatuses.Paid, prepayment?.PaymentAttemptId, prepayment?.PaidAt ?? c.PaidAt);
     }
 
     private static readonly JsonSerializerOptions CanonicalJson = new() { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull };

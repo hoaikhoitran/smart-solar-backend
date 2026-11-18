@@ -63,8 +63,8 @@ public sealed class PostgresM1M4MigrationTests
         // Down to the schema before M-1 (disposable database only).
         await db.GetService<IMigrator>().MigrateAsync(BeforeM1);
         // Readiness reports exactly the missing migrations: M-1..M-4 and the later M-7.
-        Assert.Equal(M1ToM4.Append(M7).Append(M8).Append(M9).Append(M10).Append(M11).Append(M12).Append(M13).Append(M14).Append(M15).Append(M16), await db.Database.GetPendingMigrationsAsync());
-        Assert.Equal(M1ToM4.Append(M7).Append(M8).Append(M9).Append(M10).Append(M11).Append(M12).Append(M13).Append(M14).Append(M15).Append(M16), await ProbeAsync(database));
+        Assert.Equal(M1ToM4.Append(M7).Append(M8).Append(M9).Append(M10).Append(M11).Append(M12).Append(M13).Append(M14).Append(M15).Append(M16).Append(M17), await db.Database.GetPendingMigrationsAsync());
+        Assert.Equal(M1ToM4.Append(M7).Append(M8).Append(M9).Append(M10).Append(M11).Append(M12).Append(M13).Append(M14).Append(M15).Append(M16).Append(M17), await ProbeAsync(database));
         Assert.False(await db.Database.SqlQueryRaw<bool>(
             "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'knowledge_document' AND column_name = 'audience') AS \"Value\"").SingleAsync());
 
@@ -138,7 +138,7 @@ public sealed class PostgresM1M4MigrationTests
         await using var database = await PostgresTestDatabase.CreateAsync();
         await using var ctx = InstallationWorkflowTestContext.CreateOn(database.NewContext());
         var (survey, issued) = await SmartSolar.Tests.Unit.InstallationWorkflow.QuotationTests.IssuedAsync(ctx);
-        Assert.True((await ctx.Quotations().RejectAsync(survey.Request.Customer.Id, issued.QuotationId, "no", CancellationToken.None)).Succeeded);
+        Assert.True((await OnSiteDecision.DeclineAsync(ctx, survey.Technician.Id, issued.QuotationId, "no")).Succeeded);
         await using var db = database.NewContext();
         await db.GetService<IMigrator>().MigrateAsync(M1ToM4[0]);   // M-2..M-4 rolled back (no data loss in this scenario)
         var refused = await Record.ExceptionAsync(() => db.GetService<IMigrator>().MigrateAsync(BeforeM1));
@@ -167,6 +167,7 @@ public sealed class PostgresM1M4MigrationTests
     private const string M15 = "20261117171006_InstallationSlotOffers";
     /// <summary>2026-11-18: technician-issued after-sales quotations (additive column).</summary>
     private const string M16 = "20261117185657_AfterSalesTechnicianQuotation";
+    private const string M17 = "20261118102011_TechnicianLedOnSiteSales";
 
     [PostgresFact]
     public async Task M7_goes_down_and_up_over_draft_issued_signed_and_paid_contracts_without_changing_them()
@@ -178,10 +179,10 @@ public sealed class PostgresM1M4MigrationTests
         void Reset() => w.Clock.Now = SchedulingTestContext.DefaultNow.ToUniversalTime();
         Reset();
         var draftReady = await SmartSolar.Tests.Unit.InstallationWorkflow.ContractTests.AcceptedQuotationAsync(w, "Draft customer");
-        var draft = (await w.Contracts().CreateAsync(draftReady.Survey.Sales.Id, draftReady.QuotationId, "Terms", CancellationToken.None)).Value!;
+        var draft = await SmartSolar.Tests.Unit.InstallationWorkflow.ContractTests.DraftAsync(w, draftReady, "Terms");
         Reset();
         var issuedReady = await SmartSolar.Tests.Unit.InstallationWorkflow.ContractTests.AcceptedQuotationAsync(w, "Issued customer");
-        var issuedDraft = (await w.Contracts().CreateAsync(issuedReady.Survey.Sales.Id, issuedReady.QuotationId, "Terms", CancellationToken.None)).Value!;
+        var issuedDraft = await SmartSolar.Tests.Unit.InstallationWorkflow.ContractTests.DraftAsync(w, issuedReady, "Terms");
         Assert.True((await w.Contracts().IssueAsync(issuedReady.Survey.Sales.Id, issuedDraft.ContractId, issuedDraft.Revision, CancellationToken.None)).Succeeded);
         Reset();
         var (_, signed) = await SmartSolar.Tests.Unit.InstallationWorkflow.ContractTests.SignedAsync(w, "Signed customer");
@@ -194,12 +195,12 @@ public sealed class PostgresM1M4MigrationTests
 
         // Down to M-4: the readiness probe reports exactly M-7; Up restores it; history lists all seven pending-era migrations in order.
         await db.GetService<IMigrator>().MigrateAsync(M1ToM4[^1]);
-        Assert.Equal([M7, M8, M9, M10, M11, M12, M13, M14, M15, M16], await ProbeAsync(database));
+        Assert.Equal([M7, M8, M9, M10, M11, M12, M13, M14, M15, M16, M17], await ProbeAsync(database));
         await db.Database.MigrateAsync();
         Assert.Empty((await ProbeAsync(database))!);
         var applied = (await db.Database.GetAppliedMigrationsAsync()).ToList();
-        Assert.Equal(M16, applied[^1]);
-        Assert.Equal(new[] { "20261021164225_AddCommuneReferencePoints", "20261030122441_AutomatedInstallationQuotation" }.Concat(M1ToM4).Append(M7).Append(M8).Append(M9).Append(M10).Append(M11).Append(M12).Append(M13).Append(M14).Append(M15).Append(M16),
+        Assert.Equal(M17, applied[^1]);
+        Assert.Equal(new[] { "20261021164225_AddCommuneReferencePoints", "20261030122441_AutomatedInstallationQuotation" }.Concat(M1ToM4).Append(M7).Append(M8).Append(M9).Append(M10).Append(M11).Append(M12).Append(M13).Append(M14).Append(M15).Append(M16).Append(M17),
             applied.SkipWhile(m => m != "20261021164225_AddCommuneReferencePoints"));
 
         // Every existing contract is unchanged; none became DISCARDED or got discard data.
@@ -225,7 +226,7 @@ public sealed class PostgresM1M4MigrationTests
         await using var check = database.NewContext();
         // M-10, M-9 and M-8 (no lots yet) went down first; M-7 refused, so the schema stays at M-7 and M-8..M-10 are pending again.
         Assert.Equal(M7, (await check.Database.GetAppliedMigrationsAsync()).Last());
-        Assert.Equal([M8, M9, M10, M11, M12, M13, M14, M15, M16], await ProbeAsync(database));
+        Assert.Equal([M8, M9, M10, M11, M12, M13, M14, M15, M16, M17], await ProbeAsync(database));
         Assert.Equal("DISCARDED", await check.Database.SqlQuery<string>($"SELECT status AS \"Value\" FROM customer_contract WHERE id = {draftId}").SingleAsync());
     }
 }

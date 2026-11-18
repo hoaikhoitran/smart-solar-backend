@@ -25,23 +25,34 @@ public sealed class PostgresSimplifiedCommercialFlowTests
     // ------------------------------------------------------------------ races
 
     [PostgresFact]
-    public async Task Concurrent_acceptances_create_exactly_one_contract()
+    public async Task Concurrent_payment_starts_leave_one_live_payment_and_concurrent_cash_confirmations_create_exactly_one_contract()
     {
         var (database, ctx) = await WorldAsync();
         await using var _ = database;
         await using var __ = ctx;
         var cart = await IssuedAsync(ctx);
         await ctx.EnsureInstallationWarrantyOptionAsync();
+        await AgreedAsync(ctx, cart);
 
-        var results = await RaceAsync(database, 6, (db, _) => ctx.QuotationsWithContracts(db).AcceptAsync(cart.CustomerId, cart.Quotation.QuotationId, None));
+        // Six taps on "take cash": the quotation row lock leaves exactly one live payment (repeats return it or are refused).
+        var starts = await RaceAsync(database, 6, (db, _) => ctx.OnSitePayments(db).StartAsync(cart.TechnicianId, cart.Quotation.QuotationId, "CASH", None));
+        Assert.Contains(starts, r => r.Succeeded);
+        Assert.All(starts.Where(r => !r.Succeeded), r => Assert.Equal(PaymentErrorCodes.CheckoutInProgress, r.ErrorCode));
+        await using (var check = database.NewContext())
+            Assert.Equal(1, await check.PaymentAttempts.CountAsync());
 
-        // A double-click is idempotent: every caller sees the accepted quotation.
-        Assert.All(results, r => Assert.True(r.Succeeded, r.ErrorCode));
-        await using var check = database.NewContext();
-        Assert.Equal(QuotationStatuses.Accepted, (await check.Quotations.SingleAsync()).Status);
-        var contract = await check.CustomerContracts.SingleAsync();
-        Assert.Equal(ContractStatuses.Draft, contract.Status);
-        Assert.Equal(1, await check.ContractEvents.CountAsync(e => e.EventType == "AUTO_DRAFTED"));
+        // Six concurrent cash confirmations: one PAID attempt, one settled line, exactly one contract.
+        var manager = await ctx.Scheduling.Inner.SeedUserAsync("Manager");
+        var evidence = await ctx.VerifiedFileAsync(manager.Id, FilePurposes.PaymentEvidence);
+        var attemptId = starts.First(r => r.Succeeded).Value!.Current!.PaymentAttemptId;
+        var confirmations = await RaceAsync(database, 6, (db, i) => ctx.PaymentsWithCash(db).ConfirmCashAttemptAsync(manager.Id, attemptId,
+            new CashConfirmation(cart.Quotation.TotalAmount, "PT-RACE-1", evidence, null), None));
+        Assert.Single(confirmations, r => r.Succeeded);
+        await using var after = database.NewContext();
+        Assert.Equal(1, await after.CustomerContracts.CountAsync(c => c.QuotationId == cart.Quotation.QuotationId));
+        Assert.Equal(1, await after.PaymentAttempts.CountAsync(a => a.Status == PaymentStatuses.Paid));
+        Assert.Equal(1, await after.PaymentAttemptItems.CountAsync(i => i.Status == PaymentItemStatuses.Settled && i.InstallationQuotationId == cart.Quotation.QuotationId));
+        Assert.Equal(1, await after.ContractEvents.CountAsync(e => e.EventType == "PAID_BEFORE_CONTRACT"));
     }
 
     [PostgresFact]
@@ -201,7 +212,9 @@ public sealed class PostgresSimplifiedCommercialFlowTests
         // version stored them before the upgrade under test.
         await using var database = await PostgresTestDatabase.CreateAsync();
         await using var ctx = InstallationWorkflowTestContext.CreateOn(database.NewContext());
-        var ready = await Unit.InstallationWorkflow.ContractTests.AcceptedQuotationAsync(ctx);
+        var (survey, issued) = await Unit.InstallationWorkflow.QuotationTests.IssuedAsync(ctx);
+        await LegacyFlowData.AcceptedWithoutContractAsync(ctx.Db, issued.QuotationId, ctx.Clock.GetUtcNow());
+        var ready = new Unit.InstallationWorkflow.ContractTests.Ready(survey, issued.QuotationId, issued.TotalAmount);
         await using var db = database.NewContext();
         // The contract row as the retired Sales flow stored it (with its Sales owner).
         db.CustomerContracts.Add(new CustomerContract

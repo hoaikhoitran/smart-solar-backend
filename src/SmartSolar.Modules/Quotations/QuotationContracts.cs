@@ -21,7 +21,7 @@ public sealed record QuotationSurveyBasis(Guid ReportId, string Status, int Vers
 public sealed record RequestClosure(DateTimeOffset? ClosedAt, Guid? ClosedByUserId, string? ReasonCode, string? Note);
 
 public sealed record SalesRequestState(Guid SurveyRequestId, Guid CustomerUserId, Guid? AssignedSaleId, string Status, string? InstallationFeasibility,
-    bool HasLiveContract, bool HasOpenAppointment, string? LiveContractStatus = null);
+    bool HasLiveContract, bool HasOpenAppointment, string? LiveContractStatus = null, bool HasPaymentInProgressOrPaid = false);
 
 public interface IQuotationUnitOfWork : ITransactionalUnitOfWork, IInAppNotificationWriter
 {
@@ -61,6 +61,9 @@ public interface IQuotationUnitOfWork : ITransactionalUnitOfWork, IInAppNotifica
     /// <summary>True when a contract that is not SUPERSEDED exists for the quotation.</summary>
     Task<bool> HasLiveContractAsync(Guid quotationId, CancellationToken cancellationToken);
 
+    /// <summary>True when a payment of the installation quotation is open (PENDING/PROCESSING) or verified (PAID / settled).</summary>
+    Task<bool> HasPaymentInProgressOrPaidAsync(Guid quotationId, CancellationToken cancellationToken);
+
     /// <summary>
     /// ISSUED → ACCEPTED in one conditional UPDATE that also requires the quotation's survey version to still be the report's
     /// current version, so a concurrent amendment cannot slip between the check and the acceptance.
@@ -90,12 +93,3 @@ public interface IQuotationUnitOfWork : ITransactionalUnitOfWork, IInAppNotifica
     void AddEvent(QuotationEvent quotationEvent);
 }
 
-/// <summary>
-/// Implemented by the contracts module: when a customer accepts a quotation, the contract DRAFT is created from the accepted snapshot inside
-/// the acceptance transaction (same unit of work / database context), at most once per quotation.
-/// </summary>
-public interface IAcceptedQuotationContracts
-{
-    /// <summary>Adds the DRAFT contract (and its CREATED event) to the open transaction; a contract that already exists is left as it is.</summary>
-    Task<OperationResult<bool>> CreateDraftForAcceptedQuotationAsync(Guid quotationId, Guid actorUserId, DateTimeOffset now, CancellationToken cancellationToken);
-}

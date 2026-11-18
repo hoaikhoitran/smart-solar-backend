@@ -119,21 +119,22 @@ public sealed class InstallationReworkAndZoneLockTests
         Assert.Equal(InstallationStatuses.ReworkRequired, evt.ToStatus);
         Assert.Equal(paid.ManagerId, evt.ActorUserId);
 
-        // Not pending any more: a second return and a customer decision are refused; the customer sees who decided, not the manager's id.
+        // Not pending any more: a second return and an acceptance are refused; the customer sees who decided, not the manager's id.
         Assert.Equal(InstallationErrorCodes.InvalidState,
             (await installs.ReturnToReworkAsync(paid.ManagerId, project.ProjectId, returned.Value.Revision, "again", None)).ErrorCode);
-        Assert.Equal(InstallationErrorCodes.InvalidState, (await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, true, null, None)).ErrorCode);
+        Assert.Equal(InstallationErrorCodes.InvalidState, (await InternalAcceptance.AcceptAsync(ctx, project.ProjectId, paid.ManagerId)).ErrorCode);
         var customerView = (await installs.GetForCustomerAsync(paid.CustomerId, project.ProjectId, None)).Value!;
         Assert.Equal(AcceptanceDeciders.Staff, Assert.Single(customerView.Acceptances).DecidedBy);
         Assert.DoesNotContain(paid.ManagerId.ToString(), JsonSerializer.Serialize(customerView));
 
-        // Round-1 evidence does not count; new evidence → report → only the customer completes.
+        // Round-1 evidence does not count; new evidence → report → the internal acceptance completes.
         Assert.Equal(InstallationErrorCodes.EvidenceRequired, (await installs.ReportCompletionAsync(tech, project.ProjectId, "Fixed", null, None)).ErrorCode);
         await AddCompletionEvidenceAsync(ctx, project.ProjectId, tech);
         Assert.True((await installs.ReportCompletionAsync(tech, project.ProjectId, "Inverter photo added", null, None)).Succeeded);
-        var completed = (await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, true, null, None)).Value!;
+        Assert.True((await InternalAcceptance.AcceptAsync(ctx, project.ProjectId, paid.ManagerId)).Succeeded);
+        var completed = (await installs.GetForCustomerAsync(paid.CustomerId, project.ProjectId, None)).Value!;
         Assert.Equal(InstallationStatuses.Completed, completed.Status);
-        Assert.Equal(new string?[] { AcceptanceDeciders.Staff, AcceptanceDeciders.Customer }, completed.Acceptances.Select(a => a.DecidedBy));
+        Assert.Equal(new string?[] { AcceptanceDeciders.Staff, AcceptanceDeciders.Staff }, completed.Acceptances.Select(a => a.DecidedBy));
     }
 
     [Fact]

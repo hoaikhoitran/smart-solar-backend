@@ -54,7 +54,7 @@ public interface IPaymentItemSettlement
 }
 
 /// <summary>One after-sales line of a checkout (the contract line is added by the payment service itself).</summary>
-public sealed record CheckoutItem(string ItemType, Guid? SubscriptionId, Guid? QuotationId, decimal Amount);
+public sealed record CheckoutItem(string ItemType, Guid? SubscriptionId, Guid? QuotationId, decimal Amount, Guid? InstallationQuotationId = null);
 
 /// <param name="Method">ONLINE or CASH.</param>
 public sealed record PaymentAttemptFilter(string? Method = null, string? Status = null, DateTimeOffset? CreatedFrom = null, DateTimeOffset? CreatedTo = null,
@@ -66,6 +66,9 @@ public interface IPaymentUnitOfWork : ITransactionalUnitOfWork
     Task<PaymentAttempt?> FindAttemptAsync(Guid attemptId, bool track, CancellationToken cancellationToken);
     Task<PaymentAttempt?> FindByOrderCodeAsync(long orderCode, bool track, CancellationToken cancellationToken);
     Task<IReadOnlyList<PaymentAttempt>> ListAttemptsAsync(Guid contractId, CancellationToken cancellationToken);
+
+    /// <summary>Every attempt that carries a line for the installation quotation (any status).</summary>
+    Task<IReadOnlyList<PaymentAttempt>> ListAttemptsForInstallationQuotationAsync(Guid quotationId, CancellationToken cancellationToken);
     Task<int> CountAttemptsSinceAsync(Guid contractId, DateTimeOffset since, CancellationToken cancellationToken);
     Task<IReadOnlyList<Guid>> ListAttemptsToReconcileAsync(DateTimeOffset checkedBefore, int limit, CancellationToken cancellationToken);
     Task<IReadOnlyList<PaymentEvent>> GetEventsAsync(Guid contractId, CancellationToken cancellationToken);

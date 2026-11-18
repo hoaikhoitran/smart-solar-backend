@@ -18,7 +18,9 @@ public sealed record CartPriceProblem(Guid LineId, Guid? ProductId, string? Sku,
 /// <item>Totals are computed by the backend: tax is the configured <see cref="QuotationOptions.DefaultTaxRatePercent"/>, no discount,
 /// validity <see cref="QuotationOptions.AutomaticValidityDays"/> from issue, terms <see cref="QuotationOptions.AutomaticTerms"/>.</item>
 /// <item>No installation quotation for a NOT_FEASIBLE survey. No Sales owner is needed.</item>
-/// <item>Issued, accepted, rejected and superseded quotations are immutable; a customer's revision request is answered with a new version.</item>
+/// <item>Issued (finalized), accepted, rejected and superseded quotations are immutable; changes asked on site are a new version.</item>
+/// <item>Issuing does not send anything to the customer: the technician presents it on site and records the outcome
+/// (<see cref="RecordOnSiteDecisionAsync"/>).</item>
 /// </list>
 /// </summary>
 public sealed partial class QuotationHandlers
@@ -178,15 +180,15 @@ public sealed partial class QuotationHandlers
             q.ValidUntil = now.AddDays(Math.Clamp(options.AutomaticValidityDays, 1, options.MaxValidityDays));
             q.Terms ??= options.AutomaticTerms;
             q.CustomerSnapshot = snapshot;
-            unitOfWork.AddNotification(q.CustomerUserId, CustomerNotificationTypes.QuotationIssued, QuotationIssuedMessage(q), now);
-            AddEvent(q.Id, QuotationEventTypes.Issued, technicianUserId, $"technician cart; total={q.TotalAmount} {q.Currency}", now);
+            // Finalized for presentation on the technician's device: nothing is sent to the customer's app (no approval request).
+            AddEvent(q.Id, QuotationEventTypes.Issued, technicianUserId, $"technician cart finalized for on-site presentation; total={q.TotalAmount} {q.Currency}", now);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken, lockSurveyRequestId: quotation.SurveyRequestId);
     }
 
     /// <summary>
-    /// New DRAFT version answering the customer: copied from an ISSUED, REVISION_REQUESTED or REJECTED quotation of the request (any origin, so
-    /// legacy offers are answered through the cart too), based on the current survey version. Accepted quotations are never revised here.
+    /// New DRAFT version (changes asked on site): copied from an ISSUED, REVISION_REQUESTED or REJECTED quotation of the request (any origin, so
+    /// legacy offers are answered through the cart too), based on the current survey version. Accepted (agreed) quotations are never revised here.
     /// </summary>
     public async Task<OperationResult<QuotationView>> CreateCartRevisionAsync(Guid technicianUserId, Guid quotationId, CancellationToken cancellationToken)
     {

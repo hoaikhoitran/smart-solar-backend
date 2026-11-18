@@ -78,6 +78,15 @@ public sealed class QuotationUnitOfWork(AppDbContext db) : TransactionalUnitOfWo
     public Task<bool> HasLiveContractAsync(Guid quotationId, CancellationToken cancellationToken)
         => Db.CustomerContracts.AsNoTracking().AnyAsync(c => c.QuotationId == quotationId && c.Status != SmartSolar.Modules.CustomerContracts.ContractStatuses.Superseded && c.Status != SmartSolar.Modules.CustomerContracts.ContractStatuses.Discarded, cancellationToken);
 
+    public Task<bool> HasPaymentInProgressOrPaidAsync(Guid quotationId, CancellationToken cancellationToken)
+        => Db.PaymentAttemptItems.AsNoTracking()
+            .Where(i => i.InstallationQuotationId == quotationId)
+            .Join(Db.PaymentAttempts, i => i.PaymentAttemptId, a => a.Id, (i, a) => new { i.Status, AttemptStatus = a.Status })
+            .AnyAsync(x => x.Status == SmartSolar.Modules.Payments.PaymentItemStatuses.Settled
+                           || x.AttemptStatus == SmartSolar.Modules.Payments.PaymentStatuses.Pending
+                           || x.AttemptStatus == SmartSolar.Modules.Payments.PaymentStatuses.Processing
+                           || x.AttemptStatus == SmartSolar.Modules.Payments.PaymentStatuses.Paid, cancellationToken);
+
     public async Task<bool> TryAcceptAsync(Guid quotationId, DateTimeOffset now, CancellationToken cancellationToken)
         => await Db.Quotations
             .Where(q => q.Id == quotationId && q.Status == QuotationStatuses.Issued
@@ -149,7 +158,15 @@ public sealed class QuotationUnitOfWork(AppDbContext db) : TransactionalUnitOfWo
             .AnyAsync(a => a.SurveyRequestId == surveyRequestId
                 && a.Status != SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.Completed
                 && a.Status != SmartSolar.Modules.Scheduling.Constants.AppointmentStatuses.Cancelled, cancellationToken);
-        return new SalesRequestState(row.Id, row.CustomerUserId, row.AssignedSaleId, row.Status.ToString(), feasibility, contract is not null, appointment, contract);
+        // An installation quotation of the request being paid (open PayOS link / cash choice) or paid: closing would strand the money.
+        var paying = await Db.PaymentAttemptItems.AsNoTracking()
+            .Where(i => i.InstallationQuotationId != null && Db.Quotations.Any(q => q.Id == i.InstallationQuotationId && q.SurveyRequestId == surveyRequestId))
+            .Join(Db.PaymentAttempts, i => i.PaymentAttemptId, a => a.Id, (i, a) => new { i.Status, AttemptStatus = a.Status })
+            .AnyAsync(x => x.Status == SmartSolar.Modules.Payments.PaymentItemStatuses.Settled
+                           || x.AttemptStatus == SmartSolar.Modules.Payments.PaymentStatuses.Pending
+                           || x.AttemptStatus == SmartSolar.Modules.Payments.PaymentStatuses.Processing, cancellationToken);
+        return new SalesRequestState(row.Id, row.CustomerUserId, row.AssignedSaleId, row.Status.ToString(), feasibility, contract is not null, appointment, contract,
+            paying);
     }
 
     public async Task<bool> TryCloseRequestAsync(Guid surveyRequestId, SurveyRequestStatus status, Guid actorUserId, string reasonCode, string? note,
