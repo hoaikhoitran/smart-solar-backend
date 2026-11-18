@@ -101,6 +101,18 @@ public sealed class AppDbContext : DbContext
 
     public DbSet<SmartSolar.Modules.CustomerContracts.ContractEvent> ContractEvents => Set<SmartSolar.Modules.CustomerContracts.ContractEvent>();
 
+    public DbSet<SmartSolar.Modules.CustomerContracts.ContractInstallment> ContractInstallments => Set<SmartSolar.Modules.CustomerContracts.ContractInstallment>();
+
+    public DbSet<SmartSolar.Modules.CustomerContracts.ContractSignatureSet> ContractSignatureSets => Set<SmartSolar.Modules.CustomerContracts.ContractSignatureSet>();
+
+    public DbSet<SmartSolar.Modules.CustomerContracts.ContractSignedPage> ContractSignedPages => Set<SmartSolar.Modules.CustomerContracts.ContractSignedPage>();
+
+    public DbSet<SmartSolar.Modules.CustomerContracts.ContractCollectionCase> ContractCollectionCases => Set<SmartSolar.Modules.CustomerContracts.ContractCollectionCase>();
+
+    public DbSet<SmartSolar.Modules.CustomerContracts.ContractCollectionActivity> ContractCollectionActivities => Set<SmartSolar.Modules.CustomerContracts.ContractCollectionActivity>();
+
+    public DbSet<SmartSolar.Modules.CustomerContracts.ContractAccessAudit> ContractAccessAudits => Set<SmartSolar.Modules.CustomerContracts.ContractAccessAudit>();
+
     public DbSet<SmartSolar.Modules.Payments.PaymentAttempt> PaymentAttempts => Set<SmartSolar.Modules.Payments.PaymentAttempt>();
 
     public DbSet<SmartSolar.Modules.Payments.PaymentAttemptItem> PaymentAttemptItems => Set<SmartSolar.Modules.Payments.PaymentAttemptItem>();

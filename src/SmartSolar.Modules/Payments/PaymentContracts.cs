@@ -27,8 +27,9 @@ public interface IPaymentGateway
     WebhookNotification VerifyWebhook(string rawBody);
 }
 
+/// <param name="PaymentPlan">Non-null for a 30/70 contract: it is paid per installment (CONTRACT_INSTALLMENT lines), never with a 100% contract payment.</param>
 public sealed record PayableContract(Guid ContractId, string ContractNumber, Guid CustomerUserId, string Status, decimal TotalAmount, string Currency,
-    string CustomerName, string? CustomerEmail, string? CustomerPhone);
+    string CustomerName, string? CustomerEmail, string? CustomerPhone, string? PaymentPlan = null);
 
 /// <summary>
 /// Applies the after-sales items of a verified checkout (packages, repair quotations). Implemented by the AfterSales module and
@@ -54,7 +55,8 @@ public interface IPaymentItemSettlement
 }
 
 /// <summary>One after-sales line of a checkout (the contract line is added by the payment service itself).</summary>
-public sealed record CheckoutItem(string ItemType, Guid? SubscriptionId, Guid? QuotationId, decimal Amount, Guid? InstallationQuotationId = null);
+public sealed record CheckoutItem(string ItemType, Guid? SubscriptionId, Guid? QuotationId, decimal Amount, Guid? InstallationQuotationId = null,
+    Guid? ContractInstallmentId = null);
 
 /// <param name="Method">ONLINE or CASH.</param>
 public sealed record PaymentAttemptFilter(string? Method = null, string? Status = null, DateTimeOffset? CreatedFrom = null, DateTimeOffset? CreatedTo = null,
@@ -69,6 +71,9 @@ public interface IPaymentUnitOfWork : ITransactionalUnitOfWork
 
     /// <summary>Every attempt that carries a line for the installation quotation (any status).</summary>
     Task<IReadOnlyList<PaymentAttempt>> ListAttemptsForInstallationQuotationAsync(Guid quotationId, CancellationToken cancellationToken);
+
+    /// <summary>Every attempt with a line paying the installment (any status).</summary>
+    Task<IReadOnlyList<PaymentAttempt>> ListAttemptsForInstallmentAsync(Guid installmentId, CancellationToken cancellationToken);
     Task<int> CountAttemptsSinceAsync(Guid contractId, DateTimeOffset since, CancellationToken cancellationToken);
     Task<IReadOnlyList<Guid>> ListAttemptsToReconcileAsync(DateTimeOffset checkedBefore, int limit, CancellationToken cancellationToken);
     Task<IReadOnlyList<PaymentEvent>> GetEventsAsync(Guid contractId, CancellationToken cancellationToken);

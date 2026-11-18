@@ -40,4 +40,18 @@ public static class CustomerNotificationTypes
     public const string InstallationCancelled = "INSTALLATION_CANCELLED";
     /// <summary>A Manager approved installed equipment that differs from the contract (information only, with the reason).</summary>
     public const string EquipmentSubstitutionRecorded = "EQUIPMENT_SUBSTITUTION_RECORDED";
+    /// <summary>30/70 plan: the contract was created at the on-site agreement; the customer can read it before paying the deposit.</summary>
+    public const string ContractReadyForPreview = "CONTRACT_READY_FOR_PREVIEW";
+    /// <summary>30/70 plan: the deposit was verified; the paper contract can be signed.</summary>
+    public const string ContractDepositReceived = "CONTRACT_DEPOSIT_RECEIVED";
+    /// <summary>30/70 plan: the photographed signed paper contract was finalized.</summary>
+    public const string ContractPaperSigned = "CONTRACT_PAPER_SIGNED";
+    /// <summary>30/70 plan: the customer accepted the installation; the balance is due (amount and deadline).</summary>
+    public const string ContractBalanceDue = "CONTRACT_BALANCE_DUE";
+    /// <summary>30/70 plan: the balance deadline passed without payment (information; Sales follows up).</summary>
+    public const string ContractBalanceOverdue = "CONTRACT_BALANCE_OVERDUE";
+    /// <summary>30/70 plan: both installments were paid.</summary>
+    public const string ContractFullyPaid = "CONTRACT_FULLY_PAID";
+    /// <summary>The technician reported completion: the customer accepts or requests rework in the app (2026-11-19).</summary>
+    public const string InstallationAcceptanceRequested = "INSTALLATION_ACCEPTANCE_REQUESTED";
 }

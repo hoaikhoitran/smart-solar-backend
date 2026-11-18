@@ -102,6 +102,9 @@ public static partial class FilePolicies
         [FilePurposes.ProductImage] = new(FilePurposes.ProductImage, "products/", [Jpeg, Png, Webp], 10 * Mb, true),
         [FilePurposes.PackageImage] = new(FilePurposes.PackageImage, "packages/", [Jpeg, Png, Webp], 10 * Mb, true),
         [FilePurposes.PaymentEvidence] = new(FilePurposes.PaymentEvidence, "payments/cash/", [Pdf, Jpeg, Png, Webp], 15 * Mb, true),
+        [FilePurposes.SignedContractPage] = new(FilePurposes.SignedContractPage, "contracts/signed-pages/", [Jpeg, Png, Webp, Pdf], 20 * Mb, true),
+        [FilePurposes.AcceptanceEvidence] = new(FilePurposes.AcceptanceEvidence, "installations/acceptance/", [Jpeg, Png, Webp, Pdf], 15 * Mb, true),
+        [FilePurposes.CollectionEvidence] = new(FilePurposes.CollectionEvidence, "collections/", [Pdf, Jpeg, Png, Webp], 15 * Mb, true),
     };
 
     /// <summary>
@@ -125,6 +128,9 @@ public static partial class FilePolicies
         [FilePurposes.ProductImage] = [RoleCodes.Admin, RoleCodes.Manager],
         [FilePurposes.PackageImage] = [RoleCodes.Admin],
         [FilePurposes.PaymentEvidence] = [RoleCodes.Manager, RoleCodes.Admin],
+        [FilePurposes.SignedContractPage] = [RoleCodes.Technician, RoleCodes.Manager, RoleCodes.Admin],
+        [FilePurposes.AcceptanceEvidence] = [RoleCodes.Customer],
+        [FilePurposes.CollectionEvidence] = [RoleCodes.Sales, RoleCodes.Manager, RoleCodes.Admin],
     };
 
     /// <summary>Declared content type, file name extension and size against the purpose; null when they are acceptable.</summary>

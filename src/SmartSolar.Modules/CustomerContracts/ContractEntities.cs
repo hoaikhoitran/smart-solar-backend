@@ -57,6 +57,14 @@ public sealed class CustomerContract
     public DateTimeOffset? DiscardedAt { get; set; }
     public Guid? DiscardedByUserId { get; set; }
     public string? DiscardReason { get; set; }
+    /// <summary>
+    /// Payment plan (2026-11-19): <see cref="PaymentPlans.Deposit30Balance70"/> for contracts created at the on-site agreement (30% before the paper
+    /// signature, 70% after the customer's acceptance; see <see cref="ContractInstallment"/>). Null = legacy full payment (100%), unchanged.
+    /// </summary>
+    public string? PaymentPlan { get; set; }
+
+    /// <summary>Version label of the generated payment / ownership clauses (null for legacy contracts).</summary>
+    public string? TermsVersion { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
     public int Revision { get; set; }
@@ -108,8 +116,22 @@ public static class ContractStatuses
     /// <summary>A contract that still binds or may still bind the request (anything but superseded or discarded).</summary>
     public static bool IsLive(string status) => status is not (Superseded or Discarded);
 
-    /// <summary>States the customer can see.</summary>
+    /// <summary>States the customer can see (legacy contracts).</summary>
     public static readonly IReadOnlyList<string> CustomerVisible = [AwaitingSignature, UnderReview, SignatureRejected, Signed, Paid, Superseded];
+
+    /// <summary>
+    /// Whether the customer sees this contract: legacy contracts from AWAITING_SIGNATURE on; payment-plan contracts from their creation at the on-site
+    /// agreement (DRAFT = preview before the deposit), except a DISCARDED one.
+    /// </summary>
+    public static bool IsCustomerVisible(CustomerContract c)
+        => c.PaymentPlan is null ? CustomerVisible.Contains(c.Status) : c.Status != Discarded;
+
+    /// <summary>
+    /// Ready for installation: a legacy contract when fully PAID; a payment-plan contract when SIGNED on paper after its verified deposit (SIGNED) or
+    /// fully paid (PAID). 100% payment is not required for payment-plan contracts.
+    /// </summary>
+    public static bool IsReadyForInstallation(string status, string? paymentPlan)
+        => paymentPlan is null ? status == Paid : status is Signed or Paid;
 }
 
 public static class SignatureOutcomes

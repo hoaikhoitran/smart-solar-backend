@@ -4,7 +4,7 @@ using SmartSolar.Modules.CustomerContracts;
 
 namespace SmartSolar.Infrastructure.Persistence.InstallationWorkflow;
 
-public sealed class ContractUnitOfWork(AppDbContext db) : TransactionalUnitOfWork(db), IContractUnitOfWork
+public sealed partial class ContractUnitOfWork(AppDbContext db) : TransactionalUnitOfWork(db), IContractUnitOfWork
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 

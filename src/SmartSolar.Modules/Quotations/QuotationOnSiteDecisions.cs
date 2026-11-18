@@ -30,6 +30,9 @@ public sealed record OnSiteDecisionInput(string? Decision, int ExpectedRevision,
 /// immutable; any later change is a new version.</item>
 /// <item>DECLINED / REVISION_NEEDED close an ISSUED quotation, or withdraw an AGREED one whose payment has not started (no live or verified
 /// payment, no contract): the customer changed their mind before paying. Nothing is charged.</item>
+/// <item>30/70 plan (2026-11-19): AGREED also creates the contract (DRAFT, frozen content, deposit 30% + balance 70%) in the same transaction, so the
+/// customer can read it before paying the deposit; a retried AGREED returns the same contract. Withdrawing before the deposit discards that contract
+/// (kept as history); after the deposit was verified (or while its payment is open) the agreement can no longer be withdrawn on site.</item>
 /// </list>
 /// </summary>
 public sealed partial class QuotationHandlers
@@ -51,8 +54,16 @@ public sealed partial class QuotationHandlers
         var (_, _, error) = await AssignedSurveyAsync(technicianUserId, quotation.SurveyRequestId, cancellationToken);
         if (error is not null) return error.ErrorCode == QuotationErrorCodes.NotAssignedTechnician ? NotFound() : error;
 
-        return await RunAsync(quotationId, async (q, _, now, token) =>
+        Guid? contractId = null;
+        var recorded = await RunAsync(quotationId, async (q, _, now, token) =>
         {
+            // A retried AGREED on the agreed quotation (lost response, double tap): the same contract, nothing else changes.
+            if (decision == OnSiteDecisions.Agreed && q.Status == QuotationStatuses.Accepted && agreedContracts is not null
+                && await agreedContracts.FindAgreementContractAsync(q.Id, token) is { } same)
+            {
+                contractId = same;
+                return OperationResult<bool>.Ok(false);
+            }
             if (q.Revision != input.ExpectedRevision) return Stale(q);
             if (IsClosedRequest((await unitOfWork.GetSourceAsync(q.SurveyRequestId, token))?.SurveyRequestStatus)) return RequestClosedError<bool>();
             var detail = $"on site by technician; v{q.Version}; total={q.TotalAmount:0} {q.Currency}" + (note is null ? "" : $"; note: {Trim(note, 400)}");
@@ -60,7 +71,20 @@ public sealed partial class QuotationHandlers
             {
                 case OnSiteDecisions.Agreed:
                     if (q.Status == QuotationStatuses.Accepted)
-                        return OperationResult<bool>.Fail(QuotationErrorCodes.AlreadyAccepted, "This quotation was already agreed; open the payment.");
+                    {
+                        // Cutover (2026-11-19): agreed before the 30/70 release and never paid (no contract, no payment open or verified) — the 100%
+                        // quotation payment is retired, so confirming the agreement again creates the 30/70 contract. Same validity rules as AGREED.
+                        if (agreedContracts is null || await unitOfWork.HasPaymentInProgressOrPaidAsync(q.Id, token) || await unitOfWork.HasLiveContractAsync(q.Id, token))
+                            return OperationResult<bool>.Fail(QuotationErrorCodes.AlreadyAccepted, "This quotation was already agreed.");
+                        if (q.ValidUntil is not { } stillValid || stillValid <= now)
+                            return OperationResult<bool>.Fail(QuotationErrorCodes.Expired, "This quotation has expired; create a new version with current catalog prices.");
+                        if (SurveyChangedError(q, await unitOfWork.GetSurveyVersionAsync(q.SurveyRequestId, token)) is { } amended) return amended;
+                        var cutover = await agreedContracts.CreateOnAgreementAsync(q.Id, technicianUserId, now, token);
+                        if (cutover.ErrorCode is not null) return OperationResult<bool>.Fail(cutover.ErrorCode, cutover.Message ?? "The contract could not be created.");
+                        contractId = cutover.ContractId;
+                        AddEvent(q.Id, QuotationEventTypes.AgreedOnSite, technicianUserId, $"{detail}; agreement re-confirmed for the 30/70 plan (agreed before the release)", now);
+                        return OperationResult<bool>.Ok(true);
+                    }
                     if (q.Status != QuotationStatuses.Issued)
                         return OperationResult<bool>.Fail(QuotationErrorCodes.NotIssued, $"Only a finalized (ISSUED) quotation can be agreed; this one is {q.Status}.");
                     if (q.ValidUntil is not { } validUntil || validUntil <= now)
@@ -69,13 +93,25 @@ public sealed partial class QuotationHandlers
                     q.Status = QuotationStatuses.Accepted;
                     q.AcceptedAt = now;
                     AddEvent(q.Id, QuotationEventTypes.AgreedOnSite, technicianUserId, detail, now);
+                    if (agreedContracts is not null)
+                    {
+                        var contract = await agreedContracts.CreateOnAgreementAsync(q.Id, technicianUserId, now, token);
+                        if (contract.ErrorCode is not null) return OperationResult<bool>.Fail(contract.ErrorCode, contract.Message ?? "The contract could not be created.");
+                        contractId = contract.ContractId;
+                    }
                     return OperationResult<bool>.Ok(true);
 
                 default:
                     if (q.Status == QuotationStatuses.Accepted)
                     {
                         // The customer changed their mind before paying. Never after money moved or a contract exists.
-                        if (await unitOfWork.HasPaymentInProgressOrPaidAsync(q.Id, token) || await unitOfWork.HasLiveContractAsync(q.Id, token))
+                        if (agreedContracts is not null && await agreedContracts.FindAgreementContractAsync(q.Id, token) is not null)
+                        {
+                            // 30/70 contract still before its deposit: discarded (history kept). Refused once the deposit is open or verified.
+                            if (await agreedContracts.ReleaseOnWithdrawalAsync(q.Id, technicianUserId, note ?? decision!, now, token) is { } refused)
+                                return OperationResult<bool>.Fail(QuotationErrorCodes.PaymentStarted, refused);
+                        }
+                        else if (await unitOfWork.HasPaymentInProgressOrPaidAsync(q.Id, token) || await unitOfWork.HasLiveContractAsync(q.Id, token))
                             return OperationResult<bool>.Fail(QuotationErrorCodes.PaymentStarted,
                                 "A payment of this quotation is in progress or verified; cancel the open payment first (a verified one is final).");
                     }
@@ -101,5 +137,26 @@ public sealed partial class QuotationHandlers
                     return OperationResult<bool>.Ok(true);
             }
         }, cancellationToken, lockSurveyRequestId: quotation.SurveyRequestId);
+        if (!recorded.Succeeded || agreedContracts is null) return recorded;
+        contractId ??= await agreedContracts.FindAgreementContractAsync(quotationId, cancellationToken);
+        return OperationResult<QuotationView>.Ok(recorded.Value! with { ContractId = contractId });
     }
+}
+
+/// <param name="ContractId">The payment-plan contract of the agreement (null on error).</param>
+public sealed record AgreementContractResult(Guid? ContractId, string? ErrorCode, string? Message);
+
+/// <summary>
+/// Contract of an on-site agreement (30/70 plan, 2026-11-19), implemented by the contracts module. Called INSIDE the decision transaction, after the
+/// survey-request lock, so the quotation's ACCEPTED status and its contract commit together (or not at all).
+/// </summary>
+public interface IAgreedQuotationContracts
+{
+    /// <summary>Creates the contract and its installments once; a retry returns the same contract.</summary>
+    Task<AgreementContractResult> CreateOnAgreementAsync(Guid quotationId, Guid technicianUserId, DateTimeOffset now, CancellationToken cancellationToken);
+
+    Task<Guid?> FindAgreementContractAsync(Guid quotationId, CancellationToken cancellationToken);
+
+    /// <summary>Withdrawal before the deposit: discards the contract. Null = done (or nothing to do); otherwise why it is refused.</summary>
+    Task<string?> ReleaseOnWithdrawalAsync(Guid quotationId, Guid technicianUserId, string reason, DateTimeOffset now, CancellationToken cancellationToken);
 }

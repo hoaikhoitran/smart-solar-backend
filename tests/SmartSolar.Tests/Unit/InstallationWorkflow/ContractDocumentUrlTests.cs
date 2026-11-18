@@ -26,7 +26,7 @@ public sealed class ContractDocumentUrlTests
     }
 
     [Fact]
-    public async Task The_customer_the_sales_owner_and_a_manager_download_the_official_pdf_everyone_else_is_not_found()
+    public async Task The_customer_and_every_staff_reader_download_the_official_pdf_other_customers_are_not_found()
     {
         var ctx = InstallationWorkflowTestContext.Create();
         await using var _ = ctx;
@@ -53,11 +53,13 @@ public sealed class ContractDocumentUrlTests
         Assert.All(signer.Calls, c => Assert.StartsWith("contracts/official/", c.Location.ObjectKey));
         Assert.All(signer.Calls, c => Assert.NotNull(c.Location.VersionId));
 
+        // Staff read-all (2026-11-19): Sales of another request (and Technicians, through the API roles) read every contract document.
+        Assert.True((await handlers.OfficialDocumentUrlAsync(ContractViewer.Staff, otherSales, false, published.ContractId, StorageUrlDisposition.Inline, None)).Succeeded);
         foreach (var refused in new[]
         {
             await handlers.OfficialDocumentUrlAsync(ContractViewer.Customer, stranger, false, published.ContractId, StorageUrlDisposition.Inline, None),
-            await handlers.OfficialDocumentUrlAsync(ContractViewer.Staff, otherSales, false, published.ContractId, StorageUrlDisposition.Inline, None),
             await handlers.OfficialDocumentUrlAsync(ContractViewer.Customer, customer, false, Guid.NewGuid(), StorageUrlDisposition.Inline, None),
+            await handlers.OfficialDocumentUrlAsync(ContractViewer.Staff, otherSales, false, Guid.NewGuid(), StorageUrlDisposition.Inline, None),
         })
         {
             Assert.Equal(ContractErrorCodes.NotFound, refused.ErrorCode);

@@ -21,7 +21,8 @@ public sealed record ContractView(
     ContractDocumentView? OfficialDocument, ContractDocumentView? SignedDocument, string? RejectionReason, DateTimeOffset? IssuedAt,
     DateTimeOffset? PublishedAt, DateTimeOffset? SignedAt, DateTimeOffset? PaidAt, int Revision,
     IReadOnlyList<SignatureSubmissionView>? Submissions, IReadOnlyList<ContractEventView>? Events, int? WarrantyMonths = null,
-    ContractDiscardView? Discard = null, bool PaymentCompleted = false, Guid? PaymentAttemptId = null, DateTimeOffset? PaymentConfirmedAt = null);
+    ContractDiscardView? Discard = null, bool PaymentCompleted = false, Guid? PaymentAttemptId = null, DateTimeOffset? PaymentConfirmedAt = null,
+    ContractPaymentPlanView? PaymentPlan = null);
 
 /// <summary>Staff-only record of a discarded draft (customers never see drafts, discarded or not).</summary>
 public sealed record ContractDiscardView(DateTimeOffset DiscardedAt, Guid DiscardedByUserId, string Reason);
@@ -161,6 +162,8 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
                 var c = await unitOfWork.FindAsync(contractId, true, token);
                 if (c is null) return (Fail(ContractErrorCodes.NotFound, "Contract was not found."), false);
                 if (c.Status == ContractStatuses.Discarded) return (OperationResult<bool>.Ok(false), false);   // idempotent repeat: nothing written
+                // A 30/70 contract is withdrawn with the technician's on-site decision (its installments are cancelled with it).
+                if (c.PaymentPlan is not null) return (LegacyOnly(), false);
                 if (c.Revision != revision)
                     return (OperationResult<bool>.Fail(ContractErrorCodes.StaleRevision, "The contract was changed meanwhile. Reload and try again.", new { currentRevision = c.Revision }), false);
                 if (c.Status != ContractStatuses.Draft || c.PreviousContractId is not null)
@@ -202,6 +205,7 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
         int? warrantyMonths = null)
         => RunAsStaffAsync(contractId, revision, async (c, now, token) =>
         {
+            if (c.PaymentPlan is not null) return LegacyOnly();
             if (c.Status != ContractStatuses.Draft) return Fail(ContractErrorCodes.InvalidState, "Issued contracts are immutable; create an amendment.");
             if (warrantyMonths is not null)
             {
@@ -218,6 +222,7 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
     public Task<OperationResult<ContractView>> IssueAsync(Guid staffUserId, Guid contractId, int revision, CancellationToken cancellationToken)
         => RunAsStaffAsync(contractId, revision, async (c, now, token) =>
         {
+            if (c.PaymentPlan is not null) return LegacyOnly();
             if (c.Status != ContractStatuses.Draft) return Fail(ContractErrorCodes.InvalidState, "Only drafts can be issued.");
             // The terms are part of the canonical (signed) content: an issued contract always has them.
             if (string.IsNullOrWhiteSpace(c.Terms))
@@ -254,6 +259,7 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
 
         return await RunAsStaffAsync(contractId, revision, (c, now, _) =>
         {
+            if (c.PaymentPlan is not null) return Task.FromResult(LegacyOnly());
             if (c.Status != ContractStatuses.Issued) return Task.FromResult(Fail(ContractErrorCodes.InvalidState, "The official document is attached after issuing and before publishing."));
             if (!string.Equals(c.CanonicalHash, canonicalHash?.Trim(), StringComparison.OrdinalIgnoreCase))
                 return Task.FromResult(Fail(ContractErrorCodes.CanonicalHashMismatch, "The document was not generated from the current contract version."));
@@ -271,6 +277,7 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
     public Task<OperationResult<ContractView>> PublishAsync(Guid staffUserId, Guid contractId, int revision, CancellationToken cancellationToken)
         => RunAsStaffAsync(contractId, revision, (c, now, _) =>
         {
+            if (c.PaymentPlan is not null) return Task.FromResult(LegacyOnly());
             if (c.Status != ContractStatuses.Issued) return Task.FromResult(Fail(ContractErrorCodes.InvalidState, "Only issued contracts can be published."));
             if (c.OfficialDocumentFileId is null) return Task.FromResult(Fail(ContractErrorCodes.DocumentMissing, "Attach and confirm the official PDF first."));
             c.PublishedAt = now;
@@ -303,6 +310,7 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
         var becamePaid = false;
         var reviewed = await RunAsStaffAsync(contractId, revision, async (c, now, token) =>
         {
+            if (c.PaymentPlan is not null) return LegacyOnly();
             if (c.Status != ContractStatuses.UnderReview) return Fail(ContractErrorCodes.InvalidState, "Only submitted signatures can be reviewed.");
             var submission = (await unitOfWork.GetSubmissionsAsync(c.Id, true, token)).FirstOrDefault(s => s.Outcome == SignatureOutcomes.Pending);
             if (submission is null) return Fail(ContractErrorCodes.InvalidState, "No pending submission exists.");
@@ -359,6 +367,7 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
     {
         var current = await unitOfWork.FindAsync(contractId, false, cancellationToken);
         if (current is null) return NotFound();
+        if (current.PaymentPlan is not null) return LegacyOnly().As<ContractView>();
         if (current.Status is ContractStatuses.Draft or ContractStatuses.Paid or ContractStatuses.Superseded or ContractStatuses.Discarded)
             return OperationResult<ContractView>.Fail(ContractErrorCodes.InvalidState, "Only issued, unpaid contracts can be amended (edit drafts directly).");
         var versions = await unitOfWork.ListByQuotationAsync(current.QuotationId, cancellationToken);
@@ -379,17 +388,19 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
         return await AddNewAsync(amendment, staffUserId, "AMENDMENT_CREATED", $"amends version {current.Version}", cancellationToken);
     }
 
+    /// <summary>
+    /// Staff read (2026-11-19): Sales, Technician, Manager and Admin read every contract (the API restricts the roles; reads are audited by the
+    /// read endpoints). <paramref name="isManager"/> is kept for source compatibility.
+    /// </summary>
     public async Task<OperationResult<ContractView>> GetForStaffAsync(Guid userId, bool isManager, Guid contractId, CancellationToken cancellationToken)
     {
         var contract = await unitOfWork.FindAsync(contractId, false, cancellationToken);
-        if (contract is null || (!isManager && await unitOfWork.GetAssignedSaleAsync(contract.SurveyRequestId, cancellationToken) != userId)) return NotFound();
+        if (contract is null) return NotFound();
         return OperationResult<ContractView>.Ok(await ViewAsync(contract, true, cancellationToken));
     }
 
     public async Task<OperationResult<IReadOnlyList<ContractView>>> ListForSurveyRequestAsync(Guid userId, bool isManager, Guid surveyRequestId, CancellationToken cancellationToken)
     {
-        if (!isManager && await unitOfWork.GetAssignedSaleAsync(surveyRequestId, cancellationToken) != userId)
-            return OperationResult<IReadOnlyList<ContractView>>.Fail(ContractErrorCodes.NotFound, "Survey request was not found.");
         var list = new List<ContractView>();
         foreach (var c in await unitOfWork.ListBySurveyRequestAsync(surveyRequestId, cancellationToken)) list.Add(await ViewAsync(c, false, cancellationToken));
         return OperationResult<IReadOnlyList<ContractView>>.Ok(list);
@@ -400,7 +411,7 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
     public async Task<IReadOnlyList<ContractView>> ListForCustomerAsync(Guid customerUserId, CancellationToken cancellationToken)
     {
         var list = new List<ContractView>();
-        foreach (var c in (await unitOfWork.ListForCustomerAsync(customerUserId, cancellationToken)).Where(c => ContractStatuses.CustomerVisible.Contains(c.Status)))
+        foreach (var c in (await unitOfWork.ListForCustomerAsync(customerUserId, cancellationToken)).Where(ContractStatuses.IsCustomerVisible))
             list.Add(await ViewAsync(c, false, cancellationToken));
         return list;
     }
@@ -408,7 +419,7 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
     public async Task<OperationResult<ContractView>> GetForCustomerAsync(Guid customerUserId, Guid contractId, CancellationToken cancellationToken)
     {
         var contract = await unitOfWork.FindAsync(contractId, false, cancellationToken);
-        return contract is null || contract.CustomerUserId != customerUserId || !ContractStatuses.CustomerVisible.Contains(contract.Status)
+        return contract is null || contract.CustomerUserId != customerUserId || !ContractStatuses.IsCustomerVisible(contract)
             ? NotFound()
             : OperationResult<ContractView>.Ok(await ViewAsync(contract, false, cancellationToken));
     }
@@ -420,7 +431,7 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
     public async Task<OperationResult<ContractView>> SubmitSignedDocumentAsync(Guid customerUserId, Guid contractId, Guid fileId, string officialDocumentSha256, CancellationToken cancellationToken)
     {
         var contract = await unitOfWork.FindAsync(contractId, false, cancellationToken);
-        if (contract is null || contract.CustomerUserId != customerUserId || !ContractStatuses.CustomerVisible.Contains(contract.Status)) return NotFound();
+        if (contract is null || contract.CustomerUserId != customerUserId || !ContractStatuses.IsCustomerVisible(contract)) return NotFound();
         return await SubmitSignedAsync(customerUserId, contractId, fileId, officialDocumentSha256, null, cancellationToken);
     }
 
@@ -438,6 +449,7 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
     {
         var contract = await unitOfWork.FindAsync(contractId, false, cancellationToken);
         if (contract is null || (!isManager && await unitOfWork.GetAssignedSaleAsync(contract.SurveyRequestId, cancellationToken) != staffUserId)) return NotFound();
+        if (contract.PaymentPlan is not null) return LegacyOnly().As<ContractView>();
         if (note is { Length: > 300 })
             return OperationResult<ContractView>.Fail(CommonErrorCodes.ValidationFailed, "One or more fields are invalid.",
                 new Dictionary<string, string[]> { ["note"] = ["At most 300 characters."] });
@@ -460,6 +472,7 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
 
         return await RunAsync(contractId, null, async (c, now, token) =>
         {
+            if (c.PaymentPlan is not null) return LegacyOnly();
             if (c.Status is not (ContractStatuses.AwaitingSignature or ContractStatuses.SignatureRejected))
                 return Fail(ContractErrorCodes.InvalidState, "The contract is not waiting for a signed document.");
             if (!string.Equals(c.OfficialDocumentSha256, officialDocumentSha256?.Trim(), StringComparison.OrdinalIgnoreCase))
@@ -573,6 +586,10 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
         var prepayment = await unitOfWork.GetPrepaymentAsync(c.Id, cancellationToken);
         var events = staff ? (await unitOfWork.GetEventsAsync(c.Id, cancellationToken))
             .Select(e => new ContractEventView(e.EventType, e.FromStatus, e.ToStatus, e.ActorUserId, e.Detail, e.CreatedAt)).ToList() : null;
+        var plan = c.PaymentPlan is null ? null
+            : PaymentPlanViews.Build(c, await unitOfWork.GetInstallmentsAsync(c.Id, false, cancellationToken),
+                await unitOfWork.GetSignatureSetsAsync(c.Id, false, cancellationToken), await unitOfWork.GetSignedPagesAsync(c.Id, false, cancellationToken),
+                staff ? await unitOfWork.GetCollectionCasesAsync(c.Id, cancellationToken) : null, time.GetUtcNow());
         return new ContractView(c.Id, c.ContractNumber, c.Version, c.PreviousContractId, c.QuotationId, c.QuotationVersion, c.SurveyRequestId, c.Status,
             c.Currency, c.TotalAmount, JsonDocument.Parse(c.PricingSnapshot).RootElement.Clone(), JsonDocument.Parse(c.CustomerSnapshot).RootElement.Clone(),
             c.Terms, c.CanonicalHash,
@@ -581,7 +598,8 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
             c.RejectionReason, c.IssuedAt, c.PublishedAt, c.SignedAt, c.PaidAt, c.Revision, submissions, events, c.WarrantyMonths,
             staff && c.DiscardedAt is { } discardedAt ? new ContractDiscardView(discardedAt, c.DiscardedByUserId!.Value, c.DiscardReason!) : null,
             // Payment completion is separate from the contract status: a contract created from a paid quotation is DRAFT … SIGNED and already paid.
-            prepayment is not null || c.Status == ContractStatuses.Paid, prepayment?.PaymentAttemptId, prepayment?.PaidAt ?? c.PaidAt);
+            // A 30/70 contract is completed by its installments: PaymentCompleted = fully paid (both installments), never the deposit alone.
+            prepayment is not null || c.Status == ContractStatuses.Paid, prepayment?.PaymentAttemptId, prepayment?.PaidAt ?? c.PaidAt, plan);
     }
 
     private static readonly JsonSerializerOptions CanonicalJson = new() { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull };
@@ -605,6 +623,10 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
     }
 
     private static OperationResult<bool> Fail(string code, string message) => OperationResult<bool>.Fail(code, message);
+
+    /// <summary>A step of the previous contract flow (official PDF, scan review, amendments) asked on a 30/70 contract (409).</summary>
+    private static OperationResult<bool> LegacyOnly() => Fail(PaymentPlanErrorCodes.NotApplicable,
+        "This contract follows the 30/70 flow (created at the on-site agreement, signed on paper after the deposit); this step of the previous flow does not apply.");
     private static OperationResult<ContractView> NotFound() => OperationResult<ContractView>.Fail(ContractErrorCodes.NotFound, "Contract was not found.");
     private static string? Trim(string? value, int max) => string.IsNullOrWhiteSpace(value) ? null : value.Trim().Length > max ? value.Trim()[..max] : value.Trim();
 }

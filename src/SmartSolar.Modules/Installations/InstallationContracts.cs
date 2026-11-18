@@ -3,8 +3,12 @@ using SmartSolar.Modules.Common.Persistence;
 
 namespace SmartSolar.Modules.Installations;
 
+/// <param name="PaymentPlan">Non-null for a 30/70 contract (ready for installation once SIGNED after its deposit; 100% is not required).</param>
 public sealed record PaidContractSource(Guid ContractId, string ContractNumber, string Status, Guid SurveyRequestId, Guid CustomerUserId,
-    Guid PropertySiteId, decimal? Latitude, decimal? Longitude, decimal TotalAmount, DateTimeOffset? PaidAt);
+    Guid PropertySiteId, decimal? Latitude, decimal? Longitude, decimal TotalAmount, DateTimeOffset? PaidAt, string? PaymentPlan = null)
+{
+    public bool ReadyForInstallation => CustomerContracts.ContractStatuses.IsReadyForInstallation(Status, PaymentPlan);
+}
 
 /// <summary>Where the work happens and whom to contact (shown to the responsible technician and staff only).</summary>
 public sealed record InstallationSiteInfo(Guid PropertySiteId, string PropertyName, string Province, string? District, string? Ward, string? StreetLine,
@@ -22,8 +26,13 @@ public sealed record ContractedEquipment(Guid ProductId, string ProductType, str
 /// </summary>
 /// <param name="Prepaid">The contract was created from an installation quotation whose payment was verified (technician-led flow): paid before it was
 /// signed. Such a contract can be scheduled at once; its schedule is confirmed when the signed contract becomes PAID.</param>
+/// <param name="PaymentPlan">Non-null for a 30/70 contract: schedulable once its deposit is verified, confirmed when the paper contract is signed.</param>
 public sealed record ScheduleContractInfo(Guid ContractId, string ContractNumber, string Status, Guid SurveyRequestId, Guid CustomerUserId, Guid PropertySiteId,
-    Guid? SurveyTechnicianUserId, string PropertyName, string CustomerName, bool Prepaid = false);
+    Guid? SurveyTechnicianUserId, string PropertyName, string CustomerName, bool Prepaid = false, string? PaymentPlan = null)
+{
+    /// <summary>Explicit readiness (never "status == PAID"): legacy PAID, or a 30/70 contract SIGNED / PAID.</summary>
+    public bool ReadyForInstallation => CustomerContracts.ContractStatuses.IsReadyForInstallation(Status, PaymentPlan);
+}
 
 public interface IInstallationUnitOfWork : ITransactionalUnitOfWork, IInAppNotificationWriter
 {

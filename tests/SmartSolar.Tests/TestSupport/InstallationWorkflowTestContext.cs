@@ -43,7 +43,33 @@ public sealed class InstallationWorkflowTestContext : IAsyncDisposable
     public FileService Files(AppDbContext? db = null) => new(new FileStore(db ?? Db), Storage, StorageOptions, Clock, NullLogger<FileService>.Instance);
     public OnSiteSurveyHandlers OnSite() => new(new OnSiteSurveyUnitOfWork(Db), Files(), Scheduling.OnSiteOptions, Scheduling.Policies, Clock);
     public SmartSolar.Modules.Quotations.QuotationOptions QuotationOptions { get; } = new();
+    /// <summary>
+    /// Quotation handlers WITHOUT the 30/70 agreement contract: an AGREED quotation gets no contract (the 2026-11-18 behaviour), i.e. the agreed
+    /// quotations production still holds from before the 30/70 release (paid 100% through the retired quotation payment). New-flow tests use
+    /// <see cref="QuotationsWithPaymentPlan"/> (production wiring).
+    /// </summary>
     public SmartSolar.Modules.Quotations.QuotationHandlers Quotations(AppDbContext? db = null) => new(new QuotationUnitOfWork(db ?? Db), Files(db), QuotationOptions, Clock);
+
+    /// <summary>Production quotation wiring (2026-11-19): AGREED creates the 30/70 contract and its installments in the same transaction.</summary>
+    public SmartSolar.Modules.Quotations.QuotationHandlers QuotationsWithPaymentPlan(AppDbContext? db = null)
+        => new(new QuotationUnitOfWork(db ?? Db), Files(db), QuotationOptions, Clock, Ledger(db));
+
+    public SmartSolar.Modules.CustomerContracts.PaymentPlanOptions PaymentPlanOptions { get; } = new();
+
+    /// <summary>30/70 ledger (agreement contract, installment settlement, balance opening, overdue sweep) over <paramref name="db"/>.</summary>
+    public SmartSolar.Modules.CustomerContracts.PaymentPlanLedger Ledger(AppDbContext? db = null) => new(new ContractUnitOfWork(db ?? Db), PaymentPlanOptions, Clock);
+
+    public SmartSolar.Modules.CustomerContracts.InstallmentPaymentHandlers InstallmentPayments(AppDbContext? db = null)
+        => new(new ContractUnitOfWork(db ?? Db), PaymentsWithCash(db), PaymentOptions, Clock);
+
+    /// <summary>Paper signature with the production follow-up (finalizing confirms the technician-agreed schedule).</summary>
+    public SmartSolar.Modules.CustomerContracts.PaperSignatureHandlers PaperSignatures(AppDbContext? db = null)
+        => new(new ContractUnitOfWork(db ?? Db), Files(db), PaymentPlanOptions, Clock, Schedules(db));
+
+    public SmartSolar.Modules.CustomerContracts.ContractDirectoryHandlers Directory(AppDbContext? db = null) => new(new ContractUnitOfWork(db ?? Db), Clock);
+    public SmartSolar.Modules.CustomerContracts.CollectionHandlers Collections(AppDbContext? db = null) => new(new ContractUnitOfWork(db ?? Db), Files(db), Clock);
+    public SmartSolar.Modules.CustomerContracts.FinanceOverview Finance(AppDbContext? db = null)
+        => new(new FinanceOverviewQueries(db ?? Db), Scheduling.Calendar, Clock);
 
     /// <summary>
     /// LEGACY (retired 2026-11-17): completing the survey no longer generates a quotation in production. Tests that cover the retired automatic
@@ -63,7 +89,7 @@ public sealed class InstallationWorkflowTestContext : IAsyncDisposable
         => new(new ContractUnitOfWork(db ?? Db), Files(db), Clock, Schedules(db));
 
     /// <summary>Production settlement of verified payments: an installation-quotation line creates the contract (no after-sales lines here).</summary>
-    public SmartSolar.Modules.CustomerContracts.InstallationQuotationPaymentSettlement Settlement(AppDbContext? db = null) => new(Contracts(db));
+    public SmartSolar.Modules.CustomerContracts.InstallationQuotationPaymentSettlement Settlement(AppDbContext? db = null) => new(Contracts(db), null, Ledger(db));
 
     /// <summary>Technician-led on-site payment of an agreed installation quotation (production wiring).</summary>
     public SmartSolar.Modules.Quotations.OnSiteQuotationPaymentHandlers OnSitePayments(AppDbContext? db = null)
@@ -87,7 +113,8 @@ public sealed class InstallationWorkflowTestContext : IAsyncDisposable
         var scheduling = SchedulingWithInstallations(db);
         var planner = new SmartSolar.Modules.Installations.InstallationSchedulePlanner(Scheduling.Eligibility(scheduling), Scheduling.Calendar, InstallationOptions,
             Scheduling.Assignments(scheduling));
-        return new(new InstallationUnitOfWork(db ?? Db), scheduling, planner, Files(db), Scheduling.Calendar, InstallationOptions, Clock);
+        // Production wiring: the customer's acceptance opens the 30/70 balance (nothing for legacy contracts).
+        return new(new InstallationUnitOfWork(db ?? Db), scheduling, planner, Files(db), Scheduling.Calendar, InstallationOptions, Clock, Ledger(db));
     }
 
     /// <summary>Technician-agreed installation schedules (production wiring: confirmation through <see cref="Installations"/>).</summary>

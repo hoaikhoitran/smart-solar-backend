@@ -442,7 +442,11 @@ public sealed class InstallationTests
         Assert.Equal(InstallationErrorCodes.ProjectNotFound, (await RegisterPanelAndInverterAsync(ctx, project.ProjectId, stranger.Id)).ErrorCode);
         Assert.Equal(InstallationErrorCodes.ProjectNotFound, (await installs.ReportCompletionAsync(stranger.Id, project.ProjectId, "done", null, None)).ErrorCode);
         Assert.Equal(InstallationErrorCodes.ProjectNotFound, (await installs.GetForCustomerAsync(stranger.Id, project.ProjectId, None)).ErrorCode);
-        Assert.Equal(InstallationErrorCodes.ProjectNotFound, (await installs.AcceptInternallyAsync(paid.ManagerId, Guid.NewGuid(), 0, "accepted", null, None)).ErrorCode);
+        // Only the project's customer decides the acceptance: another user (here a stranger technician) and an unknown project get 404.
+        Assert.Equal(InstallationErrorCodes.ProjectNotFound, (await installs.DecideAcceptanceAsync(stranger.Id, project.ProjectId,
+            new CustomerAcceptanceInput(CustomerAcceptanceDecisions.Accept, null, null, null), None)).ErrorCode);
+        Assert.Equal(InstallationErrorCodes.ProjectNotFound, (await installs.DecideAcceptanceAsync(paid.CustomerId, Guid.NewGuid(),
+            new CustomerAcceptanceInput(CustomerAcceptanceDecisions.Accept, null, null, null), None)).ErrorCode);
 
         ctx.Clock.Now = At(8, 30, Wed).ToUniversalTime();
         Assert.Equal(InstallationErrorCodes.AssignmentNotAccepted, (await installs.StartProjectAsync(tech.Id, project.ProjectId, None)).ErrorCode);
@@ -664,7 +668,7 @@ public sealed class InstallationTests
     }
 
     [Fact]
-    public async Task Internal_rework_opens_a_new_round_that_needs_new_evidence_then_internal_acceptance_completes_and_hands_over()
+    public async Task Manager_rework_opens_a_new_round_that_needs_new_evidence_then_the_customer_accepts_and_the_handover_completes()
     {
         var ctx = InstallationWorkflowTestContext.Create();
         await using var _ = ctx;
@@ -678,7 +682,6 @@ public sealed class InstallationTests
         Assert.Equal(1, (await installs.GetForCustomerAsync(paid.CustomerId, project.ProjectId, None)).Value!.CurrentRound);
 
         Assert.Equal(InstallationErrorCodes.ReasonRequired, (await InternalAcceptance.ReworkAsync(ctx, project.ProjectId, " ", paid.ManagerId)).ErrorCode);
-        Assert.Equal(InstallationErrorCodes.ReasonRequired, (await InternalAcceptance.AcceptAsync(ctx, project.ProjectId, paid.ManagerId, note: " ")).ErrorCode);
         Assert.True((await InternalAcceptance.ReworkAsync(ctx, project.ProjectId, "Cable tray loose on the east side", paid.ManagerId)).Succeeded);
         var rework = (await installs.GetForCustomerAsync(paid.CustomerId, project.ProjectId, None)).Value!;
         Assert.Equal(InstallationStatuses.ReworkRequired, rework.Status);
@@ -698,9 +701,12 @@ public sealed class InstallationTests
         Assert.Equal(new[] { AcceptanceDecisions.ReworkRequested, AcceptanceDecisions.Accepted }, completed.Acceptances.Select(a => a.Decision));
         Assert.Equal(InstallationErrorCodes.InvalidState, (await InternalAcceptance.AcceptAsync(ctx, project.ProjectId, paid.ManagerId)).ErrorCode);   // decided once
         Assert.Equal(InstallationErrorCodes.InvalidState, (await InternalAcceptance.ReworkAsync(ctx, project.ProjectId, "late", paid.ManagerId)).ErrorCode);
-        var accepted = Assert.Single(await ctx.Db.InstallationEvents.Where(e => e.ProjectId == project.ProjectId && e.EventType == InstallationEventTypes.InternallyAccepted).ToListAsync());
-        Assert.Equal(paid.ManagerId, accepted.ActorUserId);   // the deciding Manager, never the customer
-        Assert.Empty(await ctx.Db.InstallationEvents.Where(e => e.ProjectId == project.ProjectId && e.EventType == InstallationEventTypes.CustomerAccepted).ToListAsync());
+        // 2026-11-19: the customer accepts (the Manager only returned round 1 to rework); no internal acceptance is ever recorded.
+        var accepted = Assert.Single(await ctx.Db.InstallationEvents.Where(e => e.ProjectId == project.ProjectId && e.EventType == InstallationEventTypes.CustomerAccepted).ToListAsync());
+        Assert.Equal(paid.CustomerId, accepted.ActorUserId);
+        Assert.Empty(await ctx.Db.InstallationEvents.Where(e => e.ProjectId == project.ProjectId && e.EventType == InstallationEventTypes.InternallyAccepted).ToListAsync());
+        var rounds = await ctx.Db.InstallationAcceptances.AsNoTracking().Where(a => a.ProjectId == project.ProjectId).OrderBy(a => a.Round).ToListAsync();
+        Assert.Equal(new[] { ("MANAGER", paid.ManagerId), (AcceptanceDeciders.Customer, paid.CustomerId) }, rounds.Select(r => (r.DecidedByRole!, r.DecidedByUserId!.Value)));
         Assert.Equal(AssignmentStatuses.Completed, (await ctx.Db.InstallationAssignments.SingleAsync(a => a.TechnicianUserId == tech)).Status);
         // The technician still sees the completed job; the interval is no longer a busy commitment.
         Assert.Equal(AssignmentStatuses.Completed, (await installs.GetForTechnicianAsync(tech, project.ProjectId, None)).Value!.MyAssignmentStatus);

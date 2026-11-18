@@ -122,6 +122,10 @@ public sealed class InstallationAcceptance
     public Guid? DecidedByUserId { get; set; }
     public DateTimeOffset? DecidedAt { get; set; }
     public string? Reason { get; set; }
+    /// <summary>Who decided: CUSTOMER (2026-11-19 customer acceptance), MANAGER (return to rework / internal acceptance history), null for older rows.</summary>
+    public string? DecidedByRole { get; set; }
+    /// <summary>JSON array of VERIFIED ACCEPTANCE_EVIDENCE file ids the customer attached to a rework request.</summary>
+    public string? EvidenceFileIds { get; set; }
 }
 
 /// <summary>

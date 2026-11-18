@@ -123,7 +123,8 @@ public sealed class CustomerNotificationTests
         await InstallationTests.AddCompletionEvidenceAsync(ctx, project.ProjectId, tech);
         Assert.True((await InstallationTests.RegisterPanelAndInverterAsync(ctx, project.ProjectId, tech)).Succeeded);
         var reported = (await ctx.Installations().ReportCompletionAsync(tech, project.ProjectId, "Done", null, None)).Value!;
-        Assert.Contains("lượt 1", Assert.Single(await OfAsync(ctx, customer, CustomerNotificationTypes.InstallationCompletionReported)).Message);
+        // 2026-11-19: the completion report asks the customer to accept or request rework (customer acceptance restored).
+        Assert.Contains("lượt 1", Assert.Single(await OfAsync(ctx, customer, CustomerNotificationTypes.InstallationAcceptanceRequested)).Message);
 
         var rework = await ctx.Installations().ReturnToReworkAsync(paid.ManagerId, project.ProjectId, reported.Revision, "Report incomplete", None);
         Assert.True(rework.Succeeded, rework.Message);

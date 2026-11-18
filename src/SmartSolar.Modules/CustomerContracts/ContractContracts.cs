@@ -11,7 +11,7 @@ public sealed record AcceptedQuotationSource(
 /// <summary>The verified payment that paid a contract before it existed (technician-led flow): attempt, when, how much.</summary>
 public sealed record ContractPrepayment(Guid PaymentAttemptId, DateTimeOffset PaidAt, decimal Amount, string Method);
 
-public interface IContractUnitOfWork : ITransactionalUnitOfWork, IInAppNotificationWriter
+public interface IContractUnitOfWork : ITransactionalUnitOfWork, IInAppNotificationWriter, IPaymentPlanStore
 {
     Task<AcceptedQuotationSource?> GetQuotationAsync(Guid quotationId, CancellationToken cancellationToken);
     Task<Guid?> GetAssignedSaleAsync(Guid surveyRequestId, CancellationToken cancellationToken);

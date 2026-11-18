@@ -1992,6 +1992,215 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractAccessAudit", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("action");
+
+                    b.Property<string>("ActorRole")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("actor_role");
+
+                    b.Property<Guid>("ActorUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<Guid?>("ContractId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("contract_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Detail")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("detail");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ActorUserId", "CreatedAt")
+                        .HasDatabaseName("ix_contract_access_audit_actor");
+
+                    b.HasIndex("ContractId", "CreatedAt")
+                        .HasDatabaseName("ix_contract_access_audit_contract");
+
+                    b.ToTable("contract_access_audit", (string)null);
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractCollectionActivity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ActorRole")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("actor_role");
+
+                    b.Property<Guid?>("ActorUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<Guid>("CaseId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("case_id");
+
+                    b.Property<string>("Channel")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("channel");
+
+                    b.Property<string>("EvidenceFileIds")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("evidence_file_ids");
+
+                    b.Property<string>("FromStatus")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("from_status");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("kind");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_at");
+
+                    b.Property<DateOnly?>("PromisedPaymentDate")
+                        .HasColumnType("date")
+                        .HasColumnName("promised_payment_date");
+
+                    b.Property<string>("Summary")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("summary");
+
+                    b.Property<string>("ToStatus")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("to_status");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ActorUserId");
+
+                    b.HasIndex("CaseId", "OccurredAt")
+                        .HasDatabaseName("ix_contract_collection_activity_case");
+
+                    b.ToTable("contract_collection_activity", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_contract_collection_activity_kind", "kind IN ('OPENED', 'CONTACT', 'NEGOTIATION', 'AGREEMENT', 'NOTE', 'ESCALATE', 'LEGAL_REVIEW', 'RESOLVE', 'PAID')");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractCollectionCase", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("AmountDue")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("amount_due");
+
+                    b.Property<Guid>("ContractId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("contract_id");
+
+                    b.Property<Guid>("CustomerUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("customer_user_id");
+
+                    b.Property<DateTimeOffset>("DueAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("due_at");
+
+                    b.Property<Guid>("InstallmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("installment_id");
+
+                    b.Property<DateTimeOffset>("OpenedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("opened_at");
+
+                    b.Property<DateOnly?>("PromisedPaymentDate")
+                        .HasColumnType("date")
+                        .HasColumnName("promised_payment_date");
+
+                    b.Property<string>("Resolution")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("resolution");
+
+                    b.Property<DateTimeOffset?>("ResolvedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("resolved_at");
+
+                    b.Property<Guid?>("ResolvedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("resolved_by_user_id");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ContractId")
+                        .HasDatabaseName("ix_contract_collection_case_contract");
+
+                    b.HasIndex("CustomerUserId");
+
+                    b.HasIndex("InstallmentId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_contract_collection_case_one_open")
+                        .HasFilter("status <> 'RESOLVED'");
+
+                    b.HasIndex("ResolvedByUserId");
+
+                    b.HasIndex("Status", "OpenedAt")
+                        .HasDatabaseName("ix_contract_collection_case_status_opened");
+
+                    b.ToTable("contract_collection_case", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_contract_collection_case_amount", "amount_due > 0");
+
+                            t.HasCheckConstraint("ck_contract_collection_case_resolved", "(status = 'RESOLVED') = (resolved_at IS NOT NULL AND resolution IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_contract_collection_case_status", "status IN ('OVERDUE', 'SALES_CONTACT_REQUIRED', 'CONTACTED', 'NEGOTIATION_IN_PROGRESS', 'AGREEMENT_RECORDED', 'ESCALATED_TO_MANAGER', 'LEGAL_REVIEW_REQUIRED', 'RESOLVED')");
+                        });
+                });
+
             modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractEvent", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2040,6 +2249,198 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("ix_contract_event_contract_created_at");
 
                     b.ToTable("contract_event", (string)null);
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractInstallment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<Guid>("ContractId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("contract_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid?>("CurrentPaymentAttemptId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("current_payment_attempt_id");
+
+                    b.Property<DateTimeOffset?>("DueAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("due_at");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("kind");
+
+                    b.Property<DateTimeOffset?>("OpenedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("opened_at");
+
+                    b.Property<decimal?>("PaidAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("paid_amount");
+
+                    b.Property<DateTimeOffset?>("PaidAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("paid_at");
+
+                    b.Property<bool>("PaidLate")
+                        .HasColumnType("boolean")
+                        .HasColumnName("paid_late");
+
+                    b.Property<decimal>("Percent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("percent");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("integer")
+                        .HasColumnName("sequence");
+
+                    b.Property<Guid?>("SettledPaymentAttemptId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("settled_payment_attempt_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ContractId", "Sequence")
+                        .IsUnique()
+                        .HasDatabaseName("ux_contract_installment_contract_sequence");
+
+                    b.HasIndex("Status", "DueAt")
+                        .HasDatabaseName("ix_contract_installment_status_due");
+
+                    b.ToTable("contract_installment", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_contract_installment_amount", "amount > 0 AND percent > 0 AND percent < 100");
+
+                            t.HasCheckConstraint("ck_contract_installment_balance_due", "kind <> 'BALANCE' OR status NOT IN ('DUE', 'PAID') OR due_at IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_contract_installment_kind", "kind IN ('DEPOSIT', 'BALANCE')");
+
+                            t.HasCheckConstraint("ck_contract_installment_opened", "status NOT IN ('DUE', 'PAID') OR opened_at IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_contract_installment_paid", "(status = 'PAID') = (paid_at IS NOT NULL AND paid_amount IS NOT NULL AND settled_payment_attempt_id IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_contract_installment_paid_amount", "paid_amount IS NULL OR paid_amount = amount");
+
+                            t.HasCheckConstraint("ck_contract_installment_sequence", "(sequence = 1 AND kind = 'DEPOSIT') OR (sequence = 2 AND kind = 'BALANCE')");
+
+                            t.HasCheckConstraint("ck_contract_installment_status", "status IN ('PENDING', 'DUE', 'PAID', 'CANCELLED')");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractSignatureSet", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ContractId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("contract_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<int>("ExpectedPageCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("expected_page_count");
+
+                    b.Property<DateTimeOffset?>("FinalizedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("finalized_at");
+
+                    b.Property<Guid?>("FinalizedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("finalized_by_user_id");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("note");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<DateOnly?>("SignedOn")
+                        .HasColumnType("date")
+                        .HasColumnName("signed_on");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ContractId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_contract_signature_set_one_current")
+                        .HasFilter("status <> 'SUPERSEDED'");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("FinalizedByUserId");
+
+                    b.HasIndex("ContractId", "Version")
+                        .IsUnique()
+                        .HasDatabaseName("ux_contract_signature_set_contract_version");
+
+                    b.ToTable("contract_signature_set", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_contract_signature_set_finalized", "(status = 'FINALIZED') = (finalized_at IS NOT NULL AND finalized_by_user_id IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_contract_signature_set_pages", "expected_page_count BETWEEN 1 AND 50");
+
+                            t.HasCheckConstraint("ck_contract_signature_set_status", "status IN ('UPLOADING', 'FINALIZED', 'SUPERSEDED')");
+                        });
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractSignatureSubmission", b =>
@@ -2114,6 +2515,75 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.ToTable("contract_signature_submission", null, t =>
                         {
                             t.HasCheckConstraint("ck_contract_signature_submission_outcome", "outcome IN ('PENDING', 'APPROVED', 'REJECTED')");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractSignedPage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("content_type");
+
+                    b.Property<Guid>("ContractId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("contract_id");
+
+                    b.Property<Guid>("FileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("file_id");
+
+                    b.Property<int>("PageNumber")
+                        .HasColumnType("integer")
+                        .HasColumnName("page_number");
+
+                    b.Property<DateTimeOffset?>("ReplacedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("replaced_at");
+
+                    b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("sha256");
+
+                    b.Property<Guid>("SignatureSetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("signature_set_id");
+
+                    b.Property<DateTimeOffset>("UploadedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("uploaded_at");
+
+                    b.Property<Guid>("UploadedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("uploaded_by_user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ContractId")
+                        .HasDatabaseName("ix_contract_signed_page_contract");
+
+                    b.HasIndex("FileId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_contract_signed_page_file");
+
+                    b.HasIndex("UploadedByUserId");
+
+                    b.HasIndex("SignatureSetId", "PageNumber")
+                        .IsUnique()
+                        .HasDatabaseName("ux_contract_signed_page_current")
+                        .HasFilter("replaced_at IS NULL");
+
+                    b.ToTable("contract_signed_page", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_contract_signed_page_number", "page_number BETWEEN 1 AND 50");
                         });
                 });
 
@@ -2192,6 +2662,11 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("paid_at");
 
+                    b.Property<string>("PaymentPlan")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("payment_plan");
+
                     b.Property<Guid?>("PreviousContractId")
                         .HasColumnType("uuid")
                         .HasColumnName("previous_contract_id");
@@ -2267,6 +2742,11 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(8000)")
                         .HasColumnName("terms");
 
+                    b.Property<string>("TermsVersion")
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)")
+                        .HasColumnName("terms_version");
+
                     b.Property<decimal>("TotalAmount")
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)")
@@ -2330,9 +2810,11 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
 
                             t.HasCheckConstraint("ck_customer_contract_issued_hash", "status IN ('DRAFT', 'DISCARDED') OR (canonical_hash IS NOT NULL AND issued_at IS NOT NULL)");
 
-                            t.HasCheckConstraint("ck_customer_contract_published_document", "status IN ('DRAFT', 'ISSUED', 'SUPERSEDED', 'DISCARDED') OR (official_document_file_id IS NOT NULL AND official_document_sha256 IS NOT NULL)");
+                            t.HasCheckConstraint("ck_customer_contract_payment_plan", "payment_plan IS NULL OR payment_plan IN ('DEPOSIT_30_BALANCE_70')");
 
-                            t.HasCheckConstraint("ck_customer_contract_signed_review", "status NOT IN ('SIGNED', 'PAID') OR (signed_document_file_id IS NOT NULL AND reviewed_by_user_id IS NOT NULL AND signed_at IS NOT NULL)");
+                            t.HasCheckConstraint("ck_customer_contract_published_document", "status IN ('DRAFT', 'ISSUED', 'SUPERSEDED', 'DISCARDED') OR (official_document_file_id IS NOT NULL AND official_document_sha256 IS NOT NULL) OR payment_plan IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_customer_contract_signed_review", "status NOT IN ('SIGNED', 'PAID') OR (signed_document_file_id IS NOT NULL AND reviewed_by_user_id IS NOT NULL AND signed_at IS NOT NULL) OR (payment_plan IS NOT NULL AND signed_at IS NOT NULL)");
 
                             t.HasCheckConstraint("ck_customer_contract_status", "status IN ('DRAFT', 'ISSUED', 'AWAITING_SIGNATURE', 'UNDER_REVIEW', 'SIGNATURE_REJECTED', 'SIGNED', 'PAID', 'SUPERSEDED', 'DISCARDED')");
 
@@ -2465,7 +2947,7 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         {
                             t.HasCheckConstraint("ck_file_reference_checksum_format", "(verified_checksum_sha256 IS NULL OR (length(verified_checksum_sha256) = 64 AND verified_checksum_sha256 = lower(verified_checksum_sha256))) AND (declared_checksum_sha256 IS NULL OR (length(declared_checksum_sha256) = 64 AND declared_checksum_sha256 = lower(declared_checksum_sha256)))");
 
-                            t.HasCheckConstraint("ck_file_reference_purpose", "purpose IN ('ONSITE_SURVEY_EVIDENCE', 'QUOTATION_DOCUMENT', 'CONTRACT_DOCUMENT', 'SIGNED_CONTRACT', 'INSTALLATION_EVIDENCE', 'KNOWLEDGE_DOCUMENT', 'PROJECT_DOCUMENT', 'SERVICE_EVIDENCE', 'PRODUCT_IMAGE', 'PACKAGE_IMAGE', 'PAYMENT_EVIDENCE')");
+                            t.HasCheckConstraint("ck_file_reference_purpose", "purpose IN ('ONSITE_SURVEY_EVIDENCE', 'QUOTATION_DOCUMENT', 'CONTRACT_DOCUMENT', 'SIGNED_CONTRACT', 'INSTALLATION_EVIDENCE', 'KNOWLEDGE_DOCUMENT', 'PROJECT_DOCUMENT', 'SERVICE_EVIDENCE', 'PRODUCT_IMAGE', 'PACKAGE_IMAGE', 'PAYMENT_EVIDENCE', 'SIGNED_CONTRACT_PAGE', 'ACCEPTANCE_EVIDENCE', 'COLLECTION_EVIDENCE')");
 
                             t.HasCheckConstraint("ck_file_reference_sizes", "declared_size_bytes > 0 AND (verified_size_bytes IS NULL OR verified_size_bytes > 0)");
 
@@ -3013,6 +3495,11 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("decided_at");
 
+                    b.Property<string>("DecidedByRole")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("decided_by_role");
+
                     b.Property<Guid?>("DecidedByUserId")
                         .HasColumnType("uuid")
                         .HasColumnName("decided_by_user_id");
@@ -3022,6 +3509,10 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasMaxLength(30)
                         .HasColumnType("character varying(30)")
                         .HasColumnName("decision");
+
+                    b.Property<string>("EvidenceFileIds")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("evidence_file_ids");
 
                     b.Property<Guid>("ProjectId")
                         .HasColumnType("uuid")
@@ -5689,6 +6180,10 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("contract_id");
 
+                    b.Property<Guid?>("ContractInstallmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("contract_installment_id");
+
                     b.Property<Guid?>("InstallationQuotationId")
                         .HasColumnType("uuid")
                         .HasColumnName("installation_quotation_id");
@@ -5726,6 +6221,9 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("ContractId");
 
+                    b.HasIndex("ContractInstallmentId")
+                        .HasDatabaseName("ix_payment_attempt_item_contract_installment");
+
                     b.HasIndex("InstallationQuotationId")
                         .HasDatabaseName("ix_payment_attempt_item_installation_quotation");
 
@@ -5754,6 +6252,10 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .IsUnique()
                         .HasFilter("subscription_id IS NOT NULL");
 
+                    b.HasIndex(new[] { "ContractInstallmentId" }, "ux_payment_attempt_item_settled_contract_installment")
+                        .IsUnique()
+                        .HasFilter("contract_installment_id IS NOT NULL AND status = 'SETTLED'");
+
                     b.HasIndex(new[] { "InstallationQuotationId" }, "ux_payment_attempt_item_settled_installation_quotation")
                         .IsUnique()
                         .HasFilter("installation_quotation_id IS NOT NULL AND status = 'SETTLED'");
@@ -5770,13 +6272,15 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         {
                             t.HasCheckConstraint("ck_payment_attempt_item_amount", "amount > 0");
 
+                            t.HasCheckConstraint("ck_payment_attempt_item_contract_installment", "(item_type = 'CONTRACT_INSTALLMENT') = (contract_installment_id IS NOT NULL)");
+
                             t.HasCheckConstraint("ck_payment_attempt_item_installation_quotation", "(item_type = 'INSTALLATION_QUOTATION') = (installation_quotation_id IS NOT NULL)");
 
                             t.HasCheckConstraint("ck_payment_attempt_item_status", "status IN ('PENDING', 'SETTLED', 'REVIEW_REQUIRED')");
 
-                            t.HasCheckConstraint("ck_payment_attempt_item_target", "(CASE WHEN contract_id IS NULL THEN 0 ELSE 1 END) + (CASE WHEN subscription_id IS NULL THEN 0 ELSE 1 END) + (CASE WHEN quotation_id IS NULL THEN 0 ELSE 1 END) + (CASE WHEN installation_quotation_id IS NULL THEN 0 ELSE 1 END) = 1");
+                            t.HasCheckConstraint("ck_payment_attempt_item_target", "(CASE WHEN contract_id IS NULL THEN 0 ELSE 1 END) + (CASE WHEN subscription_id IS NULL THEN 0 ELSE 1 END) + (CASE WHEN quotation_id IS NULL THEN 0 ELSE 1 END) + (CASE WHEN installation_quotation_id IS NULL THEN 0 ELSE 1 END) + (CASE WHEN contract_installment_id IS NULL THEN 0 ELSE 1 END) = 1");
 
-                            t.HasCheckConstraint("ck_payment_attempt_item_type", "item_type IN ('CONTRACT', 'MAINTENANCE_PACKAGE', 'DISASTER_PACKAGE', 'REPAIR_QUOTATION', 'MAINTENANCE_QUOTATION', 'INSTALLATION_QUOTATION')");
+                            t.HasCheckConstraint("ck_payment_attempt_item_type", "item_type IN ('CONTRACT', 'MAINTENANCE_PACKAGE', 'DISASTER_PACKAGE', 'REPAIR_QUOTATION', 'MAINTENANCE_QUOTATION', 'INSTALLATION_QUOTATION', 'CONTRACT_INSTALLMENT')");
                         });
                 });
 
@@ -8359,6 +8863,52 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasConstraintName("fk_product_image_product");
                 });
 
+            modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractCollectionActivity", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("ActorUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_contract_collection_activity_actor");
+
+                    b.HasOne("SmartSolar.Modules.CustomerContracts.ContractCollectionCase", null)
+                        .WithMany()
+                        .HasForeignKey("CaseId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_contract_collection_activity_case");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractCollectionCase", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.CustomerContracts.CustomerContract", null)
+                        .WithMany()
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_contract_collection_case_contract");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CustomerUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_contract_collection_case_customer");
+
+                    b.HasOne("SmartSolar.Modules.CustomerContracts.ContractInstallment", null)
+                        .WithMany()
+                        .HasForeignKey("InstallmentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_contract_collection_case_installment");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("ResolvedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_contract_collection_case_resolved_by");
+                });
+
             modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractEvent", b =>
                 {
                     b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
@@ -8372,6 +8922,39 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasForeignKey("ContractId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractInstallment", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.CustomerContracts.CustomerContract", null)
+                        .WithMany()
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_contract_installment_contract");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractSignatureSet", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.CustomerContracts.CustomerContract", null)
+                        .WithMany()
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_contract_signature_set_contract");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_contract_signature_set_created_by");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("FinalizedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_contract_signature_set_finalized_by");
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractSignatureSubmission", b =>
@@ -8398,6 +8981,37 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasForeignKey("SubmittedByUserId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractSignedPage", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.CustomerContracts.CustomerContract", null)
+                        .WithMany()
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_contract_signed_page_contract");
+
+                    b.HasOne("SmartSolar.Modules.Files.StoredFile", null)
+                        .WithMany()
+                        .HasForeignKey("FileId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_contract_signed_page_file");
+
+                    b.HasOne("SmartSolar.Modules.CustomerContracts.ContractSignatureSet", null)
+                        .WithMany()
+                        .HasForeignKey("SignatureSetId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_contract_signed_page_set");
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("UploadedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_contract_signed_page_uploaded_by");
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.CustomerContract", b =>
@@ -9230,6 +9844,12 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasForeignKey("ContractId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .HasConstraintName("fk_payment_attempt_item_contract");
+
+                    b.HasOne("SmartSolar.Modules.CustomerContracts.ContractInstallment", null)
+                        .WithMany()
+                        .HasForeignKey("ContractInstallmentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_payment_attempt_item_contract_installment");
 
                     b.HasOne("SmartSolar.Modules.Quotations.Quotation", null)
                         .WithMany()

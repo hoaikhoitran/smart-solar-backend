@@ -21,12 +21,14 @@ public sealed class TechnicianLedSalesE2ETests
 {
     private static readonly CancellationToken None = CancellationToken.None;
 
-    /// <summary>Notification types that would ask the customer to act in the app (all retired 2026-11-18).</summary>
+    /// <summary>Notification types that would ask the customer to act in the app (retired 2026-11-18; acceptance is the customer's again since 2026-11-19).</summary>
     private static readonly string[] ApprovalRequests =
-        ["INSTALLATION_QUOTATION_ISSUED", "INSTALLATION_SLOTS_OFFERED", "INSTALLATION_ACCEPTANCE_REQUIRED", "EQUIPMENT_SUBSTITUTION_APPROVAL_REQUIRED"];
+        ["INSTALLATION_QUOTATION_ISSUED", "INSTALLATION_SLOTS_OFFERED", "EQUIPMENT_SUBSTITUTION_APPROVAL_REQUIRED"];
 
     [Fact]
-    public async Task E2E_ONSITE_01_Quotation_agreed_on_site_paid_by_QR_contract_schedule_installation_and_internal_acceptance()
+    /// <remarks>LEGACY data (2026-11-18 flow, kept for quotations paid 100% before the 30/70 release): the contract is paid in full; since 2026-11-19 the
+    /// customer accepts the installation, which opens no balance for such a contract.</remarks>
+    public async Task E2E_ONSITE_01_Legacy_quotation_paid_100_percent_before_its_contract_is_signed_installed_and_accepted_by_the_customer()
     {
         await using var ctx = InstallationWorkflowTestContext.Create();
         var cart = await SimplifiedFlowFixture.IssuedAsync(ctx);
@@ -70,8 +72,9 @@ public sealed class TechnicianLedSalesE2ETests
         var reported = await ctx.Installations().ReportCompletionAsync(cart.TechnicianId, projectId, "Array and inverter commissioned, handed over on site.", null, None);
         Assert.True(reported.Succeeded, reported.Message);
 
-        // 5. Internal acceptance by the Manager → COMPLETED; the customer reads the handover.
+        // 5. The customer accepts → COMPLETED; the customer reads the handover. A legacy (fully paid) contract has no balance to open.
         Assert.True((await InternalAcceptance.AcceptAsync(ctx, projectId, manager.Id, "Handover minutes signed with the customer on site")).Succeeded);
+        Assert.Empty(await ctx.Db.ContractInstallments.AsNoTracking().ToListAsync());
         var view = (await ctx.Installations().GetForCustomerAsync(customer, projectId, None)).Value!;
         Assert.Equal(InstallationStatuses.Completed, view.Status);
         Assert.True((await ctx.Installations().GetHandoverAsync(customer, false, projectId, None)).Succeeded);
@@ -84,8 +87,7 @@ public sealed class TechnicianLedSalesE2ETests
         // Every decision on the way was recorded by staff, never under the customer's identity.
         Assert.DoesNotContain(await ctx.Db.QuotationEvents.AsNoTracking().Where(e => e.QuotationId == cart.Quotation.QuotationId).Select(e => e.ActorUserId).ToListAsync(),
             actor => actor == customer);
-        Assert.DoesNotContain(await ctx.Db.InstallationAcceptances.AsNoTracking().Where(a => a.ProjectId == projectId).Select(a => a.DecidedByUserId).ToListAsync(),
-            decider => decider == customer);
+        Assert.Equal(new Guid?[] { customer }, await ctx.Db.InstallationAcceptances.AsNoTracking().Where(a => a.ProjectId == projectId).Select(a => a.DecidedByUserId).ToListAsync());
         Assert.Equal(1, await ctx.Db.PaymentAttempts.CountAsync(a => a.Status == PaymentStatuses.Paid));
     }
 

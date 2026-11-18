@@ -53,7 +53,7 @@ public sealed record WebhookResult(bool Accepted, string Outcome);
 
 /// <summary>One line of a checkout (the item it pays and whether it was applied).</summary>
 public sealed record PaymentLineView(string ItemType, decimal Amount, string Status, Guid? ContractId, Guid? SubscriptionId, Guid? QuotationId,
-    Guid? InstallationQuotationId = null);
+    Guid? InstallationQuotationId = null, Guid? ContractInstallmentId = null);
 
 /// <summary>A payment attempt as staff see it, with its customer and lines.</summary>
 public sealed record StaffPaymentAttemptView(PaymentAttemptView Attempt, Guid CustomerUserId, IReadOnlyList<PaymentLineView> Lines);
@@ -108,6 +108,7 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
         var contract = await unitOfWork.GetContractAsync(contractId, cancellationToken);
         if (contract is null || contract.CustomerUserId != customerUserId)
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ContractNotFound, "Contract was not found.");
+        if (contract.PaymentPlan is not null) return InstallmentsOnly<PaymentAttemptView>();
         if (contract.Status == "PAID") return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid.");
         if (contract.Status != "SIGNED")
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ContractNotSigned, "Payment opens after the signed contract is approved.");
@@ -188,8 +189,8 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
     {
         var lines = items.Select(i => new PaymentAttemptItem
         {
-            Id = Guid.NewGuid(), ItemType = i.ItemType, SubscriptionId = i.SubscriptionId, QuotationId = i.QuotationId, InstallationQuotationId = i.InstallationQuotationId, Amount = i.Amount,
-            Status = PaymentItemStatuses.Pending,
+            Id = Guid.NewGuid(), ItemType = i.ItemType, SubscriptionId = i.SubscriptionId, QuotationId = i.QuotationId, InstallationQuotationId = i.InstallationQuotationId,
+            ContractInstallmentId = i.ContractInstallmentId, Amount = i.Amount, Status = PaymentItemStatuses.Pending,
         }).ToList();
         PayableContract? contract = null;
         if (contractId is { } id)
@@ -197,6 +198,7 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
             contract = await unitOfWork.GetContractAsync(id, cancellationToken);
             if (contract is null || contract.CustomerUserId != customerUserId)
                 return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ContractNotFound, "Contract was not found.");
+            if (contract.PaymentPlan is not null) return InstallmentsOnly<PaymentAttemptView>();
             if (contract.Status == "PAID") return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid.");
             if (contract.Status != "SIGNED")
                 return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ContractNotSigned, "Payment opens after the signed contract is approved.");
@@ -271,6 +273,7 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
         var contract = await unitOfWork.GetContractAsync(contractId.Value, cancellationToken);
         if (contract is null || contract.CustomerUserId != customerUserId)
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ContractNotFound, "Contract was not found.");
+        if (contract.PaymentPlan is not null) return InstallmentsOnly<PaymentAttemptView>();
         if (contract.Status == "PAID") return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid.");
         if (contract.Status != "SIGNED")
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ContractNotSigned, "Payment opens after the signed contract is approved.");
@@ -282,7 +285,7 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
         };
         lines.AddRange(items.Select(i => new PaymentAttemptItem
         {
-            Id = Guid.NewGuid(), ItemType = i.ItemType, SubscriptionId = i.SubscriptionId, QuotationId = i.QuotationId, InstallationQuotationId = i.InstallationQuotationId, Amount = i.Amount, Status = PaymentItemStatuses.Pending,
+            Id = Guid.NewGuid(), ItemType = i.ItemType, SubscriptionId = i.SubscriptionId, QuotationId = i.QuotationId, InstallationQuotationId = i.InstallationQuotationId, ContractInstallmentId = i.ContractInstallmentId, Amount = i.Amount, Status = PaymentItemStatuses.Pending,
         }));
         var total = lines.Sum(l => l.Amount);
         if (contract.Currency != "VND" || items.Count == 0 || lines.Any(l => l.Amount <= 0 || decimal.Truncate(l.Amount) != l.Amount) || total > options.MaxAmountVnd)
@@ -316,7 +319,7 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ProviderNotConfigured, "After-sales lines cannot be settled in this environment.");
         var lines = items.Select(i => new PaymentAttemptItem
         {
-            Id = Guid.NewGuid(), ItemType = i.ItemType, SubscriptionId = i.SubscriptionId, QuotationId = i.QuotationId, InstallationQuotationId = i.InstallationQuotationId, Amount = i.Amount, Status = PaymentItemStatuses.Pending,
+            Id = Guid.NewGuid(), ItemType = i.ItemType, SubscriptionId = i.SubscriptionId, QuotationId = i.QuotationId, InstallationQuotationId = i.InstallationQuotationId, ContractInstallmentId = i.ContractInstallmentId, Amount = i.Amount, Status = PaymentItemStatuses.Pending,
         }).ToList();
         if (lines.Count == 0 || lines.Any(l => l.Amount <= 0 || decimal.Truncate(l.Amount) != l.Amount) || lines.Sum(l => l.Amount) > options.MaxAmountVnd)
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AmountNotSupported, $"A checkout must contain whole VND amounts with a total up to {options.MaxAmountVnd:N0}.");
@@ -399,6 +402,13 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
     /// <summary>Every payment attempt of an installation quotation (any status), newest first.</summary>
     public async Task<IReadOnlyList<PaymentAttempt>> ListInstallationQuotationAttemptsAsync(Guid quotationId, CancellationToken cancellationToken)
         => (await unitOfWork.ListAttemptsForInstallationQuotationAsync(quotationId, cancellationToken)).OrderByDescending(a => a.CreatedAt).ToList();
+
+    /// <summary>Every payment attempt of a contract installment (30/70 plan; any status), newest first.</summary>
+    public async Task<IReadOnlyList<PaymentAttempt>> ListInstallmentAttemptsAsync(Guid installmentId, CancellationToken cancellationToken)
+        => (await unitOfWork.ListAttemptsForInstallmentAsync(installmentId, cancellationToken)).OrderByDescending(a => a.CreatedAt).ToList();
+
+    private static OperationResult<T> InstallmentsOnly<T>() => OperationResult<T>.Fail(PaymentErrorCodes.ContractHasInstallments,
+        "This contract is paid in two installments (30% before signing, 70% after acceptance); use the installment payment of the contract.");
 
     private async Task<OperationResult<PaymentAttemptView>> RecordLinkAsync(Guid attemptId, PaymentLinkResult link, CancellationToken cancellationToken)
     {
@@ -502,6 +512,7 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
         var contract = await unitOfWork.GetContractAsync(contractId, cancellationToken);
         if (contract is null || contract.CustomerUserId != customerUserId)
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ContractNotFound, "Contract was not found.");
+        if (contract.PaymentPlan is not null) return InstallmentsOnly<PaymentAttemptView>();
         if (contract.Status == "PAID") return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid.");
         if (contract.Status != "SIGNED")
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ContractNotSigned, "Payment opens after the signed contract is approved.");
@@ -574,6 +585,7 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
 
         var contract = await unitOfWork.GetContractAsync(contractId, cancellationToken);
         if (contract is null) return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ContractNotFound, "Contract was not found.");
+        if (contract.PaymentPlan is not null) return InstallmentsOnly<PaymentAttemptView>();
         if (contract.Status == "PAID") return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid.");
         var cash = (await unitOfWork.ListAttemptsAsync(contractId, cancellationToken))
             .FirstOrDefault(a => a.Provider == PaymentProviders.Cash && a.Status == PaymentStatuses.Pending);
@@ -664,7 +676,8 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
         var (rows, total) = await unitOfWork.PageAttemptsAsync(filter, page.Skip, page.PageSize, cancellationToken);
         var lines = (await unitOfWork.GetItemsForAttemptsAsync(rows.Select(r => r.Id).ToList(), cancellationToken)).ToLookup(l => l.PaymentAttemptId);
         return page.Result(rows.Select(a => new StaffPaymentAttemptView(View(a, staff: true), a.CustomerUserId,
-            lines[a.Id].Select(l => new PaymentLineView(l.ItemType, l.Amount, l.Status, l.ContractId, l.SubscriptionId, l.QuotationId, l.InstallationQuotationId)).ToList())).ToList(), total);
+            lines[a.Id].Select(l => new PaymentLineView(l.ItemType, l.Amount, l.Status, l.ContractId, l.SubscriptionId, l.QuotationId, l.InstallationQuotationId,
+                l.ContractInstallmentId)).ToList())).ToList(), total);
     }
 
     /// <summary>
@@ -1018,7 +1031,7 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
             ? (await unitOfWork.GetEventsAsync(contractId, cancellationToken)).Select(e => new PaymentEventView(e.PaymentAttemptId, e.EventType, e.FromStatus, e.ToStatus, e.Source, e.Detail, e.CreatedAt)).ToList()
             : null;
         var state = contract.Status == "PAID" ? ContractPaymentStates.Paid
-            : contract.Status != "SIGNED" ? ContractPaymentStates.NotPayable
+            : contract.Status != "SIGNED" || contract.PaymentPlan is not null ? ContractPaymentStates.NotPayable
             : current is { Status: not PaymentStatuses.Paid } live ? (live.Method == PaymentProviders.Cash ? ContractPaymentStates.AwaitingCashConfirmation : ContractPaymentStates.OnlineInProgress)
             : ContractPaymentStates.AwaitingPayment;
         return new ContractPaymentView(contractId, contract.Status, contract.TotalAmount, contract.Currency, current, attempts, history, state);

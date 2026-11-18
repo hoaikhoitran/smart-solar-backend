@@ -443,7 +443,9 @@ public sealed class InstallationLifecycleE2ETests
         Assert.Equal(new[] { 1, 2 }, await j.Ctx.Db.InstallationEvidence.Where(e => e.ProjectId == project.ProjectId).OrderBy(e => e.Round).Select(e => e.Round).ToListAsync());
         Assert.Equal(2, handover.Evidence.Count);
         Assert.Equal(2, await j.Ctx.Db.InstallationAcceptances.CountAsync(a => a.ProjectId == project.ProjectId));
-        Assert.Single(await j.Ctx.Db.InstallationEvents.Where(e => e.ProjectId == project.ProjectId && e.EventType == InstallationEventTypes.InternallyAccepted).ToListAsync());
+        // 2026-11-19: the customer accepts (never a Manager's internal acceptance).
+        Assert.Single(await j.Ctx.Db.InstallationEvents.Where(e => e.ProjectId == project.ProjectId && e.EventType == InstallationEventTypes.CustomerAccepted).ToListAsync());
+        Assert.Empty(await j.Ctx.Db.InstallationEvents.Where(e => e.ProjectId == project.ProjectId && e.EventType == InstallationEventTypes.InternallyAccepted).ToListAsync());
     }
 
     // ------------------------------------------------------------------ E2E-09

@@ -95,7 +95,10 @@ public sealed class AfterSalesReportQueries(AppDbContext db) : IAfterSalesReport
                                   || lines.Any(l => l.PaymentAttemptId == a.Id
                                                     && ((l.SubscriptionId != null && db.ServiceSubscriptions.Any(s => s.Id == l.SubscriptionId && projects.Any(p => p.ContractId == s.ContractId)))
                                                         || (l.QuotationId != null && db.ServiceQuotations.Any(q => q.Id == l.QuotationId
-                                                            && db.ServiceRequests.Any(r => r.Id == q.RequestId && projects.Any(p => p.Id == r.ProjectId)))))));
+                                                            && db.ServiceRequests.Any(r => r.Id == q.RequestId && projects.Any(p => p.Id == r.ProjectId))))
+                                                        // 30/70 installment lines follow their contract to its installation.
+                                                        || (l.ContractInstallmentId != null && db.ContractInstallments.Any(i => i.Id == l.ContractInstallmentId
+                                                            && projects.Any(p => p.ContractId == i.ContractId))))));
 
         var attempts = await inZone.Select(a => new { a.Id, a.Status, a.AmountPaid, a.ContractId }).ToListAsync(cancellationToken);
         var ids = attempts.Select(a => a.Id).ToList();
@@ -121,7 +124,9 @@ public sealed class AfterSalesReportQueries(AppDbContext db) : IAfterSalesReport
             }
             var settled = mine.Where(l => l.Status == PaymentItemStatuses.Settled).ToList();
             // An installation quotation paid before its contract (technician-led flow) is contract revenue once settled (its contract was created).
-            contracts += settled.Where(l => l.ItemType is PaymentItemTypes.Contract or PaymentItemTypes.InstallationQuotation).Sum(l => l.Amount);
+            // 30/70 installments (deposit / balance) are contract revenue once settled, each counted once (one settled line per installment).
+            contracts += settled.Where(l => l.ItemType is PaymentItemTypes.Contract or PaymentItemTypes.InstallationQuotation or PaymentItemTypes.ContractInstallment)
+                .Sum(l => l.Amount);
             packages += settled.Where(l => l.ItemType is PaymentItemTypes.MaintenancePackage or PaymentItemTypes.DisasterPackage).Sum(l => l.Amount);
             services += settled.Where(l => l.ItemType is PaymentItemTypes.RepairQuotation or PaymentItemTypes.MaintenanceQuotation).Sum(l => l.Amount);
             unapplied += gross - settled.Sum(l => l.Amount);
