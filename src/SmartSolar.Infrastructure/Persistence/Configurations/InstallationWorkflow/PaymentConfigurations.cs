@@ -122,8 +122,13 @@ public sealed class PaymentAttemptItemConfiguration : IEntityTypeConfiguration<P
             t.HasCheckConstraint("ck_payment_attempt_item_type", $"item_type IN ({string.Join(", ", PaymentItemTypes.All.Select(s => $"'{s}'"))})");
             t.HasCheckConstraint("ck_payment_attempt_item_status", $"status IN ({string.Join(", ", PaymentItemStatuses.All.Select(s => $"'{s}'"))})");
             t.HasCheckConstraint("ck_payment_attempt_item_amount", "amount > 0");
+            // Exactly one target per line: the contract, a package, an after-sales quotation, or an installation quotation paid before its contract.
             t.HasCheckConstraint("ck_payment_attempt_item_target",
-                "(CASE WHEN contract_id IS NULL THEN 0 ELSE 1 END) + (CASE WHEN subscription_id IS NULL THEN 0 ELSE 1 END) + (CASE WHEN quotation_id IS NULL THEN 0 ELSE 1 END) = 1");
+                "(CASE WHEN contract_id IS NULL THEN 0 ELSE 1 END) + (CASE WHEN subscription_id IS NULL THEN 0 ELSE 1 END) + (CASE WHEN quotation_id IS NULL THEN 0 ELSE 1 END)"
+                + " + (CASE WHEN installation_quotation_id IS NULL THEN 0 ELSE 1 END) = 1");
+            // An installation-quotation line is always typed as such (and the type always names that target).
+            t.HasCheckConstraint("ck_payment_attempt_item_installation_quotation",
+                $"(item_type = '{PaymentItemTypes.InstallationQuotation}') = (installation_quotation_id IS NOT NULL)");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -132,6 +137,7 @@ public sealed class PaymentAttemptItemConfiguration : IEntityTypeConfiguration<P
         builder.Property(x => x.ContractId).HasColumnName("contract_id");
         builder.Property(x => x.SubscriptionId).HasColumnName("subscription_id");
         builder.Property(x => x.QuotationId).HasColumnName("quotation_id");
+        builder.Property(x => x.InstallationQuotationId).HasColumnName("installation_quotation_id");
         builder.Property(x => x.Amount).HasColumnName("amount").HasPrecision(18, 2).IsRequired();
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(20).IsRequired();
         builder.Property(x => x.Note).HasColumnName("note").HasMaxLength(300);
@@ -149,6 +155,12 @@ public sealed class PaymentAttemptItemConfiguration : IEntityTypeConfiguration<P
             .HasFilter($"subscription_id IS NOT NULL AND status = '{PaymentItemStatuses.Settled}'");
         builder.HasIndex(x => x.QuotationId, "ux_payment_attempt_item_settled_quotation").IsUnique()
             .HasFilter($"quotation_id IS NOT NULL AND status = '{PaymentItemStatuses.Settled}'");
+        builder.HasIndex(x => x.InstallationQuotationId).HasDatabaseName("ix_payment_attempt_item_installation_quotation");
+        builder.HasIndex(x => new { x.PaymentAttemptId, x.InstallationQuotationId }, "ux_payment_attempt_item_attempt_installation_quotation").IsUnique()
+            .HasFilter("installation_quotation_id IS NOT NULL");
+        // An installation quotation is settled (its contract created) by at most one verified payment.
+        builder.HasIndex(x => x.InstallationQuotationId, "ux_payment_attempt_item_settled_installation_quotation").IsUnique()
+            .HasFilter($"installation_quotation_id IS NOT NULL AND status = '{PaymentItemStatuses.Settled}'");
         builder.HasOne<PaymentAttempt>().WithMany().HasForeignKey(x => x.PaymentAttemptId).OnDelete(DeleteBehavior.Restrict)
             .HasConstraintName("fk_payment_attempt_item_attempt");
         builder.HasOne<CustomerContract>().WithMany().HasForeignKey(x => x.ContractId).OnDelete(DeleteBehavior.Restrict)
@@ -157,5 +169,7 @@ public sealed class PaymentAttemptItemConfiguration : IEntityTypeConfiguration<P
             .HasConstraintName("fk_payment_attempt_item_subscription");
         builder.HasOne<SmartSolar.Modules.AfterSales.ServiceQuotation>().WithMany().HasForeignKey(x => x.QuotationId).OnDelete(DeleteBehavior.Restrict)
             .HasConstraintName("fk_payment_attempt_item_quotation");
+        builder.HasOne<SmartSolar.Modules.Quotations.Quotation>().WithMany().HasForeignKey(x => x.InstallationQuotationId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_payment_attempt_item_installation_quotation");
     }
 }

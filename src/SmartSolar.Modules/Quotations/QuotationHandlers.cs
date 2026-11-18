@@ -65,15 +65,13 @@ public sealed class QuotationOptions
 }
 
 /// <summary>
-/// Quotation lifecycle: DRAFT → ISSUED → ACCEPTED, or ISSUED → REVISION_REQUESTED → (new version
-/// DRAFT → ISSUED, previous SUPERSEDED). Sales issues without manager approval. Every transition is
+/// Quotation lifecycle: DRAFT → ISSUED (finalized, prices frozen, shown on the technician's device) → ACCEPTED (agreed on site, recorded by the
+/// technician), or ISSUED → REVISION_REQUESTED → (new version DRAFT → ISSUED, previous SUPERSEDED), or ISSUED → REJECTED. Every transition is
 /// a conditional single-row update, and the database allows at most one DRAFT and one
 /// ISSUED/ACCEPTED quotation per survey request, so concurrent edits, issues and acceptances can
 /// never produce two live offers.
 /// </summary>
-/// <param name="contracts">Drafts the contract inside the acceptance transaction (production wiring; null in tests that only exercise quotations).</param>
-public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, FileService files, QuotationOptions options, TimeProvider time,
-    IAcceptedQuotationContracts? contracts = null)
+public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, FileService files, QuotationOptions options, TimeProvider time)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -249,16 +247,11 @@ public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, F
             q.Status = QuotationStatuses.Issued;
             q.IssuedAt = now;
             q.CustomerSnapshot = snapshot;
-            unitOfWork.AddNotification(q.CustomerUserId, CustomerNotificationTypes.QuotationIssued, QuotationIssuedMessage(q), now);
             AddEvent(q.Id, QuotationEventTypes.Issued, salesUserId,
                 string.IsNullOrWhiteSpace(reviewNote) ? $"total={q.TotalAmount} {q.Currency}" : $"total={q.TotalAmount} {q.Currency}; review: {Trim(reviewNote, 500)}", now);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
     }
-
-    /// <summary>Customer notification of an issued quotation (manual or automatic issue): the customer accepts it or requests changes.</summary>
-    private static string QuotationIssuedMessage(Quotation q)
-        => $"Quotation {q.QuoteNumber} (version {q.Version}, {q.TotalAmount:N0} {q.Currency}) is ready for your review. Please accept it or request changes.";
 
     /// <summary>New DRAFT version copied from an ISSUED or REVISION_REQUESTED quotation (the original stays unchanged).</summary>
     public async Task<OperationResult<QuotationView>> CreateRevisionAsync(Guid salesUserId, Guid quotationId, CancellationToken cancellationToken)
@@ -402,71 +395,8 @@ public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, F
     }
 
     // ------------------------------------------------------------------ Customer
-
-    public async Task<IReadOnlyList<QuotationView>> ListForCustomerAsync(Guid customerUserId, CancellationToken cancellationToken)
-    {
-        var list = new List<QuotationView>();
-        foreach (var q in await unitOfWork.ListForCustomerAsync(customerUserId, cancellationToken))
-            list.Add(await ViewAsync(q, includeEvents: false, cancellationToken, forCustomer: true));
-        return list;
-    }
-
-    public async Task<OperationResult<QuotationView>> GetForCustomerAsync(Guid customerUserId, Guid quotationId, CancellationToken cancellationToken)
-    {
-        var quotation = await unitOfWork.FindAsync(quotationId, false, cancellationToken);
-        return quotation is null || quotation.CustomerUserId != customerUserId || quotation.Status == QuotationStatuses.Draft
-            ? NotFound()
-            : OperationResult<QuotationView>.Ok(await ViewAsync(quotation, includeEvents: false, cancellationToken, forCustomer: true));
-    }
-
-    public async Task<OperationResult<QuotationView>> AcceptAsync(Guid customerUserId, Guid quotationId, CancellationToken cancellationToken)
-    {
-        var quotation = await unitOfWork.FindAsync(quotationId, false, cancellationToken);
-        if (quotation is null || quotation.CustomerUserId != customerUserId || quotation.Status == QuotationStatuses.Draft) return NotFound();
-        if (quotation.Status == QuotationStatuses.Accepted) return OperationResult<QuotationView>.Ok(await ViewAsync(quotation, false, cancellationToken, forCustomer: true));
-
-        return await RunAsync(quotationId, async (q, _, now, token) =>
-        {
-            // A concurrent (double-clicked) acceptance by the same customer won the lock first: same outcome, nothing written twice.
-            if (q.Status == QuotationStatuses.Accepted) return OperationResult<bool>.Ok(true);
-            if (q.ValidUntil is { } validUntil && validUntil <= now)
-                return OperationResult<bool>.Fail(QuotationErrorCodes.Expired, "This quotation has expired; ask for a new version.");
-            if (q.Status == QuotationStatuses.Issued && SurveyChangedError(q, await unitOfWork.GetSurveyVersionAsync(q.SurveyRequestId, token)) is { } changed)
-                return changed;
-            if (!await unitOfWork.TryAcceptAsync(q.Id, now, token))
-                return q.Status == QuotationStatuses.Issued
-                    ? OperationResult<bool>.Fail(QuotationErrorCodes.SurveyChanged, "The on-site survey changed meanwhile; this quotation can no longer be accepted.")
-                    : OperationResult<bool>.Fail(QuotationErrorCodes.NotIssued, "This quotation can no longer be accepted (it was revised or changed).");
-            AddEvent(q.Id, QuotationEventTypes.Accepted, customerUserId, null, now);
-            // The contract DRAFT is made from the accepted snapshot in the SAME transaction: an accepted quotation never exists without its
-            // contract, and the one-draft / one-live contract indexes keep it at exactly one.
-            if (contracts is not null)
-            {
-                var drafted = await contracts.CreateDraftForAcceptedQuotationAsync(q.Id, customerUserId, now, token);
-                if (!drafted.Succeeded) return drafted;
-            }
-            return OperationResult<bool>.Ok(true);
-        }, cancellationToken, trackedChanges: false, forCustomer: true, lockSurveyRequestId: quotation.SurveyRequestId);
-    }
-
-    public async Task<OperationResult<QuotationView>> RequestRevisionAsync(Guid customerUserId, Guid quotationId, string reason, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(reason) || reason.Length > 2000)
-            return Invalid(new() { ["reason"] = ["A reason of at most 2000 characters is required."] });
-        var quotation = await unitOfWork.FindAsync(quotationId, false, cancellationToken);
-        if (quotation is null || quotation.CustomerUserId != customerUserId || quotation.Status == QuotationStatuses.Draft) return NotFound();
-
-        return await RunAsync(quotationId, (q, _, now, _) =>
-        {
-            if (q.Status != QuotationStatuses.Issued)
-                return Task.FromResult(OperationResult<bool>.Fail(QuotationErrorCodes.NotIssued, "Only issued quotations can be sent back for revision."));
-            q.Status = QuotationStatuses.RevisionRequested;
-            q.RevisionRequestedAt = now;
-            q.RevisionReason = reason.Trim();
-            AddEvent(q.Id, QuotationEventTypes.RevisionRequested, customerUserId, Trim(reason, 500), now);
-            return Task.FromResult(OperationResult<bool>.Ok(true));
-        }, cancellationToken, forCustomer: true);
-    }
+    // Retired 2026-11-18: the customer no longer receives, accepts, rejects or sends back quotations in the app. The technician records the
+    // on-site outcome (RecordOnSiteDecisionAsync) and the customer follows the paid contract and the installation instead.
 
     // ------------------------------------------------------------------ internals
 

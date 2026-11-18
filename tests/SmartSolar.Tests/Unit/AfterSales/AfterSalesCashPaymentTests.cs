@@ -25,7 +25,7 @@ public sealed class AfterSalesCashPaymentTests
         var breaker = await CatalogAsync(ctx, "BRK-C16", "BREAKER", 150_000m);
         var issued = await ctx.Quotations().IssueByTechnicianAsync(h.TechnicianId, requestId, new TechnicianQuotationInput([Line(items[0], (breaker.Id, 2))], null, null), None);
         var q = Assert.Single(issued.Value!.Quotations);
-        Assert.True((await ctx.Quotations().AcceptAsync(h.CustomerId, q.QuotationId, None)).Succeeded);
+        Assert.True((await ctx.Quotations().RecordOnSiteDecisionAsync(h.TechnicianId, q.QuotationId, ServiceOnSiteDecisions.Agreed, null, None)).Succeeded);
         return (h, requestId, q);
     }
 
@@ -133,10 +133,10 @@ public sealed class AfterSalesCashPaymentTests
 
         Assert.Equal(AfterSalesErrorCodes.InvalidState, (await ctx.Quotations().SelectCashAsync(h.CustomerId, q.QuotationId, None)).ErrorCode);
         Assert.Equal(AfterSalesErrorCodes.QuotationNotFound, (await ctx.Quotations().SelectCashAsync(Guid.NewGuid(), q.QuotationId, None)).ErrorCode);
-        Assert.True((await ctx.Quotations().AcceptAsync(h.CustomerId, q.QuotationId, None)).Succeeded);
+        Assert.True((await ctx.Quotations().RecordOnSiteDecisionAsync(h.TechnicianId, q.QuotationId, ServiceOnSiteDecisions.Agreed, null, None)).Succeeded);
         Assert.True((await ctx.Quotations().SelectCashAsync(h.CustomerId, q.QuotationId, None)).Succeeded);
         // Rejecting withdraws the pending cash choice; nothing is collected afterwards.
-        Assert.True((await ctx.Quotations().RejectAsync(h.CustomerId, q.QuotationId, "changed my mind", None)).Succeeded);
+        Assert.True((await ctx.Quotations().RecordOnSiteDecisionAsync(h.TechnicianId, q.QuotationId, ServiceOnSiteDecisions.Declined, "changed my mind", None)).Succeeded);
         var attempt = await ctx.Db.PaymentAttempts.AsNoTracking().SingleAsync(a => a.ContractId == null);
         Assert.Equal(PaymentStatuses.Cancelled, attempt.Status);
         Assert.Equal(PaymentErrorCodes.CashNotSelected,

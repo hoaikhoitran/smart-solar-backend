@@ -132,9 +132,11 @@ public sealed class TechnicianCartQuotationTests
 
         // A later catalog change never alters the issued offer.
         await ctx.Db.Products.Where(p => p.Id == cart.Catalog.Panel.Id).ExecuteUpdateAsync(s => s.SetProperty(p => p.UnitPrice, 9_000_000m));
-        var customerView = (await q.GetForCustomerAsync(cart.CustomerId, issued.QuotationId, None)).Value!;
-        Assert.Equal(7_000_000m, customerView.TotalAmount);
-        Assert.Null(Assert.Single(customerView.Lines).CatalogUnitPrice);
+        var shown = (await q.GetForTechnicianAsync(cart.TechnicianId, issued.QuotationId, None)).Value!;
+        Assert.Equal(7_000_000m, shown.TotalAmount);
+        Assert.Equal(3_500_000m, Assert.Single(shown.Lines).UnitPrice);
+        // Finalizing sends nothing to the customer's app: the technician presents it on site.
+        Assert.Equal(0, await ctx.Db.AfterSalesNotifications.CountAsync(n => n.RecipientUserId == cart.CustomerId && n.Type.Contains("QUOTATION")));
     }
 
     [Fact]
@@ -153,7 +155,7 @@ public sealed class TechnicianCartQuotationTests
     }
 
     [Fact]
-    public async Task No_sales_owner_is_needed_from_cart_to_customer()
+    public async Task No_sales_owner_is_needed_from_cart_to_paid_contract()
     {
         await using var ctx = InstallationWorkflowTestContext.Create();
         var catalog = await AutomaticQuotationFixture.SeedCatalogAsync(ctx);
@@ -166,31 +168,26 @@ public sealed class TechnicianCartQuotationTests
         var issued = await q.IssueCartAsync(survey.Technician.Id, v.QuotationId, v.Revision, None);
         Assert.True(issued.Succeeded, issued.Message);
         Assert.Null((await ctx.Db.Quotations.SingleAsync()).SalesUserId);
-        var accepted = await ctx.QuotationsWithContracts().AcceptAsync(survey.Request.Customer.Id, v.QuotationId, None);
-        Assert.True(accepted.Succeeded, accepted.Message);
+        var manager = await ctx.Scheduling.Inner.SeedUserAsync("Manager");
+        await SimplifiedFlowFixture.PaidOnSiteAsync(ctx, new SimplifiedFlowFixture.Cart(survey, catalog, issued.Value!), manager);
         Assert.Null((await ctx.Db.CustomerContracts.SingleAsync()).SalesUserId);
     }
 
     [Fact]
-    public async Task Customers_see_only_their_own_issued_quotations()
+    public async Task Only_the_surveying_technician_reads_or_decides_the_quotation()
     {
         await using var ctx = InstallationWorkflowTestContext.Create();
-        var cart = await DraftAsync(ctx);
-        var stranger = await ctx.Scheduling.Inner.SeedUserAsync("Other customer");
+        var cart = await IssuedAsync(ctx);
+        var other = await ctx.Scheduling.SeedTechnicianAsync("Other technician", SchedulingTestContext.BinhTan);
         var q = ctx.Quotations();
 
-        // A draft is invisible, even to its customer.
-        Assert.Equal(QuotationErrorCodes.NotFound, (await q.GetForCustomerAsync(cart.CustomerId, cart.Quotation.QuotationId, None)).ErrorCode);
-        Assert.Empty(await q.ListForCustomerAsync(cart.CustomerId, None));
-
-        var v = (await q.AddCartLineAsync(cart.TechnicianId, cart.Quotation.QuotationId, cart.Quotation.Revision, cart.Catalog.Panel.Id, 1m, None)).Value!;
-        var issued = (await q.IssueCartAsync(cart.TechnicianId, v.QuotationId, v.Revision, None)).Value!;
-        Assert.Equal(QuotationErrorCodes.NotFound, (await q.GetForCustomerAsync(stranger.Id, issued.QuotationId, None)).ErrorCode);
-        Assert.Equal(QuotationErrorCodes.NotFound, (await ctx.QuotationsWithContracts().AcceptAsync(stranger.Id, issued.QuotationId, None)).ErrorCode);
-        Assert.Equal(QuotationErrorCodes.NotFound, (await q.RejectAsync(stranger.Id, issued.QuotationId, "no", None)).ErrorCode);
-        Assert.Equal(QuotationErrorCodes.NotFound, (await q.RequestRevisionAsync(stranger.Id, issued.QuotationId, "cheaper", None)).ErrorCode);
-        Assert.Empty(await q.ListForCustomerAsync(stranger.Id, None));
-        Assert.Single(await q.ListForCustomerAsync(cart.CustomerId, None));
+        Assert.Equal(QuotationErrorCodes.NotFound, (await q.GetForTechnicianAsync(other.Id, cart.Quotation.QuotationId, None)).ErrorCode);
+        Assert.Equal(QuotationErrorCodes.NotFound, (await q.RecordOnSiteDecisionAsync(other.Id, cart.Quotation.QuotationId,
+            new OnSiteDecisionInput(OnSiteDecisions.Agreed, cart.Quotation.Revision, null), None)).ErrorCode);
+        // Nobody else can record the decision in the customer's name either: the customer's own id is not a technician of the survey.
+        Assert.Equal(QuotationErrorCodes.NotFound, (await q.RecordOnSiteDecisionAsync(cart.CustomerId, cart.Quotation.QuotationId,
+            new OnSiteDecisionInput(OnSiteDecisions.Agreed, cart.Quotation.Revision, null), None)).ErrorCode);
+        Assert.Equal(QuotationStatuses.Issued, (await ctx.Db.Quotations.SingleAsync()).Status);
         Assert.Equal(0, await ctx.Db.CustomerContracts.CountAsync());
     }
 
@@ -208,23 +205,24 @@ public sealed class TechnicianCartQuotationTests
         Assert.Equal(QuotationErrorCodes.NotDraft, (await q.RemoveCartLineAsync(cart.TechnicianId, v.QuotationId, line.LineId, v.Revision, None)).ErrorCode);
         Assert.Equal(QuotationErrorCodes.NotDraft, (await q.IssueCartAsync(cart.TechnicianId, v.QuotationId, v.Revision, None)).ErrorCode);
 
-        await AcceptAsync(ctx, cart);
-        Assert.Equal(QuotationErrorCodes.NotDraft, (await q.AddCartLineAsync(cart.TechnicianId, v.QuotationId, v.Revision, cart.Catalog.Panel.Id, 1m, None)).ErrorCode);
+        var agreed = await AgreedAsync(ctx, cart);
+        Assert.Equal(QuotationErrorCodes.NotDraft, (await q.AddCartLineAsync(cart.TechnicianId, v.QuotationId, agreed.Revision, cart.Catalog.Panel.Id, 1m, None)).ErrorCode);
         Assert.Equal(QuotationErrorCodes.CannotRevise, (await q.CreateCartRevisionAsync(cart.TechnicianId, v.QuotationId, None)).ErrorCode);
-        Assert.Equal(QuotationErrorCodes.NotIssued, (await q.RequestRevisionAsync(cart.CustomerId, v.QuotationId, "cheaper please", None)).ErrorCode);
-        Assert.Equal(QuotationErrorCodes.NotIssued, (await q.RejectAsync(cart.CustomerId, v.QuotationId, "no", None)).ErrorCode);
+        Assert.Equal(QuotationErrorCodes.AlreadyAccepted, (await q.RecordOnSiteDecisionAsync(cart.TechnicianId, v.QuotationId,
+            new OnSiteDecisionInput(OnSiteDecisions.Agreed, agreed.Revision, null), None)).ErrorCode);
         var stored = await ctx.Db.QuotationLines.AsNoTracking().Where(l => l.QuotationId == v.QuotationId).OrderBy(l => l.LineNumber).ToListAsync();
         Assert.Equal(v.Lines.Select(l => (l.Quantity, l.UnitPrice)), stored.Select(l => (l.Quantity, l.UnitPrice)));
         Assert.Equal(v.TotalAmount, (await ctx.Db.Quotations.SingleAsync()).TotalAmount);
     }
 
     [Fact]
-    public async Task A_revision_request_is_answered_by_a_new_technician_version_that_supersedes_the_old_one()
+    public async Task Changes_asked_on_site_are_a_new_technician_version_that_supersedes_the_old_one()
     {
         await using var ctx = InstallationWorkflowTestContext.Create();
         var cart = await IssuedAsync(ctx);
         var q = ctx.Quotations();
-        Assert.True((await q.RequestRevisionAsync(cart.CustomerId, cart.Quotation.QuotationId, "Only one transport trip please", None)).Succeeded);
+        Assert.True((await q.RecordOnSiteDecisionAsync(cart.TechnicianId, cart.Quotation.QuotationId,
+            new OnSiteDecisionInput(OnSiteDecisions.RevisionNeeded, cart.Quotation.Revision, "Only one transport trip please"), None)).Succeeded);
 
         var draft = (await q.CreateCartRevisionAsync(cart.TechnicianId, cart.Quotation.QuotationId, None)).Value!;
         Assert.Equal(2, draft.Version);
@@ -238,9 +236,10 @@ public sealed class TechnicianCartQuotationTests
         Assert.Equal(QuotationStatuses.Issued, v2.Status);
         Assert.Equal(QuotationStatuses.Superseded, (await ctx.Db.Quotations.SingleAsync(x => x.Id == cart.Quotation.QuotationId)).Status);
         Assert.Equal(cart.Quotation.Subtotal - 500_000m, v2.Subtotal);
-        Assert.Equal(QuotationErrorCodes.NotIssued, (await ctx.QuotationsWithContracts().AcceptAsync(cart.CustomerId, cart.Quotation.QuotationId, None)).ErrorCode);
-        await ctx.EnsureInstallationWarrantyOptionAsync();
-        Assert.True((await ctx.QuotationsWithContracts().AcceptAsync(cart.CustomerId, v2.QuotationId, None)).Succeeded);
+        var old = (await q.GetForTechnicianAsync(cart.TechnicianId, cart.Quotation.QuotationId, None)).Value!;
+        Assert.Equal(QuotationErrorCodes.NotIssued, (await q.RecordOnSiteDecisionAsync(cart.TechnicianId, cart.Quotation.QuotationId,
+            new OnSiteDecisionInput(OnSiteDecisions.Agreed, old.Revision, null), None)).ErrorCode);
+        Assert.True((await q.RecordOnSiteDecisionAsync(cart.TechnicianId, v2.QuotationId, new OnSiteDecisionInput(OnSiteDecisions.Agreed, v2.Revision, null), None)).Succeeded);
     }
 
     [Fact]

@@ -229,6 +229,50 @@ public sealed class TechnicianAfterSalesQuotationsController(ServiceQuotationHan
             l.Components!.Select(c => new QuotationComponentInput(c.ProductId!.Value, c.Quantity!.Value)).ToList(), l.Description)).ToList(), body.RepairWarrantyMonths, body.Note);
         return Respond(await quotations.IssueByTechnicianAsync(user, requestId, input, cancellationToken), StatusCodes.Status201Created);
     }
+
+    /// <summary>
+    /// The technician records that the customer confirmed the result on site (request waiting for confirmation → COMPLETED): note required, optional
+    /// verified SERVICE_EVIDENCE photos. The customer does not have to open the app.
+    /// </summary>
+    [HttpPost("{requestId:guid}/completion-confirmation")]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
+    public async Task<IActionResult> ConfirmCompletion(Guid requestId, [FromBody] OnSiteCompletionRequest body, [FromServices] ServiceCustomerHandlers requests,
+        CancellationToken cancellationToken)
+        => CurrentUserId() is { } user
+            ? Respond(await requests.ConfirmCompletionOnSiteAsync(user, requestId, body.Note, body.EvidenceFileIds, cancellationToken))
+            : UnauthorizedFailure();
+}
+
+/// <summary>
+/// On-site decision and payment of after-sales quotations (2026-11-18): the technician shows the quotation on their device, records the customer's
+/// AGREED / DECLINED answer, and opens the payment (PayOS QR or cash confirmed by a Manager/Admin). Paid work is authorized only after the payment is
+/// verified; a fully covered quotation is authorized at once (no 0 VND checkout). 404 for a technician without a visit on the request.
+/// </summary>
+[ApiController]
+[Route("api/technicians/me/after-sales/quotations")]
+[Authorize(Roles = RoleCodes.Technician)]
+[RequireFeature(FeatureOptions.InstallationWorkflow)]
+public sealed class TechnicianAfterSalesOnSiteController(ServiceQuotationHandlers quotations) : OperationResultControllerBase
+{
+    [HttpPost("{quotationId:guid}/on-site-decision")]
+    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
+    public async Task<IActionResult> Decide(Guid quotationId, [FromBody] ServiceOnSiteDecisionRequest body, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await quotations.RecordOnSiteDecisionAsync(user, quotationId, body.Decision, body.Note, cancellationToken)) : UnauthorizedFailure();
+
+    [HttpPost("{quotationId:guid}/payment")]
+    [EnableRateLimiting(RateLimitingExtensions.PaymentCreatePolicy)]
+    public async Task<IActionResult> StartPayment(Guid quotationId, [FromBody] ServicePaymentMethodRequest body, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await quotations.StartPaymentOnSiteAsync(user, quotationId, body.Method, cancellationToken)) : UnauthorizedFailure();
+
+    [HttpGet("{quotationId:guid}/payment")]
+    [EnableRateLimiting(RateLimitingExtensions.PaymentStatusPolicy)]
+    public async Task<IActionResult> GetPayment(Guid quotationId, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await quotations.GetPaymentOnSiteAsync(user, quotationId, cancellationToken)) : UnauthorizedFailure();
+
+    [HttpPost("{quotationId:guid}/payment/cancel")]
+    [EnableRateLimiting(RateLimitingExtensions.PaymentCreatePolicy)]
+    public async Task<IActionResult> CancelPayment(Guid quotationId, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await quotations.CancelPaymentOnSiteAsync(user, quotationId, cancellationToken)) : UnauthorizedFailure();
 }
 
 /// <summary>Technician: assigned after-sales visits only.</summary>

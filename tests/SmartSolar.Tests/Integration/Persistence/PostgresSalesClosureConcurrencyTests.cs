@@ -65,13 +65,16 @@ public sealed class PostgresSalesClosureConcurrencyTests
 
     private sealed record World(PostgresTestDatabase Database, InstallationWorkflowTestContext Ctx, ConfirmedSurvey Survey, Guid QuotationId);
 
-    /// <summary>Survey completed, quotation issued and accepted, installation warranty configured: ready for a contract, no contract yet.</summary>
+    /// <summary>
+    /// Survey completed, quotation issued, installation warranty configured. With <paramref name="accept"/>: legacy data (accepted in the app with its
+    /// contract DRAFT, as before 2026-11-18); without: the ISSUED quotation waiting for the on-site decision.
+    /// </summary>
     private static async Task<World> AcceptedAsync(bool accept = true)
     {
         var (database, ctx) = await WorldAsync();
         var (survey, issued) = await QuotationTests.IssuedAsync(ctx);
-        if (accept) Assert.True((await ctx.Quotations().AcceptAsync(survey.Request.Customer.Id, issued.QuotationId, None)).Succeeded);
         await ctx.EnsureInstallationWarrantyOptionAsync();
+        if (accept) await LegacyFlowData.CustomerAcceptedWithDraftAsync(ctx.Db, issued.QuotationId, ctx.Clock.GetUtcNow());
         return new World(database, ctx, survey, issued.QuotationId);
     }
 
@@ -104,148 +107,73 @@ public sealed class PostgresSalesClosureConcurrencyTests
         return (request, quotation, contracts);
     }
 
-    [PostgresFact]
-    public async Task Closure_first_then_contract_creation_is_refused_and_nothing_is_left_half_done()
-    {
-        var w = await AcceptedAsync();
-        await using var _ = w.Database;
-        await using var dbA = w.Database.NewContext();
-        await using var dbB = w.Database.NewContext();
-        var (held, control) = LockHoldProxy<IQuotationUnitOfWork>.Wrap(new QuotationUnitOfWork(dbA));
-
-        var closing = Quotations(w, dbA, held).CloseRequestAsync(w.Survey.Sales.Id, w.Survey.Request.Request.Id, "CUSTOMER_DECLINED", null, None);
-        await control.Locked.Task.WaitAsync(TimeSpan.FromSeconds(30));   // fail, never hang, if the lock is not reached   // the closure holds the request lock
-        var creating = Contracts(w, dbB).CreateAsync(w.Survey.Sales.Id, w.QuotationId, "Terms", None);
-        await WaitUntilBlockedOnLockAsync(w.Database);
-        control.Release.SetResult();
-        var (closed, contract) = (await closing, await creating);
-
-        Assert.True(closed.Succeeded, closed.Message);
-        Assert.Equal(ContractErrorCodes.RequestClosed, contract.ErrorCode);
-        Assert.Equal((SurveyRequestStatus.Closed, QuotationStatuses.Cancelled, 0), (await StateAsync(w)) is var s ? (s.Request, s.Quotation, s.Contracts.Count) : default);
-    }
+    // Manual contract creation is a recovery path that needs a settled payment since 2026-11-18 (the verified payment creates the contract under the same
+    // request lock); its lock-order races with closure / withdrawal were removed with the customer acceptance. A closure is also refused while a payment
+    // of the request is open or verified (unit-tested).
 
     [PostgresFact]
-    public async Task Contract_creation_first_then_closure_is_refused_and_the_request_stays_open()
-    {
-        var w = await AcceptedAsync();
-        await using var _ = w.Database;
-        await using var dbA = w.Database.NewContext();
-        await using var dbB = w.Database.NewContext();
-        var (held, control) = LockHoldProxy<IContractUnitOfWork>.Wrap(new ContractUnitOfWork(dbA));
-
-        var creating = Contracts(w, dbA, held).CreateAsync(w.Survey.Sales.Id, w.QuotationId, "Terms", None);
-        await control.Locked.Task.WaitAsync(TimeSpan.FromSeconds(30));   // fail, never hang, if the lock is not reached   // the contract creation holds the request lock
-        var closing = Quotations(w, dbB).CloseRequestAsync(w.Survey.Sales.Id, w.Survey.Request.Request.Id, "CUSTOMER_DECLINED", null, None);
-        await WaitUntilBlockedOnLockAsync(w.Database);
-        control.Release.SetResult();
-        var (contract, closed) = (await creating, await closing);
-
-        Assert.True(contract.Succeeded, contract.Message);
-        Assert.Equal(SalesOutcomeErrorCodes.ContractExists, closed.ErrorCode);
-        var s = await StateAsync(w);
-        Assert.Equal((SurveyRequestStatus.Completed, QuotationStatuses.Accepted, ContractStatuses.Draft), (s.Request, s.Quotation, Assert.Single(s.Contracts)));
-    }
-
-    [PostgresFact]
-    public async Task Withdrawal_and_contract_creation_exclude_each_other_in_both_orders()
-    {
-        // Withdrawal first.
-        var w = await AcceptedAsync();
-        await using (w.Database)
-        {
-            await using var dbA = w.Database.NewContext();
-            await using var dbB = w.Database.NewContext();
-            var (held, control) = LockHoldProxy<IQuotationUnitOfWork>.Wrap(new QuotationUnitOfWork(dbA));
-            var withdrawing = Quotations(w, dbA, held).WithdrawRequestAsync(w.Survey.Request.Customer.Id, w.Survey.Request.Request.Id, "Changed plans", None);
-            await control.Locked.Task.WaitAsync(TimeSpan.FromSeconds(30));   // fail, never hang, if the lock is not reached
-            var creating = Contracts(w, dbB).CreateAsync(w.Survey.Sales.Id, w.QuotationId, "Terms", None);
-            await WaitUntilBlockedOnLockAsync(w.Database);
-            control.Release.SetResult();
-            Assert.True((await withdrawing).Succeeded);
-            Assert.Equal(ContractErrorCodes.RequestClosed, (await creating).ErrorCode);
-            var s = await StateAsync(w);
-            Assert.Equal((SurveyRequestStatus.Cancelled, QuotationStatuses.Cancelled, 0), (s.Request, s.Quotation, s.Contracts.Count));
-        }
-
-        // Contract first.
-        var w2 = await AcceptedAsync();
-        await using (w2.Database)
-        {
-            await using var dbA = w2.Database.NewContext();
-            await using var dbB = w2.Database.NewContext();
-            var (held, control) = LockHoldProxy<IContractUnitOfWork>.Wrap(new ContractUnitOfWork(dbA));
-            var creating = Contracts(w2, dbA, held).CreateAsync(w2.Survey.Sales.Id, w2.QuotationId, "Terms", None);
-            await control.Locked.Task.WaitAsync(TimeSpan.FromSeconds(30));   // fail, never hang, if the lock is not reached
-            var withdrawing = Quotations(w2, dbB).WithdrawRequestAsync(w2.Survey.Request.Customer.Id, w2.Survey.Request.Request.Id, "Changed plans", None);
-            await WaitUntilBlockedOnLockAsync(w2.Database);
-            control.Release.SetResult();
-            Assert.True((await creating).Succeeded);
-            Assert.Equal(SalesOutcomeErrorCodes.ContractExists, (await withdrawing).ErrorCode);
-            var s = await StateAsync(w2);
-            Assert.Equal((SurveyRequestStatus.Completed, QuotationStatuses.Accepted, 1), (s.Request, s.Quotation, s.Contracts.Count));
-        }
-    }
-
-    [PostgresFact]
-    public async Task Reject_and_accept_racing_on_the_same_issued_quotation_have_exactly_one_winner()
+    public async Task Decline_and_agreement_recorded_at_once_on_the_same_issued_quotation_have_exactly_one_winner()
     {
         var w = await AcceptedAsync(accept: false);
         await using var _ = w.Database;
-        var results = await RaceAsync(w.Database, 2, (db, i) => i == 0
-            ? Quotations(w, db).AcceptAsync(w.Survey.Request.Customer.Id, w.QuotationId, None)
-            : Quotations(w, db).RejectAsync(w.Survey.Request.Customer.Id, w.QuotationId, "no", None));
+        var revision = (await QuotationRowAsync(w)).Revision;
+        var results = await RaceAsync(w.Database, 2, (db, i) => Quotations(w, db).RecordOnSiteDecisionAsync(w.Survey.Technician.Id, w.QuotationId,
+            new OnSiteDecisionInput(i == 0 ? OnSiteDecisions.Agreed : OnSiteDecisions.Declined, revision, "no"), None));
         Assert.Single(results, r => r.Succeeded);
         var status = (await StateAsync(w)).Quotation;
         Assert.Equal(results[0].Succeeded ? QuotationStatuses.Accepted : QuotationStatuses.Rejected, status);
     }
 
     [PostgresFact]
-    public async Task Acceptance_first_then_a_revision_request_waits_on_the_quotation_lock_and_is_refused()
+    public async Task Agreement_first_then_a_revision_recording_waits_on_the_quotation_lock_and_is_refused()
     {
         var w = await AcceptedAsync(accept: false);
         await using var _ = w.Database;
         await using var dbA = w.Database.NewContext();
         await using var dbB = w.Database.NewContext();
         var (held, control) = LockHoldProxy<IQuotationUnitOfWork>.Wrap(new QuotationUnitOfWork(dbA), nameof(IQuotationUnitOfWork.LockAsync));
-        var customer = w.Survey.Request.Customer.Id;
+        var technician = w.Survey.Technician.Id;
+        var revision = (await QuotationRowAsync(w)).Revision;
 
-        var accepting = Quotations(w, dbA, held).AcceptAsync(customer, w.QuotationId, None);
-        await control.Locked.Task.WaitAsync(TimeSpan.FromSeconds(30));   // the acceptance holds the quotation row lock
-        var revising = Quotations(w, dbB).RequestRevisionAsync(customer, w.QuotationId, "Please lower the price", None);
+        var accepting = Quotations(w, dbA, held).RecordOnSiteDecisionAsync(technician, w.QuotationId, new OnSiteDecisionInput(OnSiteDecisions.Agreed, revision, null), None);
+        await control.Locked.Task.WaitAsync(TimeSpan.FromSeconds(30));   // the agreement holds the quotation row lock
+        var revising = Quotations(w, dbB).RecordOnSiteDecisionAsync(technician, w.QuotationId,
+            new OnSiteDecisionInput(OnSiteDecisions.RevisionNeeded, revision, "Please lower the price"), None);
         await WaitUntilBlockedOnLockAsync(w.Database);
         control.Release.SetResult();
         var (accepted, revised) = (await accepting, await revising);
 
         Assert.True(accepted.Succeeded, accepted.Message);
-        Assert.Equal(QuotationErrorCodes.NotIssued, revised.ErrorCode);
+        Assert.Equal(QuotationErrorCodes.StaleRevision, revised.ErrorCode);   // the device showed the revision the agreement replaced
         var stored = await QuotationRowAsync(w);
         Assert.Equal((QuotationStatuses.Accepted, true, (DateTimeOffset?)null, (string?)null), (stored.Status, stored.AcceptedAt is not null, stored.RevisionRequestedAt, stored.RevisionReason));
-        Assert.Equal([QuotationEventTypes.Accepted], await OutcomeEventsAsync(w));
+        Assert.Equal([QuotationEventTypes.AgreedOnSite], await OutcomeEventsAsync(w));
     }
 
     [PostgresFact]
-    public async Task A_revision_request_first_then_acceptance_waits_on_the_quotation_lock_and_is_refused()
+    public async Task A_revision_recording_first_then_an_agreement_waits_on_the_quotation_lock_and_is_refused()
     {
         var w = await AcceptedAsync(accept: false);
         await using var _ = w.Database;
         await using var dbA = w.Database.NewContext();
         await using var dbB = w.Database.NewContext();
         var (held, control) = LockHoldProxy<IQuotationUnitOfWork>.Wrap(new QuotationUnitOfWork(dbA), nameof(IQuotationUnitOfWork.LockAsync));
-        var customer = w.Survey.Request.Customer.Id;
+        var technician = w.Survey.Technician.Id;
+        var revision = (await QuotationRowAsync(w)).Revision;
 
-        var revising = Quotations(w, dbA, held).RequestRevisionAsync(customer, w.QuotationId, "Please lower the price", None);
-        await control.Locked.Task.WaitAsync(TimeSpan.FromSeconds(30));   // the revision request holds the quotation row lock
-        var accepting = Quotations(w, dbB).AcceptAsync(customer, w.QuotationId, None);
+        var revising = Quotations(w, dbA, held).RecordOnSiteDecisionAsync(technician, w.QuotationId,
+            new OnSiteDecisionInput(OnSiteDecisions.RevisionNeeded, revision, "Please lower the price"), None);
+        await control.Locked.Task.WaitAsync(TimeSpan.FromSeconds(30));   // the revision recording holds the quotation row lock
+        var accepting = Quotations(w, dbB).RecordOnSiteDecisionAsync(technician, w.QuotationId, new OnSiteDecisionInput(OnSiteDecisions.Agreed, revision, null), None);
         await WaitUntilBlockedOnLockAsync(w.Database);
         control.Release.SetResult();
         var (revised, accepted) = (await revising, await accepting);
 
         Assert.True(revised.Succeeded, revised.Message);
-        Assert.Equal(QuotationErrorCodes.NotIssued, accepted.ErrorCode);
+        Assert.Equal(QuotationErrorCodes.StaleRevision, accepted.ErrorCode);   // the device showed the revision the recording replaced
         var stored = await QuotationRowAsync(w);
         Assert.Equal((QuotationStatuses.RevisionRequested, (DateTimeOffset?)null, "Please lower the price"), (stored.Status, stored.AcceptedAt, stored.RevisionReason));
-        Assert.Equal([QuotationEventTypes.RevisionRequested], await OutcomeEventsAsync(w));
+        Assert.Equal([QuotationEventTypes.RevisionRequestedOnSite], await OutcomeEventsAsync(w));
     }
 
     private static async Task<Quotation> QuotationRowAsync(World w)
@@ -258,7 +186,7 @@ public sealed class PostgresSalesClosureConcurrencyTests
     {
         await using var db = w.Database.NewContext();
         return await db.QuotationEvents.AsNoTracking()
-            .Where(e => e.QuotationId == w.QuotationId && (e.EventType == QuotationEventTypes.Accepted || e.EventType == QuotationEventTypes.RevisionRequested))
+            .Where(e => e.QuotationId == w.QuotationId && (e.EventType == QuotationEventTypes.AgreedOnSite || e.EventType == QuotationEventTypes.RevisionRequestedOnSite))
             .Select(e => e.EventType).ToListAsync();
     }
 
@@ -281,7 +209,7 @@ public sealed class PostgresSalesClosureConcurrencyTests
     {
         var w = await AcceptedAsync(accept: false);
         await using var _ = w.Database;
-        Assert.True((await w.Ctx.Quotations().RejectAsync(w.Survey.Request.Customer.Id, w.QuotationId, "Too expensive", None)).Succeeded);
+        Assert.True((await OnSiteDecision.DeclineAsync(w.Ctx, w.Survey.Technician.Id, w.QuotationId, "Too expensive")).Succeeded);
         var results = await RaceAsync(w.Database, 2, async (db, i) => i == 0
             ? (await Quotations(w, db).CreateRevisionAsync(w.Survey.Sales.Id, w.QuotationId, None)).Succeeded
             : (await Quotations(w, db).CloseRequestAsync(w.Survey.Sales.Id, w.Survey.Request.Request.Id, "CUSTOMER_DECLINED", null, None)).Succeeded);
@@ -297,7 +225,9 @@ public sealed class PostgresSalesClosureConcurrencyTests
     private static async Task<(World W, ContractView Draft)> DraftAsync()
     {
         var w = await AcceptedAsync();
-        var draft = (await w.Ctx.Contracts().CreateAsync(w.Survey.Sales.Id, w.QuotationId, "Terms", None)).Value!;
+        var id = (await w.Ctx.Db.CustomerContracts.AsNoTracking().SingleAsync(c => c.QuotationId == w.QuotationId)).Id;
+        var initial = (await w.Ctx.Contracts().GetForStaffAsync(w.Survey.Sales.Id, true, id, None)).Value!;
+        var draft = (await w.Ctx.Contracts().UpdateTermsAsync(w.Survey.Sales.Id, id, initial.Revision, "Terms", None)).Value!;
         return (w, draft);
     }
 

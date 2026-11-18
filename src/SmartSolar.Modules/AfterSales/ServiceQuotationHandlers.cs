@@ -166,7 +166,9 @@ public sealed partial class ServiceQuotationHandlers(
                 AfterSalesHistory.Record(data, EventSubjects.Request, requestId, "QUOTATION_ISSUED", salesUserId,
                     $"v{quotation.Version} by {issuerRole}: total {quotation.TotalAmount:0}, disaster support {quotation.DisasterSupportAmount:0}, customer {quotation.CustomerAmount:0}, expires {quotation.ExpiresAt:O}", now);
                 AfterSalesWorkflow.Move(data, tracked, ServiceRequestStatuses.AwaitingCustomer, salesUserId, null, now);
-                AfterSalesHistory.Notify(data, tracked.CustomerUserId, "QUOTATION_ISSUED", $"A quotation for {tracked.RequestNumber} is ready ({quotation.CustomerAmount:N0} VND).", now, requestId);
+                // A technician quotation is presented and decided on site (2026-11-18): nothing is sent to the customer's app for approval.
+                if (issuerRole != QuotationIssuers.Technician)
+                    AfterSalesHistory.Notify(data, tracked.CustomerUserId, "QUOTATION_ISSUED", $"A quotation for {tracked.RequestNumber} is ready ({quotation.CustomerAmount:N0} VND).", now, requestId);
                 await data.SaveChangesAsync(token);
                 return (OperationResult<bool>.Ok(true), true);
             }, cancellationToken);
@@ -181,20 +183,33 @@ public sealed partial class ServiceQuotationHandlers(
 
     // ================================================================== Customer
 
-    /// <summary>Accepts the whole quotation (before it expires). Acceptance does not extend the payment deadline. Nothing to pay → authorized at once.</summary>
+    /// <summary>
+    /// Accepts the whole Sales-issued quotation (before it expires). Acceptance does not extend the payment deadline. Nothing to pay → authorized at
+    /// once. A technician quotation is decided on site and recorded by the technician (409 SERVICE_QUOTATION_DECIDED_ON_SITE here).
+    /// </summary>
     public async Task<OperationResult<ServiceRequestView>> AcceptAsync(Guid customerUserId, Guid quotationId, CancellationToken cancellationToken)
         => await CustomerMutateAsync(customerUserId, quotationId, async (quotation, request, now, token) =>
-        {
-            if (quotation.Status != QuotationStatuses.Issued) return Bad($"This quotation is {quotation.Status}.");
-            if (quotation.ExpiresAt <= now) return OperationResult<bool>.Fail(AfterSalesErrorCodes.QuotationExpired, "This quotation has expired.");
-            quotation.Status = QuotationStatuses.Accepted;
-            quotation.AcceptedAt = now;
-            quotation.UpdatedAt = now;
-            quotation.Revision++;
-            AfterSalesHistory.Record(data, EventSubjects.Request, request.Id, "QUOTATION_ACCEPTED", customerUserId, $"v{quotation.Version}", now);
-            if (quotation.CustomerAmount == 0) await AfterSalesWorkflow.MarkQuotationPaidAsync(data, quotation, request, customerUserId, now, now, token);
-            return OperationResult<bool>.Ok(true);
-        }, cancellationToken);
+            quotation.IssuedByRole == QuotationIssuers.Technician ? DecidedOnSite()
+                : await AcceptChangeAsync(quotation, request, customerUserId, "QUOTATION_ACCEPTED", $"v{quotation.Version}", now, token), cancellationToken);
+
+    private async Task<OperationResult<bool>> AcceptChangeAsync(ServiceQuotation quotation, ServiceRequest request, Guid actorUserId, string eventType, string detail,
+        DateTimeOffset now, CancellationToken token)
+    {
+        if (quotation.Status != QuotationStatuses.Issued) return Bad($"This quotation is {quotation.Status}.");
+        if (quotation.ExpiresAt <= now) return OperationResult<bool>.Fail(AfterSalesErrorCodes.QuotationExpired, "This quotation has expired.");
+        quotation.Status = QuotationStatuses.Accepted;
+        quotation.AcceptedAt = now;
+        quotation.UpdatedAt = now;
+        quotation.Revision++;
+        AfterSalesHistory.Record(data, EventSubjects.Request, request.Id, eventType, actorUserId, detail, now);
+        // Nothing to pay (fully covered by disaster support): authorized at once, never a 0 VND checkout.
+        if (quotation.CustomerAmount == 0) await AfterSalesWorkflow.MarkQuotationPaidAsync(data, quotation, request, actorUserId, now, now, token);
+        return OperationResult<bool>.Ok(true);
+    }
+
+    private static OperationResult<bool> DecidedOnSite()
+        => OperationResult<bool>.Fail(AfterSalesErrorCodes.DecidedOnSite,
+            "This quotation was made by the technician on site; the technician records the decision you take with them. Nothing is needed in the app.");
 
     /// <summary>
     /// Rejects the whole quotation: its items are declined (that work is not done), its disaster reservation is released, and free warranty
@@ -203,35 +218,45 @@ public sealed partial class ServiceQuotationHandlers(
     public async Task<OperationResult<ServiceRequestView>> RejectAsync(Guid customerUserId, Guid quotationId, string? reason, CancellationToken cancellationToken)
     {
         var quotation = await data.FindQuotationAsync(quotationId, false, cancellationToken);
-        if (quotation?.CurrentPaymentAttemptId is { } attemptId)
+        if (quotation?.IssuedByRole == QuotationIssuers.Technician) return DecidedOnSite().As<ServiceRequestView>();
+        if (await CancelLinkBeforeRejectAsync(quotation, "Quotation rejected by customer", cancellationToken) is { } paid) return paid;
+        return await CustomerMutateAsync(customerUserId, quotationId,
+            (q, request, now, token) => RejectChangeAsync(q, request, customerUserId, Text.Trim(reason, 1000), "quotation rejected", now, token), cancellationToken);
+    }
+
+    /// <summary>A running checkout link is cancelled first; if the provider reports it paid, the rejection is refused (returned).</summary>
+    private async Task<OperationResult<ServiceRequestView>?> CancelLinkBeforeRejectAsync(ServiceQuotation? quotation, string why, CancellationToken cancellationToken)
+    {
+        if (quotation?.CurrentPaymentAttemptId is not { } attemptId) return null;
+        var attempt = await payments.CancelAttemptAsync(attemptId, why, cancellationToken);
+        return attempt?.Status == PaymentStatuses.Paid ? Fail(AfterSalesErrorCodes.InvalidState, "This quotation has already been paid.") : null;
+    }
+
+    private async Task<OperationResult<bool>> RejectChangeAsync(ServiceQuotation q, ServiceRequest request, Guid actorUserId, string? reason, string moveNote,
+        DateTimeOffset now, CancellationToken token)
+    {
+        if (!QuotationStatuses.IsOpen(q.Status)) return Bad($"This quotation is {q.Status}.");
+        await AfterSalesWorkflow.CloseQuotationAsync(data, q, QuotationStatuses.Rejected, ItemStatuses.Declined, actorUserId, now, token);
+        request.CustomerDecisionReason = reason;
+        var items = await data.ListItemsAsync(request.Id, true, token);
+        var next = request.Kind == ServiceRequestKinds.OneTimeMaintenance ? ServiceRequestStatuses.Cancelled : AfterSalesWorkflow.NextStatus(items);
+        // A supplementary quotation rejected while the technician is on site leaves the visit running.
+        if (request.Status is ServiceRequestStatuses.InProgress or ServiceRequestStatuses.Scheduled) return OperationResult<bool>.Ok(true);
+        if (next == ServiceRequestStatuses.Cancelled)
         {
-            var attempt = await payments.CancelAttemptAsync(attemptId, "Quotation rejected by customer", cancellationToken);
-            if (attempt?.Status == PaymentStatuses.Paid) return Fail(AfterSalesErrorCodes.InvalidState, "This quotation has already been paid.");
+            request.CancelledAt = now;
+            request.CancellationReason = request.CustomerDecisionReason ?? "Quotation rejected";
         }
-        return await CustomerMutateAsync(customerUserId, quotationId, async (q, request, now, token) =>
-        {
-            if (!QuotationStatuses.IsOpen(q.Status)) return Bad($"This quotation is {q.Status}.");
-            await AfterSalesWorkflow.CloseQuotationAsync(data, q, QuotationStatuses.Rejected, ItemStatuses.Declined, customerUserId, now, token);
-            request.CustomerDecisionReason = Text.Trim(reason, 1000);
-            var items = await data.ListItemsAsync(request.Id, true, token);
-            var next = request.Kind == ServiceRequestKinds.OneTimeMaintenance ? ServiceRequestStatuses.Cancelled : AfterSalesWorkflow.NextStatus(items);
-            // A supplementary quotation rejected while the technician is on site leaves the visit running.
-            if (request.Status is ServiceRequestStatuses.InProgress or ServiceRequestStatuses.Scheduled) return OperationResult<bool>.Ok(true);
-            if (next == ServiceRequestStatuses.Cancelled)
-            {
-                request.CancelledAt = now;
-                request.CancellationReason = request.CustomerDecisionReason ?? "Quotation rejected";
-            }
-            AfterSalesWorkflow.Move(data, request, next, customerUserId, "quotation rejected", now);
-            return OperationResult<bool>.Ok(true);
-        }, cancellationToken);
+        AfterSalesWorkflow.Move(data, request, next, actorUserId, moveNote, now);
+        return OperationResult<bool>.Ok(true);
     }
 
     /// <summary>
     /// The PayOS checkout of an accepted quotation (one live link at a time; a repeated call returns it). The link lives at most the
     /// configured checkout time and never past the quotation's expiry, so a quotation never expires while a payment can still arrive.
     /// </summary>
-    public async Task<OperationResult<PaymentAttemptView>> CheckoutAsync(Guid customerUserId, Guid quotationId, CancellationToken cancellationToken)
+    public async Task<OperationResult<PaymentAttemptView>> CheckoutAsync(Guid customerUserId, Guid quotationId, CancellationToken cancellationToken,
+        string source = PaymentSources.Customer)
     {
         var quotation = await data.FindQuotationAsync(quotationId, false, cancellationToken);
         var request = quotation is null ? null : await data.FindRequestAsync(quotation.RequestId, false, cancellationToken);
@@ -262,7 +287,7 @@ public sealed partial class ServiceQuotationHandlers(
                 tracked.UpdatedAt = time.GetUtcNow();
                 tracked.Revision++;
                 return null;
-            }, cancellationToken);
+            }, cancellationToken, source);
     }
 
     /// <summary>
@@ -271,7 +296,9 @@ public sealed partial class ServiceQuotationHandlers(
     /// extends the expiry (the sweep withdraws it when the quotation expires). An open online link is checked with PayOS first (paid → refused;
     /// still open → cancel it first). Repeating the choice returns the same pending attempt.
     /// </summary>
-    public async Task<OperationResult<PaymentAttemptView>> SelectCashAsync(Guid customerUserId, Guid quotationId, CancellationToken cancellationToken)
+    /// <param name="initiatedBy">The technician who recorded the cash choice on site (audit actor); null when the customer chose it in the app.</param>
+    public async Task<OperationResult<PaymentAttemptView>> SelectCashAsync(Guid customerUserId, Guid quotationId, CancellationToken cancellationToken,
+        string source = PaymentSources.Customer, Guid? initiatedBy = null)
     {
         var quotation = await data.FindQuotationAsync(quotationId, false, cancellationToken);
         var request = quotation is null ? null : await data.FindRequestAsync(quotation.RequestId, false, cancellationToken);
@@ -301,9 +328,11 @@ public sealed partial class ServiceQuotationHandlers(
                 tracked.CurrentPaymentAttemptId = attemptId;
                 tracked.UpdatedAt = time.GetUtcNow();
                 tracked.Revision++;
-                AfterSalesHistory.Record(data, EventSubjects.Request, tracked.RequestId, "CASH_SELECTED", customerUserId, $"v{tracked.Version}: {tracked.CustomerAmount:0} VND", tracked.UpdatedAt);
+                AfterSalesHistory.Record(data, EventSubjects.Request, tracked.RequestId, "CASH_SELECTED", initiatedBy ?? customerUserId,
+                    source == PaymentSources.Technician ? $"v{tracked.Version}: {tracked.CustomerAmount:0} VND (chosen on site, recorded by the technician)" : $"v{tracked.Version}: {tracked.CustomerAmount:0} VND",
+                    tracked.UpdatedAt);
                 return null;
-            }, cancellationToken);
+            }, cancellationToken, source);
         if (created.ErrorCode == PaymentErrorCodes.CheckoutInProgress
             && (await data.FindQuotationAsync(quotationId, false, cancellationToken))?.CurrentPaymentAttemptId is { } winner
             && await payments.GetAttemptForCustomerAsync(customerUserId, winner, reconcile: false, cancellationToken) is { Method: PaymentMethods.Cash } same

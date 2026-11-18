@@ -56,8 +56,10 @@ public sealed class QuotationTests
         Assert.StartsWith("QT-", issued.QuoteNumber);
         Assert.True(issued.CanAccept);
 
-        var mine = await ctx.Quotations().ListForCustomerAsync(s.Request.Customer.Id, CancellationToken.None);
-        Assert.Equal(issued.QuotationId, Assert.Single(mine).QuotationId);
+        var listed = (await ctx.Quotations().ListForSurveyRequestAsync(s.Sales.Id, false, s.Request.Request.Id, CancellationToken.None)).Value!;
+        Assert.Equal(issued.QuotationId, Assert.Single(listed).QuotationId);
+        // Nothing is sent to the customer's app: the quotation is presented on site.
+        Assert.Equal(0, await ctx.Db.AfterSalesNotifications.CountAsync(n => n.RecipientUserId == s.Request.Customer.Id && n.Type == "INSTALLATION_QUOTATION_ISSUED"));
     }
 
     [Fact]
@@ -76,9 +78,8 @@ public sealed class QuotationTests
         var draft = await q.CreateAsync(s.Sales.Id, s.Request.Request.Id, Header(ctx), CancellationToken.None);
         Assert.True(draft.Succeeded, draft.Message);
         Assert.Equal(QuotationErrorCodes.DraftExists, (await q.CreateAsync(s.Sales.Id, s.Request.Request.Id, Header(ctx), CancellationToken.None)).ErrorCode);
-        // Drafts are invisible to the customer.
-        Assert.Empty(await q.ListForCustomerAsync(s.Request.Customer.Id, CancellationToken.None));
-        Assert.Equal(QuotationErrorCodes.NotFound, (await q.GetForCustomerAsync(s.Request.Customer.Id, draft.Value!.QuotationId, CancellationToken.None)).ErrorCode);
+        // A draft cannot be decided on site.
+        Assert.Equal(QuotationErrorCodes.NotIssued, (await OnSiteDecision.AgreeAsync(ctx, s.Technician.Id, draft.Value!.QuotationId)).ErrorCode);
     }
 
     [Fact]
@@ -94,7 +95,7 @@ public sealed class QuotationTests
         await ctx.Db.SaveChangesAsync();
         ctx.Db.ChangeTracker.Clear();
 
-        var reloaded = (await ctx.Quotations().GetForCustomerAsync(s.Request.Customer.Id, issued.QuotationId, CancellationToken.None)).Value!;
+        var reloaded = (await ctx.Quotations().GetForTechnicianAsync(s.Technician.Id, issued.QuotationId, CancellationToken.None)).Value!;
         Assert.Equal(2_500_000m, reloaded.Lines[0].UnitPrice);
         Assert.Equal(issued.TotalAmount, reloaded.TotalAmount);
     }
@@ -112,23 +113,28 @@ public sealed class QuotationTests
     }
 
     [Fact]
-    public async Task Customer_accepts_an_issued_quotation_once_and_expired_or_foreign_ones_are_refused()
+    public async Task The_technician_records_the_on_site_agreement_once_and_expired_or_foreign_ones_are_refused()
     {
         var ctx = InstallationWorkflowTestContext.Create();
         await using var _ = ctx;
         var (s, issued) = await IssuedAsync(ctx);
         var q = ctx.Quotations();
 
-        Assert.Equal(QuotationErrorCodes.NotFound, (await q.AcceptAsync(Guid.NewGuid(), issued.QuotationId, CancellationToken.None)).ErrorCode);
+        Assert.Equal(QuotationErrorCodes.NotFound, (await OnSiteDecision.AgreeAsync(ctx, Guid.NewGuid(), issued.QuotationId)).ErrorCode);
         var savedClock = ctx.Clock.Now;
         ctx.Clock.Now = issued.ValidUntil!.Value.AddMinutes(1);
-        Assert.Equal(QuotationErrorCodes.Expired, (await q.AcceptAsync(s.Request.Customer.Id, issued.QuotationId, CancellationToken.None)).ErrorCode);
+        Assert.Equal(QuotationErrorCodes.Expired, (await OnSiteDecision.AgreeAsync(ctx, s.Technician.Id, issued.QuotationId)).ErrorCode);
         ctx.Clock.Now = savedClock;
+        // A stale revision (the device showed an older state) is refused.
+        Assert.Equal(QuotationErrorCodes.StaleRevision, (await q.RecordOnSiteDecisionAsync(s.Technician.Id, issued.QuotationId,
+            new OnSiteDecisionInput(OnSiteDecisions.Agreed, issued.Revision - 1, null), CancellationToken.None)).ErrorCode);
 
-        var accepted = await q.AcceptAsync(s.Request.Customer.Id, issued.QuotationId, CancellationToken.None);
+        var accepted = await OnSiteDecision.AgreeAsync(ctx, s.Technician.Id, issued.QuotationId);
         Assert.Equal(QuotationStatuses.Accepted, accepted.Value!.Status);
         Assert.NotNull(accepted.Value.AcceptedAt);
-        Assert.Equal(QuotationStatuses.Accepted, (await q.AcceptAsync(s.Request.Customer.Id, issued.QuotationId, CancellationToken.None)).Value!.Status);   // idempotent
+        var agreedEvent = await ctx.Db.QuotationEvents.AsNoTracking().SingleAsync(e => e.QuotationId == issued.QuotationId && e.EventType == QuotationEventTypes.AgreedOnSite);
+        Assert.Equal(s.Technician.Id, agreedEvent.ActorUserId);   // the technician's own account, never the customer's identity
+        Assert.Equal(QuotationErrorCodes.AlreadyAccepted, (await OnSiteDecision.AgreeAsync(ctx, s.Technician.Id, issued.QuotationId)).ErrorCode);
         Assert.Equal(QuotationErrorCodes.CannotRevise, (await q.CreateRevisionAsync(s.Sales.Id, issued.QuotationId, CancellationToken.None)).ErrorCode);
     }
 
@@ -140,9 +146,9 @@ public sealed class QuotationTests
         var (s, issued) = await IssuedAsync(ctx);
         var q = ctx.Quotations();
 
-        var requested = await q.RequestRevisionAsync(s.Request.Customer.Id, issued.QuotationId, "Please reduce the labour cost", CancellationToken.None);
+        var requested = await OnSiteDecision.RevisionAsync(ctx, s.Technician.Id, issued.QuotationId, "Please reduce the labour cost");
         Assert.Equal(QuotationStatuses.RevisionRequested, requested.Value!.Status);
-        Assert.Equal(QuotationErrorCodes.NotIssued, (await q.AcceptAsync(s.Request.Customer.Id, issued.QuotationId, CancellationToken.None)).ErrorCode);
+        Assert.Equal(QuotationErrorCodes.NotIssued, (await OnSiteDecision.AgreeAsync(ctx, s.Technician.Id, issued.QuotationId)).ErrorCode);
 
         var v2 = (await q.CreateRevisionAsync(s.Sales.Id, issued.QuotationId, CancellationToken.None)).Value!;
         Assert.Equal(2, v2.Version);
@@ -152,15 +158,15 @@ public sealed class QuotationTests
         var issuedV2 = (await q.IssueAsync(s.Sales.Id, v2.QuotationId, v2.Revision, CancellationToken.None)).Value!;
         Assert.True(issuedV2.TotalAmount < issued.TotalAmount);
 
-        var old = (await q.GetForCustomerAsync(s.Request.Customer.Id, issued.QuotationId, CancellationToken.None)).Value!;
+        var old = (await q.GetForSalesAsync(s.Sales.Id, false, issued.QuotationId, CancellationToken.None)).Value!;
         Assert.Equal(QuotationStatuses.Superseded, old.Status);
         Assert.Equal(issued.TotalAmount, old.TotalAmount);                 // the issued version itself never changed
-        Assert.Equal(QuotationErrorCodes.NotIssued, (await q.AcceptAsync(s.Request.Customer.Id, issued.QuotationId, CancellationToken.None)).ErrorCode);
-        Assert.True((await q.AcceptAsync(s.Request.Customer.Id, issuedV2.QuotationId, CancellationToken.None)).Succeeded);
+        Assert.Equal(QuotationErrorCodes.NotIssued, (await OnSiteDecision.AgreeAsync(ctx, s.Technician.Id, issued.QuotationId)).ErrorCode);
+        Assert.True((await OnSiteDecision.AgreeAsync(ctx, s.Technician.Id, issuedV2.QuotationId)).Succeeded);
     }
 
     [Fact]
-    public async Task A_revision_cannot_be_issued_once_the_customer_accepted_the_previous_version()
+    public async Task A_revision_cannot_be_issued_once_the_previous_version_was_agreed()
     {
         var ctx = InstallationWorkflowTestContext.Create();
         await using var _ = ctx;
@@ -168,7 +174,7 @@ public sealed class QuotationTests
         var q = ctx.Quotations();
         var v2 = (await q.CreateRevisionAsync(s.Sales.Id, issued.QuotationId, CancellationToken.None)).Value!;
 
-        Assert.True((await q.AcceptAsync(s.Request.Customer.Id, issued.QuotationId, CancellationToken.None)).Succeeded);
+        Assert.True((await OnSiteDecision.AgreeAsync(ctx, s.Technician.Id, issued.QuotationId)).Succeeded);
         var issue = await q.IssueAsync(s.Sales.Id, v2.QuotationId, v2.Revision, CancellationToken.None);
 
         Assert.Equal(QuotationErrorCodes.CannotRevise, issue.ErrorCode);
@@ -273,9 +279,6 @@ public sealed class QuotationTests
         var reloaded = (await q.GetForSalesAsync(s.Sales.Id, false, issued.Value.QuotationId, CancellationToken.None)).Value!;
         Assert.Equal(("Inverter SUN2000-5K", 15_000_000m, (decimal?)15_000_000m), (reloaded.Lines[0].Name, reloaded.Lines[0].UnitPrice, reloaded.Lines[0].CatalogUnitPrice));
         Assert.Equal(issued.Value.TotalAmount, reloaded.TotalAmount);
-        // D-09: the customer sees the quoted selling price, never the internal catalog reference price.
-        var customerView = (await q.GetForCustomerAsync(s.Request.Customer.Id, issued.Value.QuotationId, CancellationToken.None)).Value!;
-        Assert.Equal((15_000_000m, (decimal?)null), (customerView.Lines[0].UnitPrice, customerView.Lines[0].CatalogUnitPrice));
     }
 
     [Theory]

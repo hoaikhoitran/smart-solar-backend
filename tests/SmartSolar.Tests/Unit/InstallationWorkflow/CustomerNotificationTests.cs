@@ -23,34 +23,23 @@ public sealed class CustomerNotificationTests
 
     private static readonly string[] ProjectTypes =
     [
-        CustomerNotificationTypes.InstallationScheduled, CustomerNotificationTypes.InstallationStarted, CustomerNotificationTypes.InstallationAcceptanceRequired,
+        CustomerNotificationTypes.InstallationScheduled, CustomerNotificationTypes.InstallationStarted, CustomerNotificationTypes.InstallationCompletionReported,
         CustomerNotificationTypes.InstallationReworkRequired, CustomerNotificationTypes.InstallationCancelled,
     ];
 
     [Fact]
-    public async Task An_issued_quotation_notifies_its_customer_once_and_a_refused_second_issue_adds_nothing()
+    public async Task An_issued_quotation_sends_no_approval_request_to_the_customer()
     {
         var ctx = InstallationWorkflowTestContext.Create();
         await using var _ = ctx;
-        var (s, issued) = await QuotationTests.IssuedAsync(ctx);
-        var customer = s.Request.Customer.Id;
-
-        var notification = Assert.Single(await OfAsync(ctx, customer, CustomerNotificationTypes.QuotationIssued));
-        var stored = await ctx.Db.Quotations.AsNoTracking().SingleAsync(q => q.Id == issued.QuotationId);
-        Assert.Contains(stored.QuoteNumber, notification.Message);
-        Assert.Contains($"{stored.TotalAmount:N0}", notification.Message);
-        Assert.Null(notification.ReadAt);
-        Assert.Equal(ctx.Clock.GetUtcNow(), notification.CreatedAt);
-        // Only the customer: the salesperson and the technician get nothing about it.
-        Assert.Equal(1, await ctx.Db.AfterSalesNotifications.AsNoTracking().CountAsync(n => n.Type == CustomerNotificationTypes.QuotationIssued));
-
-        var again = await ctx.Quotations().IssueAsync(s.Sales.Id, issued.QuotationId, issued.Revision, None);
-        Assert.Equal(QuotationErrorCodes.NotDraft, again.ErrorCode);
-        Assert.Single(await OfAsync(ctx, customer, CustomerNotificationTypes.QuotationIssued));
+        var (s, _) = await QuotationTests.IssuedAsync(ctx);
+        // Technician-led sales (2026-11-18): the quotation is presented on site; nothing asks the customer to review it in the app.
+        Assert.Empty(await ctx.Db.AfterSalesNotifications.AsNoTracking().Where(n => n.RecipientUserId == s.Request.Customer.Id && n.Type.Contains("QUOTATION")).ToListAsync());
+        Assert.Equal(0, await ctx.Db.AfterSalesNotifications.AsNoTracking().CountAsync(n => n.Type == "INSTALLATION_QUOTATION_ISSUED"));
     }
 
     [Fact]
-    public async Task An_automatically_issued_quotation_notifies_the_customer_like_a_manual_one()
+    public async Task An_automatically_issued_quotation_sends_no_approval_request_either()
     {
         var ctx = InstallationWorkflowTestContext.Create();
         await using var _ = ctx;
@@ -61,10 +50,20 @@ public sealed class CustomerNotificationTests
 
         Assert.True(completed.Succeeded, completed.Message);
         Assert.Equal(AutomaticQuotationOutcomes.Issued, completed.Value!.AutomaticQuotationOutcome);
-        var stored = Assert.Single(await AutomaticQuotationFixture.QuotationsAsync(ctx, survey.Request.Request.Id));
-        var notification = Assert.Single(await OfAsync(ctx, survey.Request.Customer.Id, CustomerNotificationTypes.QuotationIssued));
-        Assert.Contains(stored.QuoteNumber, notification.Message);
-        Assert.Equal(1, await ctx.Db.AfterSalesNotifications.AsNoTracking().CountAsync(n => n.Type == CustomerNotificationTypes.QuotationIssued));
+        Assert.Equal(0, await ctx.Db.AfterSalesNotifications.AsNoTracking().CountAsync(n => n.Type == "INSTALLATION_QUOTATION_ISSUED"));
+    }
+
+    [Fact]
+    public async Task A_verified_payment_informs_the_customer_that_the_contract_was_created()
+    {
+        var ctx = InstallationWorkflowTestContext.Create();
+        await using var _ = ctx;
+        var cart = await SimplifiedFlowFixture.IssuedAsync(ctx);
+        var manager = await ctx.Scheduling.Inner.SeedUserAsync("Manager");
+        var contract = await SimplifiedFlowFixture.PaidOnSiteAsync(ctx, cart, manager);
+        var info = Assert.Single(await OfAsync(ctx, cart.CustomerId, CustomerNotificationTypes.ContractCreatedAfterPayment));
+        Assert.Contains(contract.ContractNumber, info.Message);
+        Assert.Contains(cart.Quotation.QuoteNumber, info.Message);
     }
 
     [Fact]
@@ -124,7 +123,7 @@ public sealed class CustomerNotificationTests
         await InstallationTests.AddCompletionEvidenceAsync(ctx, project.ProjectId, tech);
         Assert.True((await InstallationTests.RegisterPanelAndInverterAsync(ctx, project.ProjectId, tech)).Succeeded);
         var reported = (await ctx.Installations().ReportCompletionAsync(tech, project.ProjectId, "Done", null, None)).Value!;
-        Assert.Contains("round 1", Assert.Single(await OfAsync(ctx, customer, CustomerNotificationTypes.InstallationAcceptanceRequired)).Message);
+        Assert.Contains("lượt 1", Assert.Single(await OfAsync(ctx, customer, CustomerNotificationTypes.InstallationCompletionReported)).Message);
 
         var rework = await ctx.Installations().ReturnToReworkAsync(paid.ManagerId, project.ProjectId, reported.Revision, "Report incomplete", None);
         Assert.True(rework.Succeeded, rework.Message);
@@ -157,7 +156,7 @@ public sealed class CustomerNotificationTests
     }
 
     [Fact]
-    public async Task A_manager_approved_equipment_substitution_asks_the_customer_for_approval()
+    public async Task A_manager_approved_equipment_substitution_informs_the_customer_without_asking_anything()
     {
         var ctx = InstallationWorkflowTestContext.Create();
         await using var _ = ctx;
@@ -173,10 +172,11 @@ public sealed class CustomerNotificationTests
             .Append(new AssetInput("INVERTER", otherInverter.Id, "Huawei", "SUN-OTHER", "SUB-INV-01", null, null)).ToList();
         Assert.True((await installs.RegisterAssetsAsync(tech, project.ProjectId, assets, None)).Succeeded);
         var staff = (await installs.GetForManagerAsync(project.ProjectId, None)).Value!;
-        Assert.Empty(await OfAsync(ctx, paid.CustomerId, CustomerNotificationTypes.EquipmentSubstitutionApprovalRequired));
+        Assert.Empty(await OfAsync(ctx, paid.CustomerId, CustomerNotificationTypes.EquipmentSubstitutionRecorded));
 
         var approved = await installs.ApproveSubstitutionAsync(paid.ManagerId, project.ProjectId, staff.Revision, "Contracted model out of stock; same rating", None);
         Assert.True(approved.Succeeded, approved.Message);
-        Assert.Contains("out of stock", Assert.Single(await OfAsync(ctx, paid.CustomerId, CustomerNotificationTypes.EquipmentSubstitutionApprovalRequired)).Message);
+        Assert.Contains("out of stock", Assert.Single(await OfAsync(ctx, paid.CustomerId, CustomerNotificationTypes.EquipmentSubstitutionRecorded)).Message);
+        Assert.Equal(0, await ctx.Db.AfterSalesNotifications.AsNoTracking().CountAsync(n => n.Type == "EQUIPMENT_SUBSTITUTION_APPROVAL_REQUIRED"));
     }
 }

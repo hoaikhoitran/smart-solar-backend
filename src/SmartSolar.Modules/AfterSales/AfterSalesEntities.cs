@@ -780,6 +780,8 @@ public static class AfterSalesErrorCodes
     /// </summary>
     public const string PaidCancellationUnsupported = "AFTER_SALES_PAID_CANCELLATION_UNSUPPORTED";
     public const string QuotationExpired = "SERVICE_QUOTATION_EXPIRED";
+    /// <summary>A technician quotation is decided on site and recorded by the technician; the customer does not accept / reject it in the app (409).</summary>
+    public const string DecidedOnSite = "SERVICE_QUOTATION_DECIDED_ON_SITE";
     /// <summary>A product of a technician quotation is not an active, VND-priced catalog product (409).</summary>
     public const string ProductUnavailable = "SERVICE_QUOTATION_PRODUCT_UNAVAILABLE";
     /// <summary>A product of a technician quotation has no catalog price: an Admin must price it before it can be quoted (409).</summary>

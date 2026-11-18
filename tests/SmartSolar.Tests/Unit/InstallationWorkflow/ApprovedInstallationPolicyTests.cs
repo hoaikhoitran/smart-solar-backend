@@ -44,47 +44,39 @@ public sealed class ApprovedInstallationPolicyTests
         Assert.Equal(InstallationErrorCodes.SubstitutionApprovalRequired, report.ErrorCode);
         Assert.Equal(409, OperationResultControllerBase.StatusFor(report.ErrorCode!));
         var approved = (await installs.ApproveSubstitutionAsync(paid.ManagerId, project.ProjectId, staff.Revision, "Contracted model out of stock; same rating", None)).Value!;
-        Assert.Equal((EquipmentComparisonStatuses.CustomerApprovalRequired, paid.ManagerId, "Contracted model out of stock; same rating"),
+        Assert.Equal((EquipmentComparisonStatuses.Approved, paid.ManagerId, "Contracted model out of stock; same rating"),
             (approved.Equipment!.Status, approved.Equipment.ManagerApproval!.ActorUserId, approved.Equipment.ManagerApproval.Reason));
         // M-3: a structured record bound to the comparison, one item per affected product (not a forced 1:1 pairing).
         var record = await ctx.Db.EquipmentSubstitutions.AsNoTracking().SingleAsync(x => x.ProjectId == project.ProjectId);
-        Assert.Equal((EquipmentSubstitutionStatuses.CustomerApprovalPending, approved.Equipment.Fingerprint, quotationId, paid.ManagerId),
+        Assert.Equal((EquipmentSubstitutionStatuses.InternallyApproved, approved.Equipment.Fingerprint, quotationId, paid.ManagerId),
             (record.Status, record.Fingerprint, record.QuotationId, record.ManagerUserId));
         var recordItems = await ctx.Db.EquipmentSubstitutionItems.AsNoTracking().Where(i => i.SubstitutionId == record.Id).ToListAsync();
         Assert.Equal(new[] { (contractedInverter, 1m, 0), (otherInverter.Id, 0m, 1) }.OrderBy(x => x.Item1),
             recordItems.Select(i => (i.ProductId!.Value, i.ContractedQuantity, i.InstalledQuantity)).OrderBy(x => x.Item1));
         Assert.True((await installs.ReportCompletionAsync(tech, project.ProjectId, "Installed", null, None)).Succeeded);
 
-        // A Manager cannot agree on the customer's behalf (the customer action is scoped to the project's customer).
-        Assert.Equal(InstallationErrorCodes.ProjectNotFound, (await installs.CustomerApproveSubstitutionAsync(paid.ManagerId, project.ProjectId, None)).ErrorCode);
-
-        // No handover until the customer agrees; another customer cannot agree for them; staff identity is not shown to the customer.
-        var accept = await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, true, null, None);
-        Assert.Equal(InstallationErrorCodes.SubstitutionCustomerApprovalRequired, accept.ErrorCode);
-        var stranger = await ctx.Scheduling.Inner.SeedUserAsync("Stranger");
-        Assert.Equal(InstallationErrorCodes.ProjectNotFound, (await installs.CustomerApproveSubstitutionAsync(stranger.Id, project.ProjectId, None)).ErrorCode);
+        // The customer is informed (reason, no staff identity) and approves nothing; the Manager's internal acceptance hands over.
         var customerView = (await installs.GetForCustomerAsync(paid.CustomerId, project.ProjectId, None)).Value!;
-        Assert.Equal(EquipmentComparisonStatuses.CustomerApprovalRequired, customerView.Equipment!.Status);
+        Assert.Equal(EquipmentComparisonStatuses.Approved, customerView.Equipment!.Status);
         Assert.Null(customerView.Equipment.ManagerApproval!.ActorUserId);
         Assert.Equal("Contracted model out of stock; same rating", customerView.Equipment.ManagerApproval.Reason);
-        var agreed = (await installs.CustomerApproveSubstitutionAsync(paid.CustomerId, project.ProjectId, None)).Value!;
-        Assert.Equal(EquipmentComparisonStatuses.Approved, agreed.Equipment!.Status);
-        Assert.True((await installs.CustomerApproveSubstitutionAsync(paid.CustomerId, project.ProjectId, None)).Succeeded);   // repeat: no-op
-        var completed = (await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, true, null, None)).Value!;
-        Assert.Equal(InstallationStatuses.Completed, completed.Status);
+        Assert.True(await ctx.Db.AfterSalesNotifications.AnyAsync(n => n.RecipientUserId == paid.CustomerId
+            && n.Type == SmartSolar.Modules.Common.Notifications.CustomerNotificationTypes.EquipmentSubstitutionRecorded));
+        Assert.True((await InternalAcceptance.AcceptAsync(ctx, project.ProjectId, paid.ManagerId)).Succeeded);
+        Assert.Equal(InstallationStatuses.Completed, (await installs.GetForCustomerAsync(paid.CustomerId, project.ProjectId, None)).Value!.Status);
         var final = await ctx.Db.EquipmentSubstitutions.AsNoTracking().SingleAsync(x => x.ProjectId == project.ProjectId);
-        Assert.Equal((EquipmentSubstitutionStatuses.Approved, (Guid?)paid.CustomerId), (final.Status, final.CustomerUserId));
+        Assert.Equal((EquipmentSubstitutionStatuses.InternallyApproved, (Guid?)null), (final.Status, final.CustomerUserId));
 
         // History: the contracted quotation is unchanged, both approvals are audited once, the installed assets are what was installed.
         Assert.Equal(1m, (await ctx.Db.QuotationLines.AsNoTracking().SingleAsync(l => l.QuotationId == quotationId && l.ProductId == contractedInverter)).Quantity);
         var events = await ctx.Db.InstallationEvents.AsNoTracking().Where(e => e.ProjectId == project.ProjectId).ToListAsync();
-        Assert.Single(events, e => e.EventType == InstallationEventTypes.SubstitutionApproved);
-        Assert.Single(events, e => e.EventType == InstallationEventTypes.SubstitutionCustomerApproved && e.ActorUserId == paid.CustomerId);
+        Assert.Single(events, e => e.EventType == InstallationEventTypes.SubstitutionApproved && e.ActorUserId == paid.ManagerId);
+        Assert.DoesNotContain(events, e => e.EventType == InstallationEventTypes.SubstitutionCustomerApproved);
         Assert.Equal(otherInverter.Id, (await ctx.Db.InstalledAssets.AsNoTracking().SingleAsync(a => a.ProjectId == project.ProjectId && a.AssetType == "INVERTER")).ProductId);
     }
 
     [Fact]
-    public async Task A_customer_refusal_or_an_equipment_change_ends_the_approval_and_the_gates_close_again_with_history_kept()
+    public async Task A_rework_or_an_equipment_change_ends_the_approval_and_the_gates_close_again_with_history_kept()
     {
         var ctx = InstallationWorkflowTestContext.Create();
         await using var _ = ctx;
@@ -108,22 +100,15 @@ public sealed class ApprovedInstallationPolicyTests
         Assert.Single(await ctx.Db.EquipmentSubstitutions.AsNoTracking().Where(x => x.ProjectId == project.ProjectId).ToListAsync());
         Assert.True((await installs.ReportCompletionAsync(tech, project.ProjectId, "Installed", null, None)).Succeeded);
 
-        // The customer asks for rework instead of agreeing: the record ends as CUSTOMER_DECLINED with the reason.
-        Assert.True((await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, false, "I paid for 12 panels", None)).Succeeded);
-        var declined = await ctx.Db.EquipmentSubstitutions.AsNoTracking().SingleAsync(x => x.ProjectId == project.ProjectId);
-        Assert.Equal((EquipmentSubstitutionStatuses.CustomerDeclined, (Guid?)paid.CustomerId, "I paid for 12 panels"),
-            (declined.Status, declined.CustomerUserId, declined.CustomerDeclineReason));
-        Assert.Equal(EquipmentComparisonStatuses.ApprovalRequired, (await installs.GetForManagerAsync(project.ProjectId, None)).Value!.Equipment!.Status);
-
-        // A Manager approves again, then the 12th panel is installed: the new approval is superseded (equipment changed) and the comparison matches.
-        revision = (await installs.GetForManagerAsync(project.ProjectId, None)).Value!.Revision;
-        Assert.True((await installs.ApproveSubstitutionAsync(paid.ManagerId, project.ProjectId, revision, "Replacement panel on back-order", None)).Succeeded);
+        // Internally the result is not accepted (the customer insisted on 12 panels on site): the Manager returns it to rework; the approval stays
+        // on record, and installing the 12th panel supersedes it (equipment changed) so the comparison matches again.
+        Assert.True((await InternalAcceptance.ReworkAsync(ctx, project.ProjectId, "Customer wants the 12 contracted panels", paid.ManagerId)).Succeeded);
         Assert.True((await installs.RegisterAssetsAsync(tech, project.ProjectId, [new AssetInput("PANEL", panel, "Jinko", "Tiger Neo", "Q-PNL-12", null, null)], None)).Succeeded);
-        var records = (await ctx.Db.EquipmentSubstitutions.AsNoTracking().Where(x => x.ProjectId == project.ProjectId).ToListAsync()).OrderBy(x => x.CreatedAt).ThenBy(x => x.Status).ToList();
-        Assert.Equal(new[] { EquipmentSubstitutionStatuses.CustomerDeclined, EquipmentSubstitutionStatuses.Superseded }.Order(), records.Select(x => x.Status).Order());
+        var records = await ctx.Db.EquipmentSubstitutions.AsNoTracking().Where(x => x.ProjectId == project.ProjectId).ToListAsync();
+        Assert.Equal(EquipmentSubstitutionStatuses.Superseded, Assert.Single(records).Status);
         var staff = (await installs.GetForManagerAsync(project.ProjectId, None)).Value!;
         Assert.Equal(EquipmentComparisonStatuses.Matches, staff.Equipment!.Status);
-        Assert.Equal(2, staff.Equipment.History!.Count);   // the history stays visible to staff
+        Assert.Single(staff.Equipment.History!);   // the history stays visible to staff
 
         // The database allows at most one active substitution per project.
         var stale = records[0];
@@ -155,8 +140,7 @@ public sealed class ApprovedInstallationPolicyTests
         Assert.Equal((EquipmentComparisonStatuses.Matches, 0), (staff.Equipment!.Status, staff.Equipment.Differences.Count));
         Assert.Equal(InstallationErrorCodes.NoSubstitution, (await installs.ApproveSubstitutionAsync(paid.ManagerId, project.ProjectId, staff.Revision, "n/a", None)).ErrorCode);
         Assert.True((await installs.ReportCompletionAsync(tech, project.ProjectId, "Installed", null, None)).Succeeded);
-        Assert.Equal(InstallationErrorCodes.NoSubstitution, (await installs.CustomerApproveSubstitutionAsync(paid.CustomerId, project.ProjectId, None)).ErrorCode);
-        Assert.True((await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, true, null, None)).Succeeded);
+        Assert.True((await InternalAcceptance.AcceptAsync(ctx, project.ProjectId, paid.ManagerId)).Succeeded);
     }
 
     [Fact]
@@ -177,12 +161,11 @@ public sealed class ApprovedInstallationPolicyTests
         await ctx.Db.SaveChangesAsync();
         ctx.Db.ChangeTracker.Clear();
 
-        // The customer cannot accept yet; the Manager can still approve while the acceptance is open, then the customer agrees.
-        Assert.Equal(InstallationErrorCodes.SubstitutionCustomerApprovalRequired, (await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, true, null, None)).ErrorCode);
+        // The internal acceptance is refused until a Manager approves the difference (still possible while the acceptance is open).
+        Assert.Equal(InstallationErrorCodes.SubstitutionApprovalRequired, (await InternalAcceptance.AcceptAsync(ctx, project.ProjectId, paid.ManagerId)).ErrorCode);
         var pending = (await installs.GetForManagerAsync(project.ProjectId, None)).Value!;
         Assert.True((await installs.ApproveSubstitutionAsync(paid.ManagerId, project.ProjectId, pending.Revision, "Legacy registration without catalog link", None)).Succeeded);
-        Assert.True((await installs.CustomerApproveSubstitutionAsync(paid.CustomerId, project.ProjectId, None)).Succeeded);
-        Assert.True((await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, true, null, None)).Succeeded);
+        Assert.True((await InternalAcceptance.AcceptAsync(ctx, project.ProjectId, paid.ManagerId)).Succeeded);
         Assert.Equal(InstallationErrorCodes.InvalidState,
             (await installs.ApproveSubstitutionAsync(paid.ManagerId, project.ProjectId, (await installs.GetForManagerAsync(project.ProjectId, None)).Value!.Revision, "late", None)).ErrorCode);
 
@@ -195,7 +178,7 @@ public sealed class ApprovedInstallationPolicyTests
         await InstallationTests.AddCompletionEvidenceAsync(ctx2, project2.ProjectId, tech2);
         Assert.True((await InstallationTests.RegisterPanelAndInverterAsync(ctx2, project2.ProjectId, tech2)).Succeeded);
         Assert.True((await installs2.ReportCompletionAsync(tech2, project2.ProjectId, "Installed", null, None)).Succeeded);
-        Assert.True((await installs2.DecideAcceptanceAsync(paid2.CustomerId, project2.ProjectId, true, null, None)).Succeeded);
+        Assert.True((await InternalAcceptance.AcceptAsync(ctx2, project2.ProjectId, paid2.ManagerId)).Succeeded);
         var old = await ctx2.Db.InstalledAssets.SingleAsync(a => a.ProjectId == project2.ProjectId && a.AssetType == "INVERTER");
         old.ProductId = null;
         await ctx2.Db.SaveChangesAsync();

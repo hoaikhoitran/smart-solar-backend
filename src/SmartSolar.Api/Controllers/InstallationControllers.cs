@@ -87,8 +87,8 @@ public sealed class ManagerInstallationsController(InstallationHandlers handlers
     }
 
     /// <summary>
-    /// PENDING_CUSTOMER_ACCEPTANCE → REWORK_REQUIRED (reason required, ≤500): closes the pending acceptance round as REWORK_REQUESTED
-    /// decided by the manager; the next completion report needs new evidence. Completion remains the customer's decision.
+    /// Awaiting internal acceptance (stored PENDING_CUSTOMER_ACCEPTANCE) → REWORK_REQUIRED (reason required, ≤500): closes the pending acceptance
+    /// round as REWORK_REQUESTED decided by the manager; the next completion report needs new evidence.
     /// </summary>
     [HttpPost("installation-projects/{projectId:guid}/return-to-rework")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
@@ -101,8 +101,22 @@ public sealed class ManagerInstallationsController(InstallationHandlers handlers
     }
 
     /// <summary>
+    /// Internal acceptance (replaces the customer's in-app acceptance, 2026-11-18): awaiting acceptance → COMPLETED (handover). Refused while required
+    /// prerequisites are open or differing equipment has no Manager approval. <c>note</c> (basis, e.g. on-site handover with the customer) is required.
+    /// </summary>
+    [HttpPost("installation-projects/{projectId:guid}/acceptance")]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
+    public async Task<IActionResult> AcceptInternally(Guid projectId, [FromBody] InternalAcceptanceRequest request, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (request.ExpectedRevision is not { } revision) return Invalid("expectedRevision", "'expectedRevision' is required.");
+        if (request.Note is { } note && note.Trim().Length > 500) return Invalid("note", "'note' must be at most 500 characters.");
+        return Respond(await handlers.AcceptInternallyAsync(user, projectId, revision, request.Note, request.EvidenceFileId, cancellationToken));
+    }
+
+    /// <summary>
     /// Manager (only) approves, with a reason, that the installed panels / inverters differ from the accepted quotation (see
-    /// <c>equipment.differences</c>). The customer must then agree before the handover.
+    /// <c>equipment.differences</c>). Internal and final (INTERNALLY_APPROVED): the customer is informed, not asked.
     /// </summary>
     [HttpPost("installation-projects/{projectId:guid}/equipment-substitution/approve")]
     [Authorize(Roles = RoleCodes.Manager)]
@@ -225,7 +239,10 @@ public sealed class TechnicianInstallationsController(InstallationHandlers handl
         => CurrentUserId() is { } user ? Respond(await handlers.ReportCompletionAsync(user, projectId, request.CompletionReport, request.ExpectedRevision, cancellationToken)) : UnauthorizedFailure();
 }
 
-/// <summary>Customers: their installation progress, evidence, acceptance decision and handover (no staff-only data).</summary>
+/// <summary>
+/// Customers follow their installation: progress, schedule, evidence, handover (no staff-only data). Read-only for decisions since 2026-11-18: the
+/// completion is accepted internally by SmartSolar and equipment substitutions are approved by a Manager; both former customer steps answer 410.
+/// </summary>
 [ApiController]
 [Route("api/customers/me/installation-projects")]
 [Authorize(Roles = RoleCodes.Customer)]
@@ -272,21 +289,18 @@ public sealed class CustomerInstallationsController(InstallationHandlers handler
         return Respond(await evidence.CreateEvidenceUrlAsync(EvidenceViewerRole.Customer, user, projectId, evidenceId, parsed, cancellationToken));
     }
 
+    /// <summary>Retired (2026-11-18): the completion is accepted internally (Manager/Admin) after the on-site handover; the customer follows the result.</summary>
     [HttpPost("{projectId:guid}/acceptance")]
-    [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
-    public async Task<IActionResult> Decide(Guid projectId, [FromBody] AcceptanceDecisionRequest request, CancellationToken cancellationToken)
-    {
-        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
-        var decision = request.Decision?.Trim().ToUpperInvariant();
-        if (decision is not ("ACCEPT" or "REQUEST_REWORK")) return Invalid("decision", "'decision' must be ACCEPT or REQUEST_REWORK.");
-        return Respond(await handlers.DecideAcceptanceAsync(user, projectId, decision == "ACCEPT", request.Reason, cancellationToken));
-    }
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
+    public IActionResult Decide(Guid projectId) => RetiredOnSite("None for the customer: POST /api/installation-projects/{projectId}/acceptance (internal acceptance)");
 
-    /// <summary>Agrees to the Manager-approved equipment substitution of the completion waiting for acceptance (then accept or ask for rework).</summary>
+    /// <summary>Retired (2026-11-18): a Manager approves equipment substitutions with a reason (internal, final); the customer is informed.</summary>
     [HttpPost("{projectId:guid}/equipment-substitution/approve")]
-    [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
-    public async Task<IActionResult> ApproveSubstitution(Guid projectId, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await handlers.CustomerApproveSubstitutionAsync(user, projectId, cancellationToken)) : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
+    public IActionResult ApproveSubstitution(Guid projectId)
+        => RetiredOnSite("None for the customer: POST /api/installation-projects/{projectId}/equipment-substitution/approve");
 
     [HttpGet("{projectId:guid}/handover")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]

@@ -88,7 +88,13 @@ public sealed class PaymentAttemptItem
     public string ItemType { get; set; } = null!;
     public Guid? ContractId { get; set; }
     public Guid? SubscriptionId { get; set; }
+    /// <summary>After-sales (service) quotation paid by this line.</summary>
     public Guid? QuotationId { get; set; }
+    /// <summary>
+    /// Installation quotation agreed on site and paid BEFORE its contract exists (2026-11-18 technician-led flow): the contract is created from
+    /// this quotation's snapshot when the line is settled. Exactly one of contract / subscription / quotation / installation quotation is set.
+    /// </summary>
+    public Guid? InstallationQuotationId { get; set; }
     public decimal Amount { get; set; }
 
     /// <summary>PENDING until the payment is verified, then SETTLED, or REVIEW_REQUIRED when the money cannot be applied (manual refund).</summary>
@@ -104,7 +110,9 @@ public static class PaymentItemTypes
     public const string DisasterPackage = "DISASTER_PACKAGE";
     public const string RepairQuotation = "REPAIR_QUOTATION";
     public const string MaintenanceQuotation = "MAINTENANCE_QUOTATION";
-    public static readonly IReadOnlyList<string> All = [Contract, MaintenancePackage, DisasterPackage, RepairQuotation, MaintenanceQuotation];
+    /// <summary>An installation quotation agreed on site with the technician; settling it creates the contract (payment before contract).</summary>
+    public const string InstallationQuotation = "INSTALLATION_QUOTATION";
+    public static readonly IReadOnlyList<string> All = [Contract, MaintenancePackage, DisasterPackage, RepairQuotation, MaintenanceQuotation, InstallationQuotation];
 }
 
 public static class PaymentItemStatuses
@@ -178,6 +186,8 @@ public static class PaymentSources
     public const string System = "SYSTEM";
     /// <summary>A Manager/Admin action (cash confirmation).</summary>
     public const string Staff = "STAFF";
+    /// <summary>The assigned technician opened the payment on site (QR shown on the technician's device, or cash chosen for a Manager to confirm).</summary>
+    public const string Technician = "TECHNICIAN";
 }
 
 public static class PaymentErrorCodes

@@ -120,7 +120,8 @@ public sealed class AfterSalesReportQueries(AppDbContext db) : IAfterSalesReport
                 continue;
             }
             var settled = mine.Where(l => l.Status == PaymentItemStatuses.Settled).ToList();
-            contracts += settled.Where(l => l.ItemType == PaymentItemTypes.Contract).Sum(l => l.Amount);
+            // An installation quotation paid before its contract (technician-led flow) is contract revenue once settled (its contract was created).
+            contracts += settled.Where(l => l.ItemType is PaymentItemTypes.Contract or PaymentItemTypes.InstallationQuotation).Sum(l => l.Amount);
             packages += settled.Where(l => l.ItemType is PaymentItemTypes.MaintenancePackage or PaymentItemTypes.DisasterPackage).Sum(l => l.Amount);
             services += settled.Where(l => l.ItemType is PaymentItemTypes.RepairQuotation or PaymentItemTypes.MaintenanceQuotation).Sum(l => l.Amount);
             unapplied += gross - settled.Sum(l => l.Amount);

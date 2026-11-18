@@ -76,7 +76,7 @@ public sealed class TechnicianPricedQuotationTests
         // The customer reads it, accepts and pays (PayOS); the request is ready for the repair.
         var seen = (await ctx.Customer().GetAsync(h.CustomerId, requestId, None)).Value!;
         Assert.Equal(912_500m, Assert.Single(seen.Quotations).CustomerAmount);
-        Assert.True((await ctx.Quotations().AcceptAsync(h.CustomerId, q.QuotationId, None)).Succeeded);
+        Assert.True((await ctx.Quotations().RecordOnSiteDecisionAsync(h.TechnicianId, q.QuotationId, ServiceOnSiteDecisions.Agreed, null, None)).Succeeded);
         var checkout = (await ctx.Quotations().CheckoutAsync(h.CustomerId, q.QuotationId, None)).Value!;
         Assert.Equal(PaymentStatuses.Paid, (await ctx.PayAsync(checkout))!.Status);
         Assert.Equal(ServiceRequestStatuses.ReadyForWork, (await ctx.Manager().GetAsync(requestId, None)).Value!.Status);
@@ -189,13 +189,13 @@ public sealed class TechnicianPricedQuotationTests
 
         var now = ctx.Clock.Now;
         ctx.Clock.Now = q.ExpiresAt.AddMinutes(1).ToUniversalTime();
-        Assert.Equal(AfterSalesErrorCodes.QuotationExpired, (await ctx.Quotations().AcceptAsync(h.CustomerId, q.QuotationId, None)).ErrorCode);
+        Assert.Equal(AfterSalesErrorCodes.QuotationExpired, (await ctx.Quotations().RecordOnSiteDecisionAsync(h.TechnicianId, q.QuotationId, ServiceOnSiteDecisions.Agreed, null, None)).ErrorCode);
         ctx.Clock.Now = now;
 
-        Assert.True((await ctx.Quotations().RejectAsync(h.CustomerId, q.QuotationId, "Too expensive", None)).Succeeded);
+        Assert.True((await ctx.Quotations().RecordOnSiteDecisionAsync(h.TechnicianId, q.QuotationId, ServiceOnSiteDecisions.Declined, "Too expensive", None)).Succeeded);
         Assert.Equal(QuotationStatuses.Rejected, (await ctx.Db.ServiceQuotations.AsNoTracking().SingleAsync()).Status);
         Assert.Equal(ItemStatuses.Declined, (await ctx.Db.ServiceItems.AsNoTracking().SingleAsync(i => i.Id == items[0])).Status);
-        Assert.Equal(AfterSalesErrorCodes.InvalidState, (await ctx.Quotations().AcceptAsync(h.CustomerId, q.QuotationId, None)).ErrorCode);
+        Assert.Equal(AfterSalesErrorCodes.InvalidState, (await ctx.Quotations().RecordOnSiteDecisionAsync(h.TechnicianId, q.QuotationId, ServiceOnSiteDecisions.Agreed, null, None)).ErrorCode);
     }
 
     [Fact]

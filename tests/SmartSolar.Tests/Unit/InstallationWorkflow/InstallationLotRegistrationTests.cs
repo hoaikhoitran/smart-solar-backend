@@ -73,7 +73,7 @@ public sealed class InstallationLotRegistrationTests
         Assert.Equal((12, (string?)null, InstalledAssetStatuses.Active), (stored.Quantity, stored.SerialNumber, stored.Status));
 
         Assert.True((await installs.ReportCompletionAsync(tech, projectId, "All 12 panels and the inverter installed and commissioned.", null, None)).Succeeded);
-        var accepted = await installs.DecideAcceptanceAsync(paid.CustomerId, projectId, true, null, None);
+        var accepted = await InternalAcceptance.AcceptAsync(ctx, projectId, paid.ManagerId);
         Assert.True(accepted.Succeeded, accepted.Message);
         var handover = (await installs.GetHandoverAsync(paid.CustomerId, false, projectId, None)).Value!;
         var handedLot = Assert.Single(handover.Assets, a => a.AssetType == "PANEL");

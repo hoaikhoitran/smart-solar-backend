@@ -27,13 +27,16 @@ public sealed class InstallationUnitOfWork(AppDbContext db) : TransactionalUnitO
                 Db.OnSiteSurveyReports.Where(r => r.SurveyRequestId == x.c.SurveyRequestId && r.Status == SmartSolar.Modules.OnSiteSurveys.OnSiteSurveyStatuses.Completed)
                     .OrderByDescending(r => r.CompletedAt).Select(r => (Guid?)r.TechnicianUserId).FirstOrDefault(),
                 p.Name,
-                Db.UserAccounts.Where(u => u.Id == x.c.CustomerUserId).Select(u => u.FullName).FirstOrDefault() ?? ""));
+                Db.UserAccounts.Where(u => u.Id == x.c.CustomerUserId).Select(u => u.FullName).FirstOrDefault() ?? "",
+                Db.PaymentAttempts.Any(a => a.ContractId == x.c.Id && a.Status == SmartSolar.Modules.Payments.PaymentStatuses.Paid)));
 
     public Task<ScheduleContractInfo?> GetScheduleContractAsync(Guid contractId, CancellationToken cancellationToken)
         => ScheduleContracts(Db.CustomerContracts.AsNoTracking().Where(c => c.Id == contractId)).FirstOrDefaultAsync(cancellationToken);
 
     public async Task<IReadOnlyList<ScheduleContractInfo>> ListScheduleContractsForTechnicianAsync(Guid technicianUserId, CancellationToken cancellationToken)
-        => (await ScheduleContracts(Db.CustomerContracts.AsNoTracking().Where(c => (c.Status == ContractStatuses.Signed || c.Status == ContractStatuses.Paid)
+        => (await ScheduleContracts(Db.CustomerContracts.AsNoTracking().Where(c => (c.Status == ContractStatuses.Signed || c.Status == ContractStatuses.Paid
+                        || (c.Status != ContractStatuses.Superseded && c.Status != ContractStatuses.Discarded
+                            && Db.PaymentAttempts.Any(a => a.ContractId == c.Id && a.Status == SmartSolar.Modules.Payments.PaymentStatuses.Paid)))
                     && Db.OnSiteSurveyReports.Any(r => r.SurveyRequestId == c.SurveyRequestId && r.TechnicianUserId == technicianUserId
                         && r.Status == SmartSolar.Modules.OnSiteSurveys.OnSiteSurveyStatuses.Completed)))
                 .ToListAsync(cancellationToken))
@@ -190,7 +193,8 @@ public sealed class InstallationUnitOfWork(AppDbContext db) : TransactionalUnitO
     public Task<EquipmentSubstitution?> GetActiveSubstitutionAsync(Guid projectId, bool track, CancellationToken cancellationToken)
         => (track ? Db.EquipmentSubstitutions : Db.EquipmentSubstitutions.AsNoTracking())
             .FirstOrDefaultAsync(s => s.ProjectId == projectId
-                && (s.Status == EquipmentSubstitutionStatuses.CustomerApprovalPending || s.Status == EquipmentSubstitutionStatuses.Approved), cancellationToken);
+                && (s.Status == EquipmentSubstitutionStatuses.CustomerApprovalPending || s.Status == EquipmentSubstitutionStatuses.Approved
+                    || s.Status == EquipmentSubstitutionStatuses.InternallyApproved), cancellationToken);
 
     public async Task<IReadOnlyList<EquipmentSubstitution>> ListSubstitutionsAsync(Guid projectId, CancellationToken cancellationToken)
         => (await Db.EquipmentSubstitutions.AsNoTracking().Where(s => s.ProjectId == projectId).ToListAsync(cancellationToken)).OrderBy(s => s.CreatedAt).ToList();

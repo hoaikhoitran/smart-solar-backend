@@ -31,28 +31,31 @@ public sealed class SalesTerminalStateTests
     }
 
     [Fact]
-    public async Task A_customer_rejects_an_issued_quotation_which_then_can_never_be_accepted_or_reissued()
+    public async Task A_decline_recorded_on_site_is_terminal_for_that_version_and_never_charges_anything()
     {
         var (ctx, s, _, issued) = await IssuedAsync();
         await using var _ = ctx;
         var q = ctx.Quotations();
-        var customer = s.Request.Customer.Id;
+        var technician = s.Technician.Id;
         ctx.Clock.Now = ctx.Clock.Now.AddMinutes(10);
 
-        Assert.Equal(CommonValidation, (await q.RejectAsync(customer, issued.Id, new string('x', 2001), None)).ErrorCode);
-        Assert.Equal(QuotationErrorCodes.NotFound, (await q.RejectAsync(s.Sales.Id, issued.Id, "not mine", None)).ErrorCode);
-        var rejected = (await q.RejectAsync(customer, issued.Id, "Too expensive", None)).Value!;
-        Assert.Equal((QuotationStatuses.Rejected, false, "Too expensive"), (rejected.Status, rejected.CanAccept, rejected.CloseReason));
+        Assert.Equal(CommonValidation, (await OnSiteDecision.RecordAsync(ctx, technician, issued.Id, OnSiteDecisions.Declined, new string('x', 1001))).ErrorCode);
+        Assert.Equal(CommonValidation, (await OnSiteDecision.RecordAsync(ctx, technician, issued.Id, OnSiteDecisions.Declined, null)).ErrorCode);   // note required
+        Assert.Equal(QuotationErrorCodes.NotFound, (await OnSiteDecision.DeclineAsync(ctx, s.Sales.Id, issued.Id, "not mine")).ErrorCode);
+        var rejected = (await OnSiteDecision.DeclineAsync(ctx, technician, issued.Id, "Too expensive")).Value!;
+        Assert.Equal((QuotationStatuses.Rejected, false, "DECLINED_ON_SITE: Too expensive"), (rejected.Status, rejected.CanAccept, rejected.CloseReason));
         var row = await ctx.Db.Quotations.AsNoTracking().SingleAsync(x => x.Id == issued.Id);
-        Assert.Equal((QuotationStatuses.Rejected, (Guid?)customer, (DateTimeOffset?)ctx.Clock.GetUtcNow()), (row.Status, row.ClosedByUserId, row.ClosedAt));
-        Assert.Single(await ctx.Db.QuotationEvents.AsNoTracking().Where(e => e.QuotationId == issued.Id && e.EventType == QuotationEventTypes.Rejected).ToListAsync());
+        Assert.Equal((QuotationStatuses.Rejected, (Guid?)technician, (DateTimeOffset?)ctx.Clock.GetUtcNow()), (row.Status, row.ClosedByUserId, row.ClosedAt));
+        Assert.Single(await ctx.Db.QuotationEvents.AsNoTracking().Where(e => e.QuotationId == issued.Id && e.EventType == QuotationEventTypes.DeclinedOnSite).ToListAsync());
+        Assert.Equal(0, await ctx.Db.PaymentAttempts.CountAsync());
 
-        // Terminal: accepting, revising-by-request or issuing the rejected version is refused; repeating the rejection changes nothing.
-        Assert.Equal(QuotationErrorCodes.NotIssued, (await q.AcceptAsync(customer, issued.Id, None)).ErrorCode);
-        Assert.Equal(QuotationErrorCodes.NotIssued, (await q.RequestRevisionAsync(customer, issued.Id, "please", None)).ErrorCode);
+        // Terminal: agreeing, asking changes or issuing the declined version is refused; a second decline changes nothing.
+        Assert.Equal(QuotationErrorCodes.NotIssued, (await OnSiteDecision.AgreeAsync(ctx, technician, issued.Id)).ErrorCode);
+        Assert.Equal(QuotationErrorCodes.NotIssued, (await OnSiteDecision.RevisionAsync(ctx, technician, issued.Id, "please")).ErrorCode);
         Assert.Equal(QuotationErrorCodes.NotDraft, (await q.IssueAsync(s.Sales.Id, issued.Id, row.Revision, None)).ErrorCode);
-        Assert.True((await q.RejectAsync(customer, issued.Id, "again", None)).Succeeded);
-        Assert.Equal("Too expensive", (await ctx.Db.Quotations.AsNoTracking().SingleAsync(x => x.Id == issued.Id)).CloseReason);
+        Assert.Equal(QuotationErrorCodes.NotIssued, (await OnSiteDecision.DeclineAsync(ctx, technician, issued.Id, "again")).ErrorCode);
+        Assert.Equal(QuotationErrorCodes.NotAgreed, (await ctx.OnSitePayments().StartAsync(technician, issued.Id, "ONLINE", None)).ErrorCode);
+        Assert.Equal("DECLINED_ON_SITE: Too expensive", (await ctx.Db.Quotations.AsNoTracking().SingleAsync(x => x.Id == issued.Id)).CloseReason);
 
         // The request stays open: Sales may answer with a new version (once); the rejected one keeps its outcome.
         var v2 = (await q.CreateRevisionAsync(s.Sales.Id, issued.Id, None)).Value!;
@@ -67,23 +70,23 @@ public sealed class SalesTerminalStateTests
     private const string CommonValidation = "VALIDATION_FAILED";
 
     [Fact]
-    public async Task Reject_and_accept_of_the_same_issued_quotation_cannot_both_succeed()
+    public async Task An_agreement_can_be_withdrawn_before_payment_but_not_once_a_payment_is_open()
     {
         var (ctx, s, _, issued) = await IssuedAsync();
         await using var _ = ctx;
-        var customer = s.Request.Customer.Id;
-        // Both requests start from the same ISSUED read; the conditional ISSUED → … updates let exactly one win (sequential here: SQLite has one
-        // connection; the true parallel race needs PostgreSQL and is NOT EXECUTED).
-        var accepted = await ctx.Quotations().AcceptAsync(customer, issued.Id, None);
-        var rejected = await ctx.Quotations().RejectAsync(customer, issued.Id, "changed my mind", None);
-        Assert.True(accepted.Succeeded);
-        Assert.Equal(QuotationErrorCodes.NotIssued, rejected.ErrorCode);
-        Assert.Equal(QuotationStatuses.Accepted, (await ctx.Db.Quotations.AsNoTracking().SingleAsync(x => x.Id == issued.Id)).Status);
+        var technician = s.Technician.Id;
+        Assert.True((await OnSiteDecision.AgreeAsync(ctx, technician, issued.Id)).Succeeded);
+        // The customer changed their mind before paying: the technician records it, nothing was charged.
+        var withdrawn = await OnSiteDecision.DeclineAsync(ctx, technician, issued.Id, "changed my mind before paying");
+        Assert.True(withdrawn.Succeeded, withdrawn.Message);
+        Assert.Equal(QuotationStatuses.Rejected, (await ctx.Db.Quotations.AsNoTracking().SingleAsync(x => x.Id == issued.Id)).Status);
 
         var (ctx2, s2, _, issued2) = await IssuedAsync();
         await using var __ = ctx2;
-        Assert.True((await ctx2.Quotations().RejectAsync(s2.Request.Customer.Id, issued2.Id, null, None)).Succeeded);
-        Assert.Equal(QuotationErrorCodes.NotIssued, (await ctx2.Quotations().AcceptAsync(s2.Request.Customer.Id, issued2.Id, None)).ErrorCode);
+        Assert.True((await OnSiteDecision.AgreeAsync(ctx2, s2.Technician.Id, issued2.Id)).Succeeded);
+        Assert.True((await ctx2.OnSitePayments().StartAsync(s2.Technician.Id, issued2.Id, "ONLINE", None)).Succeeded);
+        Assert.Equal(QuotationErrorCodes.PaymentStarted, (await OnSiteDecision.DeclineAsync(ctx2, s2.Technician.Id, issued2.Id, "too late")).ErrorCode);
+        Assert.Equal(QuotationStatuses.Accepted, (await ctx2.Db.Quotations.AsNoTracking().SingleAsync(x => x.Id == issued2.Id)).Status);
     }
 
     [Fact]
@@ -112,15 +115,15 @@ public sealed class SalesTerminalStateTests
         Assert.Equal(QuotationErrorCodes.RequestClosed, (await q.CreateRevisionAsync(s.Sales.Id, issued.Id, None)).ErrorCode);
         Assert.Equal(QuotationErrorCodes.RequestClosed, (await q.CreateAsync(s.Sales.Id, s.Request.Request.Id,
             new QuotationHeaderInput(1m, 0m, 0m, 0m, 0m, ctx.Clock.Now.AddDays(5), null, null), None)).ErrorCode);
-        Assert.Equal(QuotationErrorCodes.NotIssued, (await q.AcceptAsync(customer, issued.Id, None)).ErrorCode);
+        Assert.Equal(QuotationErrorCodes.RequestClosed, (await OnSiteDecision.AgreeAsync(ctx, s.Technician.Id, issued.Id)).ErrorCode);
         var onSite = ctx.OnSiteWithAutomaticQuotation();
         var report = (await onSite.GetForTechnicianAsync(s.Technician.Id, s.AppointmentId, None)).Value!;
         var amend = await onSite.AmendAsync(new AmendOnSiteSurveyCommand(s.Technician.Id, s.AppointmentId, "late change",
             AutomaticQuotationFixture.Data(catalog.StandardBill(panels: 3)), null, report.Revision), None);
         Assert.Equal(OnSiteSurveyErrorCodes.RequestClosed, amend.ErrorCode);
 
-        // History stays readable: the customer still sees the cancelled quotation; Sales still lists it.
-        Assert.Equal(QuotationStatuses.Cancelled, (await q.GetForCustomerAsync(customer, issued.Id, None)).Value!.Status);
+        // History stays readable: the technician still sees the cancelled quotation; Sales still lists it.
+        Assert.Equal(QuotationStatuses.Cancelled, (await q.GetForTechnicianAsync(s.Technician.Id, issued.Id, None)).Value!.Status);
         Assert.Single((await q.ListForSurveyRequestAsync(s.Sales.Id, false, s.Request.Request.Id, None)).Value!);
     }
 
@@ -223,7 +226,7 @@ public sealed class SalesTerminalStateTests
         var (ctx, s, _, issued) = await IssuedAsync();
         await using var _ = ctx;
         var q = ctx.Quotations();
-        Assert.True((await q.RejectAsync(s.Request.Customer.Id, issued.Id, "Too expensive", None)).Succeeded);
+        Assert.True((await OnSiteDecision.DeclineAsync(ctx, s.Technician.Id, issued.Id, "Too expensive")).Succeeded);
         var draft = (await q.CreateRevisionAsync(s.Sales.Id, issued.Id, None)).Value!;
         var closed = (await q.CloseRequestAsync(s.Sales.Id, s.Request.Request.Id, "CUSTOMER_DECLINED", null, None)).Value!;
         Assert.Equal(draft.QuotationId, Assert.Single(closed.CancelledQuotationIds));

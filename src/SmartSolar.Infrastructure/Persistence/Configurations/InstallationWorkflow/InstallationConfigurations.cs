@@ -324,7 +324,7 @@ public sealed class EquipmentSubstitutionConfiguration : IEntityTypeConfiguratio
         builder.Property(x => x.Revision).HasColumnName("revision").IsConcurrencyToken().IsRequired();
         // At most one active (pending or approved) substitution per project: duplicate or concurrent approvals cannot both commit.
         builder.HasIndex(x => x.ProjectId).IsUnique()
-            .HasFilter($"status IN ('{EquipmentSubstitutionStatuses.CustomerApprovalPending}', '{EquipmentSubstitutionStatuses.Approved}')")
+            .HasFilter($"status IN ('{EquipmentSubstitutionStatuses.CustomerApprovalPending}', '{EquipmentSubstitutionStatuses.Approved}', '{EquipmentSubstitutionStatuses.InternallyApproved}')")
             .HasDatabaseName("ux_installation_equipment_substitution_active");
         builder.HasIndex(x => new { x.ProjectId, x.CreatedAt }).HasDatabaseName("ix_installation_equipment_substitution_project_created_at");
         builder.HasOne<InstallationProject>().WithMany().HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Restrict);

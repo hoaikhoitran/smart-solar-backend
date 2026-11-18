@@ -71,10 +71,14 @@ public sealed class SimplifiedCommercialFlowEndpointsTests
                      new Call("PUT", $"/api/technician/quotations/{id}/lines/{id}", new { revision = 1, quantity = 2m }),
                      new Call("DELETE", $"/api/technician/quotations/{id}/lines/{id}?revision=1"), new Call("POST", $"/api/technician/quotations/{id}/issue", new { revision = 1 }),
                      new Call("POST", $"/api/technician/quotations/{id}/revisions"),
+                     // Technician-led on-site sales (2026-11-18): decision and payment are recorded by the technician only.
+                     new Call("POST", $"/api/technician/quotations/{id}/on-site-decision", new { decision = "AGREED", revision = 1 }),
+                     new Call("POST", $"/api/technician/quotations/{id}/payment", new { method = "CASH" }), new Call("GET", $"/api/technician/quotations/{id}/payment"),
+                     new Call("POST", $"/api/technician/quotations/{id}/payment/cancel"),
                  })
             await AssertRolesAsync(factory, call, RoleCodes.Technician);
 
-        // Customer decision.
+        // Retired customer decision (410 for the customer, 403 for every other role).
         foreach (var call in new[] { new Call("POST", $"/api/customers/me/quotations/{id}/accept"), new Call("POST", $"/api/customers/me/quotations/{id}/reject", new { reason = "x" }),
                      new Call("POST", $"/api/customers/me/quotations/{id}/revision-request", new { reason = "x" }) })
             await AssertRolesAsync(factory, call, RoleCodes.Customer);
@@ -91,7 +95,7 @@ public sealed class SimplifiedCommercialFlowEndpointsTests
             await AssertRolesAsync(factory, call, RoleCodes.Manager, RoleCodes.Admin);
         await AssertRolesAsync(factory, new Call("GET", $"/api/contracts/{id}"), RoleCodes.Sales, RoleCodes.Manager, RoleCodes.Admin);
 
-        // Payments: the customer pays or chooses cash; only Manager/Admin read payment history and confirm cash.
+        // Legacy contract payments: the customer pays or chooses cash; only Manager/Admin read payment history and confirm cash.
         await AssertRolesAsync(factory, new Call("POST", $"/api/customers/me/contracts/{id}/payments/cash"), RoleCodes.Customer);
         await AssertRolesAsync(factory, new Call("POST", $"/api/customers/me/contracts/{id}/payments"), RoleCodes.Customer);
         await AssertRolesAsync(factory, new Call("GET", $"/api/contracts/{id}/payments"), RoleCodes.Manager, RoleCodes.Admin);
@@ -164,8 +168,11 @@ public sealed class SimplifiedCommercialFlowEndpointsTests
         return new World(factory, storage, payOs, ctx, catalog, survey);
     }
 
-    /// <summary>Technician cart → issue → customer accepts → Manager prepares, publishes and confirms the signature; returns the SIGNED contract id.</summary>
-    private static async Task<(Guid ContractId, decimal Total, HttpClient Manager, Guid ManagerId)> SignedThroughTheApiAsync(World w)
+    /// <summary>
+    /// Technician cart → issue (finalized, nothing sent to the customer) → the customer's quotation routes answer 410 → the technician records the
+    /// customer's on-site agreement. Returns the agreed quotation and its total.
+    /// </summary>
+    private static async Task<(Guid QuotationId, decimal Total)> AgreedThroughTheApiAsync(World w)
     {
         var technician = w.Technician;
         var requestId = w.Survey.Request.Request.Id;
@@ -183,28 +190,30 @@ public sealed class SimplifiedCommercialFlowEndpointsTests
         Assert.Equal(QuotationStatuses.Issued, issued.GetProperty("status").GetString());
         var total = issued.GetProperty("totalAmount").GetDecimal();
         Assert.Equal(Math.Round(18_000_000m * 1.08m), total);   // 2 × 3,000,000 + 10,000,000 + 2,000,000, default tax 8 %
-        // The technician can no longer change it.
         await AssertFailureAsync(await technician.PostAsJsonAsync($"/api/technician/quotations/{quotationId}/lines", new { revision = issued.GetProperty("revision").GetInt32(),
             productId = w.Catalog.Transport.Id, quantity = 1m }), HttpStatusCode.Conflict, QuotationErrorCodes.NotDraft);
 
+        // The customer's app no longer receives or decides quotations.
         var customer = w.Customer;
-        var mine = await DataOf(await customer.GetAsync("/api/customers/me/quotations"));
-        Assert.Equal(quotationId, Assert.Single(mine.EnumerateArray()).GetProperty("quotationId").GetGuid());
-        Assert.Equal(JsonValueKind.Null, mine[0].GetProperty("lines")[0].GetProperty("catalogUnitPrice").ValueKind);
-        await DataOf(await customer.PostAsync($"/api/customers/me/quotations/{quotationId}/accept", null));
-        Assert.Empty((await DataOf(await customer.GetAsync("/api/customers/me/contracts"))).EnumerateArray());   // the draft is not the customer's yet
+        await AssertFailureAsync(await customer.GetAsync("/api/customers/me/quotations"), HttpStatusCode.Gone, "ENDPOINT_RETIRED");
+        await AssertFailureAsync(await customer.PostAsync($"/api/customers/me/quotations/{quotationId}/accept", null), HttpStatusCode.Gone, "ENDPOINT_RETIRED");
 
-        var managerId = Guid.NewGuid();
-        var manager = CatalogEndpointsTests.ClientFor(w.Factory, RoleCodes.Manager, managerId);
-        var contracts = await DataOf(await manager.GetAsync($"/api/survey-requests/{requestId}/contracts"));
-        var draft = Assert.Single(contracts.EnumerateArray());
-        Assert.Equal(ContractStatuses.Draft, draft.GetProperty("status").GetString());
-        Assert.Equal(total, draft.GetProperty("totalAmount").GetDecimal());
-        var contractId = draft.GetProperty("contractId").GetGuid();
-        // Sales (consult-only) cannot touch it.
-        Assert.Equal(HttpStatusCode.Forbidden, (await CatalogEndpointsTests.ClientFor(w.Factory, RoleCodes.Sales, w.Survey.Sales.Id)
-            .PostAsJsonAsync($"/api/contracts/{contractId}/issue", new { revision = draft.GetProperty("revision").GetInt32() })).StatusCode);
+        // No payment before the agreement; then the technician records it with their own account.
+        await AssertFailureAsync(await technician.PostAsJsonAsync($"/api/technician/quotations/{quotationId}/payment", new { method = "CASH" }),
+            HttpStatusCode.Conflict, QuotationErrorCodes.NotAgreed);
+        await AssertFailureAsync(await technician.PostAsJsonAsync($"/api/technician/quotations/{quotationId}/on-site-decision", new { decision = "MAYBE", revision = issued.GetProperty("revision").GetInt32() }),
+            HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+        var agreed = await DataOf(await technician.PostAsJsonAsync($"/api/technician/quotations/{quotationId}/on-site-decision",
+            new { decision = "AGREED", revision = issued.GetProperty("revision").GetInt32(), note = "Agreed at the customer's home" }));
+        Assert.Equal(QuotationStatuses.Accepted, agreed.GetProperty("status").GetString());
+        Assert.Empty((await DataOf(await customer.GetAsync("/api/customers/me/contracts"))).EnumerateArray());   // agreed is not paid: no contract
+        return (quotationId, total);
+    }
 
+    /// <summary>Manager prepares, issues and publishes the contract, uploads the paper scan signed on site and approves it; returns the reviewed contract.</summary>
+    private static async Task<JsonElement> SignedThroughTheApiAsync(World w, Guid contractId, HttpClient manager, Guid managerId)
+    {
+        var draft = await DataOf(await manager.GetAsync($"/api/contracts/{contractId}"));
         var terms = await DataOf(await manager.PutAsJsonAsync($"/api/contracts/{contractId}", new { revision = draft.GetProperty("revision").GetInt32(), terms = "Standard terms" }));
         var contractIssued = await DataOf(await manager.PostAsJsonAsync($"/api/contracts/{contractId}/issue", new { revision = terms.GetProperty("revision").GetInt32() }));
         var pdf = await UploadAsync(manager, w.Storage, managerId, FilePurposes.ContractDocument);
@@ -213,117 +222,134 @@ public sealed class SimplifiedCommercialFlowEndpointsTests
             revision = contractIssued.GetProperty("revision").GetInt32(), fileId = pdf, canonicalHash = contractIssued.GetProperty("canonicalHash").GetString(),
         }));
         var published = await DataOf(await manager.PostAsJsonAsync($"/api/contracts/{contractId}/publish", new { revision = attached.GetProperty("revision").GetInt32() }));
-        Assert.Equal(ContractStatuses.AwaitingSignature, published.GetProperty("status").GetString());
-
-        // Payment is closed until the signature is confirmed.
-        await AssertFailureAsync(await customer.PostAsync($"/api/customers/me/contracts/{contractId}/payments/cash", null), HttpStatusCode.Conflict, PaymentErrorCodes.ContractNotSigned);
-        var scan = await UploadAsync(customer, w.Storage, w.Survey.Request.Customer.Id, FilePurposes.SignedContract);
-        var under = await DataOf(await customer.PostAsJsonAsync($"/api/customers/me/contracts/{contractId}/signed-document", new
+        var scan = await UploadAsync(manager, w.Storage, managerId, FilePurposes.SignedContract);
+        var under = await DataOf(await manager.PostAsJsonAsync($"/api/contracts/{contractId}/signed-document", new
         {
-            fileId = scan, officialDocumentSha256 = published.GetProperty("officialDocument").GetProperty("sha256").GetString(),
+            fileId = scan, officialDocumentSha256 = published.GetProperty("officialDocument").GetProperty("sha256").GetString(), note = "signed on site",
         }));
-        var signed = await DataOf(await manager.PostAsJsonAsync($"/api/contracts/{contractId}/review", new { revision = under.GetProperty("revision").GetInt32(), decision = "APPROVE" }));
-        Assert.Equal(ContractStatuses.Signed, signed.GetProperty("status").GetString());
-        return (contractId, total, manager, managerId);
+        return await DataOf(await manager.PostAsJsonAsync($"/api/contracts/{contractId}/review", new { revision = under.GetProperty("revision").GetInt32(), decision = "APPROVE" }));
     }
 
     [Fact]
-    public async Task Cash_journey_from_the_technician_cart_to_the_installation_project()
+    public async Task Cash_journey_agreed_on_site_paid_before_the_contract_then_signed_and_installed()
     {
         await using var w = await WorldAsync();
-        var (contractId, total, manager, managerId) = await SignedThroughTheApiAsync(w);
+        var (quotationId, total) = await AgreedThroughTheApiAsync(w);
+        var technician = w.Technician;
         var customer = w.Customer;
+        var managerId = Guid.NewGuid();
+        var manager = CatalogEndpointsTests.ClientFor(w.Factory, RoleCodes.Manager, managerId);
 
-        // No project before PAID.
-        await AssertFailureAsync(await manager.PostAsync($"/api/contracts/{contractId}/installation-project", null), HttpStatusCode.Conflict, InstallationErrorCodes.ContractNotPaid);
+        var cash = await DataOf(await technician.PostAsJsonAsync($"/api/technician/quotations/{quotationId}/payment", new { method = "CASH" }));
+        Assert.Equal((QuotationPaymentStates.AwaitingCashConfirmation, "CASH"), (cash.GetProperty("paymentState").GetString(), cash.GetProperty("current").GetProperty("method").GetString()));
+        var attemptId = cash.GetProperty("current").GetProperty("paymentAttemptId").GetGuid();
+        // Repeating the same method returns the same open payment; the other method waits until it is cancelled.
+        Assert.Equal(attemptId, (await DataOf(await technician.PostAsJsonAsync($"/api/technician/quotations/{quotationId}/payment", new { method = "CASH" })))
+            .GetProperty("current").GetProperty("paymentAttemptId").GetGuid());
+        await AssertFailureAsync(await technician.PostAsJsonAsync($"/api/technician/quotations/{quotationId}/payment", new { method = "ONLINE" }),
+            HttpStatusCode.Conflict, PaymentErrorCodes.CashSelected);
 
-        var cash = await DataOf(await customer.PostAsync($"/api/customers/me/contracts/{contractId}/payments/cash", null));
-        Assert.Equal("CASH", cash.GetProperty("method").GetString());
-        var state = await DataOf(await customer.GetAsync($"/api/customers/me/contracts/{contractId}/payments"));
-        Assert.Equal(ContractPaymentStates.AwaitingCashConfirmation, state.GetProperty("paymentState").GetString());
-        Assert.Equal(ContractStatuses.Signed, state.GetProperty("contractStatus").GetString());
-        await AssertFailureAsync(await customer.PostAsync($"/api/customers/me/contracts/{contractId}/payments", null), HttpStatusCode.Conflict, PaymentErrorCodes.CashSelected);
-        await AssertFailureAsync(await manager.PostAsync($"/api/contracts/{contractId}/installation-project", null), HttpStatusCode.Conflict, InstallationErrorCodes.ContractNotPaid);
-
-        // The customer cannot confirm cash; a wrong amount is refused; the exact amount with receipt and evidence pays the contract once.
-        Assert.Equal(HttpStatusCode.Forbidden, (await customer.PostAsJsonAsync($"/api/contracts/{contractId}/payments/cash/confirm",
-            new { amount = total, receiptReference = "PT-1", evidenceFileId = Guid.NewGuid() })).StatusCode);
+        // Neither the customer nor the technician can confirm cash; a wrong amount is refused; the Manager confirms the exact amount once.
+        var confirmBody = new { amount = total, receiptReference = "PT-1", evidenceFileId = Guid.NewGuid() };
+        Assert.Equal(HttpStatusCode.Forbidden, (await customer.PostAsJsonAsync($"/api/manager/payments/{attemptId}/cash/confirm", confirmBody)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await technician.PostAsJsonAsync($"/api/manager/payments/{attemptId}/cash/confirm", confirmBody)).StatusCode);
         var evidence = await UploadAsync(manager, w.Storage, managerId, FilePurposes.PaymentEvidence);
-        await AssertFailureAsync(await manager.PostAsJsonAsync($"/api/contracts/{contractId}/payments/cash/confirm",
+        await AssertFailureAsync(await manager.PostAsJsonAsync($"/api/manager/payments/{attemptId}/cash/confirm",
             new { amount = total - 1_000m, receiptReference = "PT-1", evidenceFileId = evidence }), HttpStatusCode.Conflict, PaymentErrorCodes.CashAmountMismatch);
-        var paid = await DataOf(await manager.PostAsJsonAsync($"/api/contracts/{contractId}/payments/cash/confirm",
-            new { amount = total, receiptReference = "PT-1", evidenceFileId = evidence, note = "Office cashier" }));
+        var paid = await DataOf(await manager.PostAsJsonAsync($"/api/manager/payments/{attemptId}/cash/confirm",
+            new { amount = total, receiptReference = "PT-1", evidenceFileId = evidence, note = "Collected on site, handed to the cashier" }));
         Assert.Equal(PaymentStatuses.Paid, paid.GetProperty("status").GetString());
-        Assert.Equal(managerId, paid.GetProperty("confirmedByUserId").GetGuid());
-        await AssertFailureAsync(await manager.PostAsJsonAsync($"/api/contracts/{contractId}/payments/cash/confirm",
+        await AssertFailureAsync(await manager.PostAsJsonAsync($"/api/manager/payments/{attemptId}/cash/confirm",
             new { amount = total, receiptReference = "PT-2", evidenceFileId = evidence }), HttpStatusCode.Conflict, PaymentErrorCodes.AlreadyPaid);
 
-        var history = await DataOf(await manager.GetAsync($"/api/contracts/{contractId}/payments"));
-        Assert.Equal(ContractPaymentStates.Paid, history.GetProperty("paymentState").GetString());
+        // The verified payment created exactly one contract from the paid snapshot: DRAFT, payment complete.
+        var state = await DataOf(await technician.GetAsync($"/api/technician/quotations/{quotationId}/payment"));
+        Assert.Equal(QuotationPaymentStates.Paid, state.GetProperty("paymentState").GetString());
+        var contractId = state.GetProperty("contractId").GetGuid();
+        var contract = await DataOf(await manager.GetAsync($"/api/contracts/{contractId}"));
+        Assert.Equal((ContractStatuses.Draft, true, total), (contract.GetProperty("status").GetString(), contract.GetProperty("paymentCompleted").GetBoolean(),
+            contract.GetProperty("totalAmount").GetDecimal()));
+        await AssertFailureAsync(await technician.PostAsJsonAsync($"/api/technician/quotations/{quotationId}/payment", new { method = "ONLINE" }),
+            HttpStatusCode.Conflict, PaymentErrorCodes.AlreadyPaid);
+        // No project before the contract is completed (paid and signed).
+        await AssertFailureAsync(await manager.PostAsync($"/api/contracts/{contractId}/installation-project", null), HttpStatusCode.Conflict, InstallationErrorCodes.ContractNotPaid);
+
+        var signed = await SignedThroughTheApiAsync(w, contractId, manager, managerId);
+        Assert.Equal(ContractStatuses.Paid, signed.GetProperty("status").GetString());   // paid before it existed: completed at the signature
+        // The customer only reads it and is never asked to pay again.
         Assert.Equal(ContractStatuses.Paid, (await DataOf(await customer.GetAsync($"/api/customers/me/contracts/{contractId}"))).GetProperty("status").GetString());
+        await AssertFailureAsync(await customer.PostAsync($"/api/customers/me/contracts/{contractId}/payments/cash", null), HttpStatusCode.Conflict, PaymentErrorCodes.AlreadyPaid);
+        await AssertFailureAsync(await customer.PostAsync($"/api/customers/me/contracts/{contractId}/payments", null), HttpStatusCode.Conflict, PaymentErrorCodes.AlreadyPaid);
 
         var project = await DataOf(await manager.PostAsync($"/api/contracts/{contractId}/installation-project", null), HttpStatusCode.Created);
         Assert.Equal(contractId, project.GetProperty("contractId").GetGuid());
     }
 
     /// <summary>
-    /// 2026-11-17 schedule journey: after SIGNED the surveying technician records the agreed date through the API, the customer's mobile API
-    /// shows it as PLANNED (not confirmed), the cash confirmation makes the system create the project and confirm the schedule, and the
-    /// customer then sees CONFIRMED with the project; no Manager step is needed and a second project is refused.
+    /// The technician records the date agreed in person as soon as the paid contract exists: PLANNED (awaiting the contract signature, not payment),
+    /// visible read-only in the customer's app; the signature approval completes the contract and the system confirms the schedule and creates the
+    /// project — no customer or Manager scheduling step.
     /// </summary>
     [Fact]
-    public async Task Technician_agreed_schedule_is_planned_after_signature_and_confirmed_by_the_cash_payment_through_the_api()
+    public async Task Technician_records_the_agreed_date_on_the_paid_contract_and_the_signature_confirms_it()
     {
         await using var w = await WorldAsync();
-        var (contractId, total, manager, managerId) = await SignedThroughTheApiAsync(w);
+        var (quotationId, total) = await AgreedThroughTheApiAsync(w);
         var customer = w.Customer;
+        var managerId = Guid.NewGuid();
+        var manager = CatalogEndpointsTests.ClientFor(w.Factory, RoleCodes.Manager, managerId);
+        var cash = await DataOf(await w.Technician.PostAsJsonAsync($"/api/technician/quotations/{quotationId}/payment", new { method = "CASH" }));
+        var evidence = await UploadAsync(manager, w.Storage, managerId, FilePurposes.PaymentEvidence);
+        await DataOf(await manager.PostAsJsonAsync($"/api/manager/payments/{cash.GetProperty("current").GetProperty("paymentAttemptId").GetGuid()}/cash/confirm",
+            new { amount = total, receiptReference = "PT-S1", evidenceFileId = evidence }));
+        var contractId = (await DataOf(await w.Technician.GetAsync($"/api/technician/quotations/{quotationId}/payment"))).GetProperty("contractId").GetGuid();
+
         // A Tuesday 1–2 weeks ahead in the scheduling time zone (inside the seeded technician's working week and the planning horizon).
         var local = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7)).Date.AddDays(8);
         while (local.DayOfWeek != DayOfWeek.Tuesday) local = local.AddDays(1);
         var starts = new DateTimeOffset(local.AddHours(8), TimeSpan.FromHours(7));
-        var plan = new { startsAt = starts, endsAt = starts.AddHours(4), customerAgreementNote = "Khách đồng ý qua điện thoại" };
-
-        // Another technician cannot see or plan it.
+        var plan = new { startsAt = starts, endsAt = starts.AddHours(4), customerAgreementNote = "Thống nhất trực tiếp với khách tại nhà" };
         var stranger = CatalogEndpointsTests.ClientFor(w.Factory, RoleCodes.Technician, Guid.NewGuid());
         await AssertFailureAsync(await stranger.PostAsJsonAsync($"/api/technicians/me/contracts/{contractId}/installation-schedule", plan),
             HttpStatusCode.NotFound, InstallationScheduleErrorCodes.ContractNotFound);
+        // The customer-selection routes are retired.
+        await AssertFailureAsync(await customer.GetAsync($"/api/customers/me/contracts/{contractId}/installation-slot-offers"), HttpStatusCode.Gone, "ENDPOINT_RETIRED");
 
         var planned = await DataOf(await w.Technician.PostAsJsonAsync($"/api/technicians/me/contracts/{contractId}/installation-schedule", plan));
-        Assert.Equal((InstallationScheduleStatuses.Planned, false, true),
-            (planned.GetProperty("status").GetString(), planned.GetProperty("isConfirmed").GetBoolean(), planned.GetProperty("awaitingPayment").GetBoolean()));
+        Assert.Equal((InstallationScheduleStatuses.Planned, false, false, true), (planned.GetProperty("status").GetString(), planned.GetProperty("isConfirmed").GetBoolean(),
+            planned.GetProperty("awaitingPayment").GetBoolean(), planned.GetProperty("awaitingContractSignature").GetBoolean()));
         var mobile = await DataOf(await customer.GetAsync("/api/customers/me/installation-schedules"));
         Assert.Equal((InstallationScheduleStatuses.Planned, false), (mobile[0].GetProperty("status").GetString(), mobile[0].GetProperty("isConfirmed").GetBoolean()));
-        await AssertFailureAsync(await manager.PostAsync($"/api/contracts/{contractId}/installation-project", null), HttpStatusCode.Conflict, InstallationErrorCodes.ContractNotPaid);
 
-        await DataOf(await customer.PostAsync($"/api/customers/me/contracts/{contractId}/payments/cash", null));
-        var evidence = await UploadAsync(manager, w.Storage, managerId, FilePurposes.PaymentEvidence);
-        await DataOf(await manager.PostAsJsonAsync($"/api/contracts/{contractId}/payments/cash/confirm", new { amount = total, receiptReference = "PT-S1", evidenceFileId = evidence }));
-
+        await SignedThroughTheApiAsync(w, contractId, manager, managerId);
         var confirmed = await DataOf(await customer.GetAsync($"/api/customers/me/contracts/{contractId}/installation-schedule"));
         Assert.Equal((InstallationScheduleStatuses.Confirmed, true), (confirmed[0].GetProperty("status").GetString(), confirmed[0].GetProperty("isConfirmed").GetBoolean()));
         var projectId = confirmed[0].GetProperty("projectId").GetGuid();
         var project = await DataOf(await customer.GetAsync($"/api/customers/me/installation-projects/{projectId}"));
         Assert.Equal(InstallationStatuses.Scheduled, project.GetProperty("status").GetString());
         await AssertFailureAsync(await manager.PostAsync($"/api/contracts/{contractId}/installation-project", null), HttpStatusCode.Conflict, InstallationErrorCodes.ProjectExists);
-        var staff = await DataOf(await manager.GetAsync("/api/manager/installation-schedules?status=CONFIRMED"));
-        Assert.Equal(contractId, Assert.Single(staff.EnumerateArray()).GetProperty("contractId").GetGuid());
     }
 
     [Fact]
-    public async Task Payos_journey_from_the_technician_cart_to_the_installation_project_with_a_duplicate_webhook()
+    public async Task Payos_journey_the_qr_is_paid_with_a_bank_app_and_a_duplicate_webhook_creates_nothing_twice()
     {
         await using var w = await WorldAsync();
-        var (contractId, total, manager, _) = await SignedThroughTheApiAsync(w);
-        var customer = w.Customer;
+        var (quotationId, total) = await AgreedThroughTheApiAsync(w);
+        var technician = w.Technician;
 
-        var link = await DataOf(await customer.PostAsync($"/api/customers/me/contracts/{contractId}/payments", null));
-        Assert.Equal("ONLINE", link.GetProperty("method").GetString());
-        Assert.False(string.IsNullOrEmpty(link.GetProperty("checkoutUrl").GetString()));
-        // Cash cannot be chosen while the link is open.
-        await AssertFailureAsync(await customer.PostAsync($"/api/customers/me/contracts/{contractId}/payments/cash", null), HttpStatusCode.Conflict, PaymentErrorCodes.CheckoutInProgress);
-        await AssertFailureAsync(await manager.PostAsync($"/api/contracts/{contractId}/installation-project", null), HttpStatusCode.Conflict, InstallationErrorCodes.ContractNotPaid);
+        var online = await DataOf(await technician.PostAsJsonAsync($"/api/technician/quotations/{quotationId}/payment", new { method = "ONLINE" }));
+        Assert.Equal(QuotationPaymentStates.OnlineInProgress, online.GetProperty("paymentState").GetString());
+        var current = online.GetProperty("current");
+        Assert.Equal("ONLINE", current.GetProperty("method").GetString());
+        Assert.False(string.IsNullOrEmpty(current.GetProperty("checkoutUrl").GetString()));   // shown as QR / link on the technician's device
+        Assert.Equal(total, current.GetProperty("amount").GetDecimal());
+        await AssertFailureAsync(await technician.PostAsJsonAsync($"/api/technician/quotations/{quotationId}/payment", new { method = "CASH" }),
+            HttpStatusCode.Conflict, PaymentErrorCodes.CheckoutInProgress);
+        // Another technician cannot see or open it.
+        var stranger = CatalogEndpointsTests.ClientFor(w.Factory, RoleCodes.Technician, Guid.NewGuid());
+        await AssertFailureAsync(await stranger.GetAsync($"/api/technician/quotations/{quotationId}/payment"), HttpStatusCode.NotFound, QuotationErrorCodes.NotFound);
 
-        var orderCode = link.GetProperty("orderCode").GetInt64();
+        var orderCode = current.GetProperty("orderCode").GetInt64();
         var body = w.PayOs.Webhook(orderCode, (long)total, "FT-E2E");
         var anonymous = w.Factory.CreateClient();
         var first = await DataOf(await anonymous.PostAsync("/api/payments/payos/webhook", new StringContent(body, System.Text.Encoding.UTF8, "application/json")));
@@ -331,13 +357,12 @@ public sealed class SimplifiedCommercialFlowEndpointsTests
         var repeat = await DataOf(await anonymous.PostAsync("/api/payments/payos/webhook", new StringContent(body, System.Text.Encoding.UTF8, "application/json")));
         Assert.Equal(WebhookOutcomes.Duplicate, repeat.GetProperty("outcome").GetString());
 
-        var state = await DataOf(await customer.GetAsync($"/api/customers/me/contracts/{contractId}/payments"));
-        Assert.Equal(ContractPaymentStates.Paid, state.GetProperty("paymentState").GetString());
-        await using (var db = w.Factory.CreateDbContext())
-            Assert.Equal(1, await db.PaymentAttempts.CountAsync(a => a.ContractId == contractId && a.Status == PaymentStatuses.Paid));
-        await AssertFailureAsync(await customer.PostAsync($"/api/customers/me/contracts/{contractId}/payments/cash", null), HttpStatusCode.Conflict, PaymentErrorCodes.AlreadyPaid);
-
-        var project = await DataOf(await manager.PostAsync($"/api/contracts/{contractId}/installation-project", null), HttpStatusCode.Created);
-        Assert.Equal(contractId, project.GetProperty("contractId").GetGuid());
+        var state = await DataOf(await technician.GetAsync($"/api/technician/quotations/{quotationId}/payment"));
+        Assert.Equal(QuotationPaymentStates.Paid, state.GetProperty("paymentState").GetString());
+        await using var db = w.Factory.CreateDbContext();
+        Assert.Equal(1, await db.CustomerContracts.CountAsync(c => c.QuotationId == quotationId));
+        Assert.Equal(1, await db.PaymentAttempts.CountAsync(a => a.Status == PaymentStatuses.Paid));
+        Assert.Equal(1, await db.PaymentAttemptItems.CountAsync(i => i.InstallationQuotationId == quotationId && i.Status == PaymentItemStatuses.Settled));
+        Assert.Equal(state.GetProperty("contractId").GetGuid(), (await db.PaymentAttempts.SingleAsync(a => a.Status == PaymentStatuses.Paid)).ContractId);
     }
 }

@@ -22,7 +22,7 @@ public sealed class ContractDraftDiscardTests
     {
         var ctx = InstallationWorkflowTestContext.Create();
         var r = await ContractTests.AcceptedQuotationAsync(ctx);
-        var draft = (await ctx.Contracts().CreateAsync(r.Survey.Sales.Id, r.QuotationId, "Standard terms", None)).Value!;
+        var draft = await ContractTests.DraftAsync(ctx, r, "Standard terms");
         return (ctx, r, draft);
     }
 

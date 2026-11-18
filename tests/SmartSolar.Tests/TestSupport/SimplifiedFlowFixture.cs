@@ -7,9 +7,11 @@ using SmartSolar.Modules.Quotations;
 namespace SmartSolar.Tests.TestSupport;
 
 /// <summary>
-/// The 2026-11-17 simplified commercial flow, step by step on the production handlers: the surveying technician builds and issues a cart
-/// quotation, the customer accepts (contract DRAFT created in the same transaction), a Manager prepares, issues and publishes the contract,
-/// the customer submits the signed scan and the Manager confirms it (SIGNED). Catalog prices are SYNTHETIC fixture values.
+/// The commercial flow step by step on the production handlers. Technician-led flow (2026-11-18): the surveying technician builds and finalizes a
+/// cart quotation, records the customer's on-site agreement, opens the payment (cash confirmed by a Manager here), the verified payment creates the
+/// contract, a Manager prepares / issues / publishes it, the signed scan is reviewed and the prepaid contract becomes PAID. LEGACY helpers build
+/// the previous flow's data (customer acceptance in the app + contract DRAFT, signed then paid by the customer), which production still holds.
+/// Catalog prices are SYNTHETIC fixture values.
 /// </summary>
 public static class SimplifiedFlowFixture
 {
@@ -51,14 +53,56 @@ public static class SimplifiedFlowFixture
         return cart with { Quotation = issued.Value! };
     }
 
-    /// <summary>Accepts with the production wiring; returns the contract DRAFT that the acceptance created.</summary>
-    public static async Task<ContractView> AcceptAsync(InstallationWorkflowTestContext ctx, Cart cart)
+    /// <summary>LEGACY data: the customer accepted in the app and the contract DRAFT was created (previous flow; see <see cref="LegacyFlowData"/>).</summary>
+    public static async Task<ContractView> LegacyAcceptAsync(InstallationWorkflowTestContext ctx, Cart cart)
     {
         await ctx.EnsureInstallationWarrantyOptionAsync();
-        var accepted = await ctx.QuotationsWithContracts().AcceptAsync(cart.CustomerId, cart.Quotation.QuotationId, None);
-        Assert.True(accepted.Succeeded, accepted.Message);
+        var contractId = await LegacyFlowData.CustomerAcceptedWithDraftAsync(ctx.Db, cart.Quotation.QuotationId, ctx.Clock.GetUtcNow());
+        return (await ctx.Contracts().GetForStaffAsync(Guid.Empty, true, contractId, None)).Value!;
+    }
+
+    /// <summary>The technician records the customer's on-site agreement (actor = technician).</summary>
+    public static async Task<QuotationView> AgreedAsync(InstallationWorkflowTestContext ctx, Cart cart, string? note = null)
+    {
+        var agreed = await ctx.Quotations().RecordOnSiteDecisionAsync(cart.TechnicianId, cart.Quotation.QuotationId,
+            new OnSiteDecisionInput(OnSiteDecisions.Agreed, cart.Quotation.Revision, note), None);
+        Assert.True(agreed.Succeeded, agreed.Message);
+        Assert.Equal(QuotationStatuses.Accepted, agreed.Value!.Status);
+        return agreed.Value;
+    }
+
+    /// <summary>
+    /// Agreed on site → the technician opens CASH → a Manager records the receipt → the verified payment creates the contract DRAFT (paid). Returns the
+    /// contract as staff see it.
+    /// </summary>
+    public static async Task<ContractView> PaidOnSiteAsync(InstallationWorkflowTestContext ctx, Cart cart, UserAccount manager)
+    {
+        await ctx.EnsureInstallationWarrantyOptionAsync();
+        await AgreedAsync(ctx, cart);
+        var opened = await ctx.OnSitePayments().StartAsync(cart.TechnicianId, cart.Quotation.QuotationId, "CASH", None);
+        Assert.True(opened.Succeeded, opened.Message);
+        var evidence = await ctx.VerifiedFileAsync(manager.Id, FilePurposes.PaymentEvidence);
+        var confirmed = await ctx.PaymentsWithCash().ConfirmCashAttemptAsync(manager.Id, opened.Value!.Current!.PaymentAttemptId,
+            new SmartSolar.Modules.Payments.CashConfirmation(opened.Value.Amount, $"PT-{cart.Quotation.QuoteNumber}", evidence, null), None);
+        Assert.True(confirmed.Succeeded, confirmed.Message);
         var contract = await ctx.Db.CustomerContracts.AsNoTracking().SingleAsync(c => c.QuotationId == cart.Quotation.QuotationId);
         return (await ctx.Contracts().GetForStaffAsync(Guid.Empty, true, contract.Id, None)).Value!;
+    }
+
+    /// <summary>Technician-led flow end to end up to the contract: issued → agreed → paid (cash) → published → signed scan → approved → PAID.</summary>
+    public static async Task<Signed> PrepaidAsync(InstallationWorkflowTestContext ctx, string customer = "Customer")
+    {
+        var cart = await IssuedAsync(ctx, customer);
+        var manager = await ctx.Scheduling.Inner.SeedUserAsync($"Manager of {customer}");
+        var published = await PublishedAsync(ctx, manager, await PaidOnSiteAsync(ctx, cart, manager));
+        var scan = await ctx.VerifiedFileAsync(manager.Id, FilePurposes.SignedContract, "pdf");
+        var submitted = await ctx.Contracts().SubmitPaperSignedDocumentAsync(manager.Id, true, published.ContractId, scan, published.OfficialDocument!.Sha256!, null,
+            "signed on site", None);
+        Assert.True(submitted.Succeeded, submitted.Message);
+        var reviewed = await ctx.ContractsWithFollowUp().ReviewAsync(manager.Id, true, published.ContractId, submitted.Value!.Revision, ReviewDecision.Approve, null, None);
+        Assert.True(reviewed.Succeeded, reviewed.Message);
+        Assert.Equal(ContractStatuses.Paid, reviewed.Value!.Status);
+        return new Signed(cart, manager, reviewed.Value);
     }
 
     /// <summary>Manager: terms → issue → official PDF → publish (AWAITING_SIGNATURE).</summary>
@@ -77,12 +121,12 @@ public static class SimplifiedFlowFixture
         return published.Value!;
     }
 
-    /// <summary>Issued cart → accepted → published → signed scan → Manager confirms the signature (SIGNED).</summary>
+    /// <summary>LEGACY flow: issued cart → accepted in the app (legacy data) → published → signed scan → Manager confirms the signature (SIGNED, unpaid).</summary>
     public static async Task<Signed> SignedAsync(InstallationWorkflowTestContext ctx, string customer = "Customer")
     {
         var cart = await IssuedAsync(ctx, customer);
         var manager = await ctx.Scheduling.Inner.SeedUserAsync($"Manager of {customer}");
-        var published = await PublishedAsync(ctx, manager, await AcceptAsync(ctx, cart));
+        var published = await PublishedAsync(ctx, manager, await LegacyAcceptAsync(ctx, cart));
         var scan = await ctx.VerifiedFileAsync(cart.CustomerId, FilePurposes.SignedContract, "pdf");
         var submitted = await ctx.Contracts().SubmitSignedDocumentAsync(cart.CustomerId, published.ContractId, scan, published.OfficialDocument!.Sha256!, None);
         Assert.True(submitted.Succeeded, submitted.Message);

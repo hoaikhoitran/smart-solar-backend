@@ -11,8 +11,9 @@ using SmartSolar.Modules.Installations;
 namespace SmartSolar.Api.Controllers;
 
 /// <summary>
-/// The surveying technician records the installation date agreed with the customer after the contract is SIGNED (PLANNED; confirmed by the
-/// system once the contract is PAID). Only contracts whose on-site survey the caller completed are visible (others: 404).
+/// The surveying technician records the installation date agreed with the customer in person, once the contract exists and is paid (contract created
+/// from the paid quotation; SIGNED for a contract of the previous flow). PLANNED, confirmed by the system when the contract is PAID (paid and signed).
+/// Only contracts whose on-site survey the caller completed are visible (others: 404).
 /// </summary>
 [ApiController]
 [Route("api/technicians/me")]
@@ -69,20 +70,17 @@ public sealed class TechnicianInstallationSchedulesController(InstallationSchedu
     public async Task<IActionResult> Offers(Guid contractId, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await schedules.ListOffersForTechnicianAsync(user, contractId, cancellationToken)) : UnauthorizedFailure();
 
-    /// <summary>Offers 1–5 intervals for the customer to choose (replaces the previous open offers; the customer is notified). 200 with the open offers.</summary>
+    /// <summary>Retired (2026-11-18): the customer no longer chooses offered times in the app; agree the date in person and record it.</summary>
     [HttpPost("contracts/{contractId:guid}/installation-slot-offers")]
-    [EnableRateLimiting(RateLimitingExtensions.InstallationSchedulingPolicy)]
-    public async Task<IActionResult> Offer(Guid contractId, [FromBody] InstallationSlotOffersRequest request, CancellationToken cancellationToken)
-    {
-        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
-        if (request.Slots is not { Count: > 0 } slots || slots.Any(s => s.StartsAt is null || s.EndsAt is null))
-            return Invalid("slots", "Give 1 to 5 slots, each with 'startsAt' and 'endsAt' (ISO-8601 with offset).");
-        return Respond(await schedules.PublishOffersAsync(user, contractId, slots.Select(s => new SlotInterval(s.StartsAt!.Value, s.EndsAt!.Value)).ToList(),
-            request.Note, cancellationToken));
-    }
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
+    public IActionResult Offer(Guid contractId) => RetiredOnSite("POST /api/technicians/me/contracts/{contractId}/installation-schedule (date agreed on site)");
 }
 
-/// <summary>The customer's installation schedules: PLANNED (agreed, not confirmed) vs CONFIRMED, with the right to ask for another date.</summary>
+/// <summary>
+/// The customer's installation schedules (read): PLANNED (agreed with the technician, not confirmed) vs CONFIRMED. The customer does not select or confirm
+/// anything; asking for another date (optional, never blocking) stays available.
+/// </summary>
 [ApiController]
 [Route("api/customers/me")]
 [Authorize(Roles = RoleCodes.Customer)]
@@ -106,20 +104,17 @@ public sealed class CustomerInstallationSchedulesController(InstallationSchedule
     public async Task<IActionResult> RequestChange(Guid scheduleId, [FromBody] InstallationScheduleChangeRequest? request, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await schedules.RequestChangeAsync(user, scheduleId, request?.Note, cancellationToken)) : UnauthorizedFailure();
 
-    /// <summary>The installation times the technician offered for this contract (OPEN only), each re-checked now (<c>available</c>).</summary>
+    /// <summary>Retired (2026-11-18): the technician agrees the date with the customer in person; follow <c>…/installation-schedule</c>.</summary>
     [HttpGet("contracts/{contractId:guid}/installation-slot-offers")]
-    [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
-    public async Task<IActionResult> Offers(Guid contractId, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await schedules.ListOffersForCustomerAsync(user, contractId, cancellationToken)) : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
+    public IActionResult Offers(Guid contractId) => RetiredOnSite("GET /api/customers/me/contracts/{contractId}/installation-schedule");
 
-    /// <summary>
-    /// Chooses one offered time: re-validated now, then recorded as the PLANNED schedule (CONFIRMED at once when the contract is PAID).
-    /// 409 <c>INSTALLATION_SLOT_OFFER_UNAVAILABLE</c> / <c>…_NOT_OPEN</c> when it is no longer possible; repeating the same choice returns it.
-    /// </summary>
+    /// <summary>Retired (2026-11-18): the customer does not select a time in the app.</summary>
     [HttpPost("installation-slot-offers/{offerId:guid}/select")]
-    [EnableRateLimiting(RateLimitingExtensions.InstallationSchedulingPolicy)]
-    public async Task<IActionResult> Select(Guid offerId, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await schedules.SelectOfferAsync(user, offerId, cancellationToken)) : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
+    public IActionResult Select(Guid offerId) => RetiredOnSite("GET /api/customers/me/contracts/{contractId}/installation-schedule");
 }
 
 /// <summary>Manager/Admin supervision of technician-agreed schedules and exception handling.</summary>

@@ -41,7 +41,7 @@ public sealed class AfterSalesRemediationE2ETests
             new TechnicianQuotationInput(chargeable.Select(i => Line(i, (breaker.Id, 1), (labor.Id, 1))).ToList(), null, null), None);
         Assert.True(issued.Succeeded, issued.Message);
         var q = Assert.Single(issued.Value!.Quotations);
-        Assert.True((await ctx.Quotations().AcceptAsync(h.CustomerId, q.QuotationId, None)).Succeeded);
+        Assert.True((await ctx.Quotations().RecordOnSiteDecisionAsync(h.TechnicianId, q.QuotationId, ServiceOnSiteDecisions.Agreed, null, None)).Succeeded);
         return (h, requestId, items, q);
     }
 
@@ -123,7 +123,7 @@ public sealed class AfterSalesRemediationE2ETests
         await using var ctx = Create();
         var m = await SmartSolar.Tests.Unit.AfterSales.OneTimeMaintenanceTests.InspectedAsync(ctx);
         var q = await SmartSolar.Tests.Unit.AfterSales.OneTimeMaintenanceTests.PricedAsync(ctx, m);
-        Assert.True((await ctx.Quotations().AcceptAsync(m.H.CustomerId, q.QuotationId, None)).Succeeded);
+        Assert.True((await ctx.Quotations().RecordOnSiteDecisionAsync(m.H.TechnicianId, q.QuotationId, ServiceOnSiteDecisions.Agreed, null, None)).Succeeded);
         var cash = (await ctx.Quotations().SelectCashAsync(m.H.CustomerId, q.QuotationId, None)).Value!;
         var evidence = await ctx.Installation.VerifiedFileAsync(m.H.ManagerId, FilePurposes.PaymentEvidence);
         Assert.True((await ctx.Payments().ConfirmCashAttemptAsync(m.H.ManagerId, cash.PaymentAttemptId, new(q.CustomerAmount, "PT-MAINT", evidence, null), None)).Succeeded);

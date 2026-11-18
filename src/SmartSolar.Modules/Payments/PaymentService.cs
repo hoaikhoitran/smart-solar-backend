@@ -52,7 +52,8 @@ public sealed record ContractPaymentView(Guid ContractId, string ContractStatus,
 public sealed record WebhookResult(bool Accepted, string Outcome);
 
 /// <summary>One line of a checkout (the item it pays and whether it was applied).</summary>
-public sealed record PaymentLineView(string ItemType, decimal Amount, string Status, Guid? ContractId, Guid? SubscriptionId, Guid? QuotationId);
+public sealed record PaymentLineView(string ItemType, decimal Amount, string Status, Guid? ContractId, Guid? SubscriptionId, Guid? QuotationId,
+    Guid? InstallationQuotationId = null);
 
 /// <summary>A payment attempt as staff see it, with its customer and lines.</summary>
 public sealed record StaffPaymentAttemptView(PaymentAttemptView Attempt, Guid CustomerUserId, IReadOnlyList<PaymentLineView> Lines);
@@ -114,6 +115,9 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AmountNotSupported,
                 $"The contract total must be a whole VND amount up to {options.MaxAmountVnd:N0}; it is never split into several payments.");
 
+        // A contract paid through its quotation before it existed (technician-led flow) is never charged again.
+        if ((await unitOfWork.ListAttemptsAsync(contractId, cancellationToken)).Any(a => a.Status == PaymentStatuses.Paid))
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid.");
         // Reuse a live attempt; settle stale ones with the provider first. A live CASH choice blocks online payment until it is cancelled.
         foreach (var attempt in (await unitOfWork.ListAttemptsAsync(contractId, cancellationToken)).Where(a => PaymentStatuses.Payable.Contains(a.Status)))
         {
@@ -177,12 +181,14 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
     /// transaction as the new attempt and links the items to it (revision-checked), so a double request cannot create two links for
     /// the same item; it returns an error message to refuse. The link expires at <paramref name="expiresAt"/>.
     /// </summary>
+    /// <param name="source">Who opened the checkout: the customer in the app, or the technician on site (<see cref="PaymentSources.Technician"/>).</param>
     public async Task<OperationResult<PaymentAttemptView>> CreateCheckoutAsync(Guid customerUserId, Guid? contractId, IReadOnlyList<CheckoutItem> items,
-        DateTimeOffset expiresAt, Func<Guid, CancellationToken, Task<string?>> reserveItems, CancellationToken cancellationToken)
+        DateTimeOffset expiresAt, Func<Guid, CancellationToken, Task<string?>> reserveItems, CancellationToken cancellationToken,
+        string source = PaymentSources.Customer)
     {
         var lines = items.Select(i => new PaymentAttemptItem
         {
-            Id = Guid.NewGuid(), ItemType = i.ItemType, SubscriptionId = i.SubscriptionId, QuotationId = i.QuotationId, Amount = i.Amount,
+            Id = Guid.NewGuid(), ItemType = i.ItemType, SubscriptionId = i.SubscriptionId, QuotationId = i.QuotationId, InstallationQuotationId = i.InstallationQuotationId, Amount = i.Amount,
             Status = PaymentItemStatuses.Pending,
         }).ToList();
         PayableContract? contract = null;
@@ -227,7 +233,7 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
                         line.PaymentAttemptId = created.Id;
                         unitOfWork.AddItem(line);
                     }
-                    AddEvent(created, "CREATED", null, PaymentStatuses.Pending, PaymentSources.Customer, string.Join(", ", lines.Select(l => $"{l.ItemType} {l.Amount:0}")), now);
+                    AddEvent(created, "CREATED", null, PaymentStatuses.Pending, source, string.Join(", ", lines.Select(l => $"{l.ItemType} {l.Amount:0}")), now);
                     await unitOfWork.SaveChangesAsync(token);
                     return (true, true);
                 }, cancellationToken);
@@ -259,9 +265,9 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
     /// transaction (the package orders are stored with it).
     /// </summary>
     public async Task<OperationResult<PaymentAttemptView>> CreateCashCheckoutAsync(Guid customerUserId, Guid? contractId, IReadOnlyList<CheckoutItem> items,
-        Func<Guid, CancellationToken, Task<string?>> reserveItems, CancellationToken cancellationToken)
+        Func<Guid, CancellationToken, Task<string?>> reserveItems, CancellationToken cancellationToken, string source = PaymentSources.Customer)
     {
-        if (contractId is null) return await CreateItemsCashCheckoutAsync(customerUserId, items, reserveItems, cancellationToken);
+        if (contractId is null) return await CreateItemsCashCheckoutAsync(customerUserId, items, reserveItems, cancellationToken, source);
         var contract = await unitOfWork.GetContractAsync(contractId.Value, cancellationToken);
         if (contract is null || contract.CustomerUserId != customerUserId)
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ContractNotFound, "Contract was not found.");
@@ -276,7 +282,7 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
         };
         lines.AddRange(items.Select(i => new PaymentAttemptItem
         {
-            Id = Guid.NewGuid(), ItemType = i.ItemType, SubscriptionId = i.SubscriptionId, QuotationId = i.QuotationId, Amount = i.Amount, Status = PaymentItemStatuses.Pending,
+            Id = Guid.NewGuid(), ItemType = i.ItemType, SubscriptionId = i.SubscriptionId, QuotationId = i.QuotationId, InstallationQuotationId = i.InstallationQuotationId, Amount = i.Amount, Status = PaymentItemStatuses.Pending,
         }));
         var total = lines.Sum(l => l.Amount);
         if (contract.Currency != "VND" || items.Count == 0 || lines.Any(l => l.Amount <= 0 || decimal.Truncate(l.Amount) != l.Amount) || total > options.MaxAmountVnd)
@@ -295,7 +301,7 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
                     "An online payment is in progress. Cancel it first (its status is checked with the payment provider) to pay in cash.");
         }
 
-        return await InsertCashAttemptAsync(customerUserId, contractId, lines, reserveItems, cancellationToken);
+        return await InsertCashAttemptAsync(customerUserId, contractId, lines, reserveItems, cancellationToken, source);
     }
 
     /// <summary>
@@ -304,21 +310,21 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
     /// rules (quotation expiry) are checked again at confirmation.
     /// </summary>
     private async Task<OperationResult<PaymentAttemptView>> CreateItemsCashCheckoutAsync(Guid customerUserId, IReadOnlyList<CheckoutItem> items,
-        Func<Guid, CancellationToken, Task<string?>> reserveItems, CancellationToken cancellationToken)
+        Func<Guid, CancellationToken, Task<string?>> reserveItems, CancellationToken cancellationToken, string source)
     {
         if (settlement is null)
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.ProviderNotConfigured, "After-sales lines cannot be settled in this environment.");
         var lines = items.Select(i => new PaymentAttemptItem
         {
-            Id = Guid.NewGuid(), ItemType = i.ItemType, SubscriptionId = i.SubscriptionId, QuotationId = i.QuotationId, Amount = i.Amount, Status = PaymentItemStatuses.Pending,
+            Id = Guid.NewGuid(), ItemType = i.ItemType, SubscriptionId = i.SubscriptionId, QuotationId = i.QuotationId, InstallationQuotationId = i.InstallationQuotationId, Amount = i.Amount, Status = PaymentItemStatuses.Pending,
         }).ToList();
         if (lines.Count == 0 || lines.Any(l => l.Amount <= 0 || decimal.Truncate(l.Amount) != l.Amount) || lines.Sum(l => l.Amount) > options.MaxAmountVnd)
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AmountNotSupported, $"A checkout must contain whole VND amounts with a total up to {options.MaxAmountVnd:N0}.");
-        return await InsertCashAttemptAsync(customerUserId, null, lines, reserveItems, cancellationToken);
+        return await InsertCashAttemptAsync(customerUserId, null, lines, reserveItems, cancellationToken, source);
     }
 
     private async Task<OperationResult<PaymentAttemptView>> InsertCashAttemptAsync(Guid customerUserId, Guid? contractId, List<PaymentAttemptItem> lines,
-        Func<Guid, CancellationToken, Task<string?>> reserveItems, CancellationToken cancellationToken)
+        Func<Guid, CancellationToken, Task<string?>> reserveItems, CancellationToken cancellationToken, string source)
     {
         var total = lines.Sum(l => l.Amount);
         var now = time.GetUtcNow();
@@ -343,7 +349,7 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
                         line.PaymentAttemptId = created.Id;
                         unitOfWork.AddItem(line);
                     }
-                    AddEvent(created, "CASH_SELECTED", null, PaymentStatuses.Pending, PaymentSources.Customer,
+                    AddEvent(created, "CASH_SELECTED", null, PaymentStatuses.Pending, source,
                         "awaiting cash confirmation; " + string.Join(", ", lines.Select(l => $"{l.ItemType} {l.Amount:0}")), now);
                     await unitOfWork.SaveChangesAsync(token);
                     return (true, true);
@@ -389,6 +395,10 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
         if (reconcile && PaymentStatuses.Payable.Contains(attempt.Status)) attempt = await ReconcileAsync(attemptId, force: false, cancellationToken) ?? attempt;
         return View(attempt);
     }
+
+    /// <summary>Every payment attempt of an installation quotation (any status), newest first.</summary>
+    public async Task<IReadOnlyList<PaymentAttempt>> ListInstallationQuotationAttemptsAsync(Guid quotationId, CancellationToken cancellationToken)
+        => (await unitOfWork.ListAttemptsForInstallationQuotationAsync(quotationId, cancellationToken)).OrderByDescending(a => a.CreatedAt).ToList();
 
     private async Task<OperationResult<PaymentAttemptView>> RecordLinkAsync(Guid attemptId, PaymentLinkResult link, CancellationToken cancellationToken)
     {
@@ -498,6 +508,8 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
         if (contract.Currency != "VND" || contract.TotalAmount <= 0 || decimal.Truncate(contract.TotalAmount) != contract.TotalAmount)
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AmountNotSupported, "The contract total must be a whole VND amount.");
 
+        if ((await unitOfWork.ListAttemptsAsync(contractId, cancellationToken)).Any(a => a.Status == PaymentStatuses.Paid))
+            return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This contract is already paid.");
         foreach (var live in (await unitOfWork.ListAttemptsAsync(contractId, cancellationToken)).Where(a => PaymentStatuses.Payable.Contains(a.Status)))
         {
             if (live.Provider == PaymentProviders.Cash) return OperationResult<PaymentAttemptView>.Ok(View(live));
@@ -652,7 +664,7 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
         var (rows, total) = await unitOfWork.PageAttemptsAsync(filter, page.Skip, page.PageSize, cancellationToken);
         var lines = (await unitOfWork.GetItemsForAttemptsAsync(rows.Select(r => r.Id).ToList(), cancellationToken)).ToLookup(l => l.PaymentAttemptId);
         return page.Result(rows.Select(a => new StaffPaymentAttemptView(View(a, staff: true), a.CustomerUserId,
-            lines[a.Id].Select(l => new PaymentLineView(l.ItemType, l.Amount, l.Status, l.ContractId, l.SubscriptionId, l.QuotationId)).ToList())).ToList(), total);
+            lines[a.Id].Select(l => new PaymentLineView(l.ItemType, l.Amount, l.Status, l.ContractId, l.SubscriptionId, l.QuotationId, l.InstallationQuotationId)).ToList())).ToList(), total);
     }
 
     /// <summary>

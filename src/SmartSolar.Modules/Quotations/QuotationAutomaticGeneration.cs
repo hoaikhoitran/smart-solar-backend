@@ -169,7 +169,7 @@ public sealed partial class QuotationHandlers
                 AddEvent(quotation.Id, QuotationEventTypes.AutomaticallyGenerated, actorUserId,
                     $"survey v{basis.Version}; {lines.Count} material line(s); {issues.Count} issue(s)", now);
                 if (issueNow) AddEvent(quotation.Id, QuotationEventTypes.Issued, actorUserId, $"automatic; total={quotation.TotalAmount} {quotation.Currency}", now);
-                if (issueNow) unitOfWork.AddNotification(quotation.CustomerUserId, CustomerNotificationTypes.QuotationIssued, QuotationIssuedMessage(quotation), now);
+                // No customer notification: an issued quotation is presented and decided on site (2026-11-18).
                 await unitOfWork.SaveChangesAsync(token);
                 return (true, true);
             }, cancellationToken);

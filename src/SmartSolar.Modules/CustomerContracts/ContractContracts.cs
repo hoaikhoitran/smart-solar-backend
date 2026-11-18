@@ -6,7 +6,10 @@ namespace SmartSolar.Modules.CustomerContracts;
 public sealed record AcceptedQuotationSource(
     Guid QuotationId, int QuotationVersion, string QuoteNumber, string Status, Guid SurveyRequestId, Guid CustomerUserId,
     Guid? AssignedSaleId, string Currency, decimal TotalAmount, string PricingSnapshotJson, string? CustomerSnapshotJson, string? Terms,
-    int QuotationSurveyVersion = 0, int CurrentSurveyVersion = 0);
+    int QuotationSurveyVersion = 0, int CurrentSurveyVersion = 0, DateTimeOffset? ValidUntil = null);
+
+/// <summary>The verified payment that paid a contract before it existed (technician-led flow): attempt, when, how much.</summary>
+public sealed record ContractPrepayment(Guid PaymentAttemptId, DateTimeOffset PaidAt, decimal Amount, string Method);
 
 public interface IContractUnitOfWork : ITransactionalUnitOfWork, IInAppNotificationWriter
 {
@@ -30,6 +33,12 @@ public interface IContractUnitOfWork : ITransactionalUnitOfWork, IInAppNotificat
 
     /// <summary>Active installation warranty durations (months) offered by the Admin, and the default one (null when none is set).</summary>
     Task<(IReadOnlyList<int> Active, int? Default)> GetInstallationWarrantyOptionsAsync(CancellationToken cancellationToken);
+
+    /// <summary>The PAID payment attempt linked to the contract (an installation quotation paid before the contract was created); null when none.</summary>
+    Task<ContractPrepayment?> GetPrepaymentAsync(Guid contractId, CancellationToken cancellationToken);
+
+    /// <summary>True when a verified payment of the installation quotation was settled (the only way a contract may be created since 2026-11-18).</summary>
+    Task<bool> HasSettledQuotationPaymentAsync(Guid quotationId, CancellationToken cancellationToken);
 
     void AddContract(CustomerContract contract);
     void AddSubmission(ContractSignatureSubmission submission);

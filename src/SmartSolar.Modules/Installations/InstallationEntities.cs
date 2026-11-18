@@ -218,16 +218,24 @@ public sealed class EquipmentSubstitutionItem
 
 public static class EquipmentSubstitutionStatuses
 {
-    /// <summary>Manager approved; the customer has not decided.</summary>
+    /// <summary>Legacy (before 2026-11-18): Manager approved; the customer had not decided. Now counts as approved (no customer step).</summary>
     public const string CustomerApprovalPending = "CUSTOMER_APPROVAL_PENDING";
-    /// <summary>Manager and customer approved exactly this comparison.</summary>
+    /// <summary>Legacy: Manager and customer approved exactly this comparison.</summary>
     public const string Approved = "APPROVED";
-    /// <summary>The customer asked for rework instead of agreeing.</summary>
+    /// <summary>Legacy: the customer asked for rework instead of agreeing.</summary>
     public const string CustomerDeclined = "CUSTOMER_DECLINED";
     /// <summary>The installed equipment changed afterwards: this approval no longer describes it.</summary>
     public const string Superseded = "SUPERSEDED";
+    /// <summary>
+    /// Technician-led flow (2026-11-18): a Manager approved exactly this comparison with a reason. Internal, final decision: the customer is
+    /// informed (and discussed it with the technician on site) but approves nothing in the app.
+    /// </summary>
+    public const string InternallyApproved = "INTERNALLY_APPROVED";
 
-    public static readonly IReadOnlyList<string> All = [CustomerApprovalPending, Approved, CustomerDeclined, Superseded];
+    public static readonly IReadOnlyList<string> All = [CustomerApprovalPending, Approved, CustomerDeclined, Superseded, InternallyApproved];
+
+    /// <summary>The project's current substitution decision (at most one per project).</summary>
+    public static readonly IReadOnlyList<string> Active = [CustomerApprovalPending, Approved, InternallyApproved];
 }
 
 /// <summary>Where an asset's equipment warranty duration comes from.</summary>
@@ -283,6 +291,10 @@ public static class InstallationStatuses
     public const string PendingTechnicianAcceptance = "PENDING_TECHNICIAN_ACCEPTANCE";
     public const string Scheduled = "SCHEDULED";
     public const string InProgress = "IN_PROGRESS";
+    /// <summary>
+    /// Completion reported, waiting for the INTERNAL acceptance by a Manager/Admin (2026-11-18). The stored value keeps its historical name for
+    /// compatibility with existing rows and the live older API; the customer no longer decides anything in this state.
+    /// </summary>
     public const string PendingCustomerAcceptance = "PENDING_CUSTOMER_ACCEPTANCE";
     public const string ReworkRequired = "REWORK_REQUIRED";
     public const string Completed = "COMPLETED";
@@ -368,16 +380,20 @@ public static class InstallationEventTypes
     public const string EvidenceAdded = "EVIDENCE_ADDED";
     public const string AssetsRegistered = "ASSETS_REGISTERED";
     public const string CompletionReported = "COMPLETION_REPORTED";
+    /// <summary>Legacy: the customer accepted the completion in the app (before 2026-11-18).</summary>
     public const string CustomerAccepted = "CUSTOMER_ACCEPTED";
+    /// <summary>Legacy: the customer asked for rework in the app (before 2026-11-18).</summary>
     public const string ReworkRequested = "REWORK_REQUESTED";
+    /// <summary>A Manager/Admin accepted the reported completion internally (detail: round, basis, evidence file): COMPLETED / handover.</summary>
+    public const string InternallyAccepted = "INTERNALLY_ACCEPTED";
 
-    /// <summary>A Manager/Admin returned a completion report to rework (PENDING_CUSTOMER_ACCEPTANCE → REWORK_REQUIRED).</summary>
+    /// <summary>A Manager/Admin returned a completion report to rework (PENDING_CUSTOMER_ACCEPTANCE, i.e. awaiting internal acceptance → REWORK_REQUIRED).</summary>
     public const string ReturnedToRework = "RETURNED_TO_REWORK";
     public const string ChecklistUpdated = "CHECKLIST_UPDATED";
     public const string ProjectCancelled = "PROJECT_CANCELLED";
     /// <summary>Manager approved the installed equipment's differences from the contract (detail "fp:{fingerprint}; reason").</summary>
     public const string SubstitutionApproved = "EQUIPMENT_SUBSTITUTION_APPROVED";
-    /// <summary>The customer agreed to the approved differences (detail "fp:{fingerprint}").</summary>
+    /// <summary>Legacy: the customer agreed to the approved differences (detail "fp:{fingerprint}").</summary>
     public const string SubstitutionCustomerApproved = "EQUIPMENT_SUBSTITUTION_CUSTOMER_APPROVED";
 }
 
@@ -414,7 +430,7 @@ public static class InstallationErrorCodes
     /// <summary>The installed panels / inverters differ from the accepted quotation without a Manager approval of exactly these differences (409).</summary>
     public const string SubstitutionApprovalRequired = "INSTALLATION_SUBSTITUTION_APPROVAL_REQUIRED";
     /// <summary>The customer has not agreed to the approved equipment differences: no handover yet (409).</summary>
-    public const string SubstitutionCustomerApprovalRequired = "INSTALLATION_SUBSTITUTION_CUSTOMER_APPROVAL_REQUIRED";
+
     /// <summary>There is no equipment difference to approve (409).</summary>
     public const string NoSubstitution = "INSTALLATION_NO_SUBSTITUTION";
     /// <summary>No approved exemption rule allows this mandatory prerequisite to be NOT_APPLICABLE (409).</summary>

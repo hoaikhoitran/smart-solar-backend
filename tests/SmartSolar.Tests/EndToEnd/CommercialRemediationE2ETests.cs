@@ -14,7 +14,7 @@ namespace SmartSolar.Tests.EndToEnd;
 /// End-to-end journeys of the 2026-11-18 remediation, in the style of <see cref="InstallationLifecycleE2ETests"/>: the production handlers of every
 /// module run in sequence on one database (SQLite); only provider boundaries are fakes (S3 verification, the PayOS server). Survey → technician cart
 /// quotation → customer acceptance (contract drafted) → Manager publishes the official PDF → paper signature, scan uploaded by Sales → Manager
-/// confirms → technician offers installation times → customer chooses → payment (cash / PayOS, alone or with packages) → schedule confirmed →
+/// confirms → the technician records the installation date agreed in person → payment (cash / PayOS, alone or with packages) → schedule confirmed →
 /// installation gated by its prerequisites.
 /// </summary>
 public sealed class CommercialRemediationE2ETests
@@ -24,20 +24,17 @@ public sealed class CommercialRemediationE2ETests
 
     private sealed record Signed(SimplifiedFlowFixture.Cart Cart, Guid ManagerId, Guid SalesId, ContractView Contract);
 
-    /// <summary>Cart → accepted → published → Sales uploads the scan of the paper signed in person → Manager confirms (SIGNED).</summary>
+    /// <summary>LEGACY contract (accepted before 2026-11-18) → published → Sales uploads the scan of the paper signed in person → Manager confirms (SIGNED).</summary>
     private static async Task<Signed> PaperSignedAsync(InstallationWorkflowTestContext ctx)
     {
         var cart = await SimplifiedFlowFixture.IssuedAsync(ctx);
-        // The customer reads the finalized quotation in the portal before accepting.
-        var visible = await ctx.Quotations().GetForCustomerAsync(cart.CustomerId, cart.Quotation.QuotationId, None);
-        Assert.True(visible.Succeeded, visible.Message);
         var manager = await ctx.Scheduling.Inner.SeedUserAsync("Manager");
         var sales = await ctx.Scheduling.Inner.SeedUserAsync("Sales");
         var request = await ctx.Db.SurveyRequests.SingleAsync(r => r.Id == cart.RequestId);
         request.AssignedSaleId = sales.Id;
         await ctx.Db.SaveChangesAsync();
         ctx.Db.ChangeTracker.Clear();
-        var published = await SimplifiedFlowFixture.PublishedAsync(ctx, manager, await SimplifiedFlowFixture.AcceptAsync(ctx, cart));
+        var published = await SimplifiedFlowFixture.PublishedAsync(ctx, manager, await SimplifiedFlowFixture.LegacyAcceptAsync(ctx, cart));
         var scan = await ctx.VerifiedFileAsync(sales.Id, FilePurposes.SignedContract, "pdf");
         var uploaded = await ctx.Contracts().SubmitPaperSignedDocumentAsync(sales.Id, false, published.ContractId, scan, published.OfficialDocument!.Sha256!,
             DateOnly.FromDateTime(ctx.Clock.GetUtcNow().UtcDateTime), null, None);
@@ -47,11 +44,11 @@ public sealed class CommercialRemediationE2ETests
         return new Signed(cart, manager.Id, sales.Id, signed.Value);
     }
 
-    /// <summary>The technician offers one interval and the customer chooses it (PLANNED, not confirmed before payment).</summary>
+    /// <summary>The technician records the date agreed with the customer in person (PLANNED, not confirmed before payment); the customer selects nothing.</summary>
     private static async Task<InstallationScheduleView> CustomerChoosesAsync(InstallationWorkflowTestContext ctx, Signed s)
     {
-        var offer = (await ctx.Schedules().PublishOffersAsync(s.Cart.TechnicianId, s.Contract.ContractId, [Slot], null, None)).Value!.Single();
-        var chosen = await ctx.Schedules().SelectOfferAsync(s.Cart.CustomerId, offer.OfferId, None);
+        var chosen = await ctx.Schedules().ProposeAsync(s.Cart.TechnicianId, false, s.Contract.ContractId,
+            new ProposeInstallationScheduleInput(null, Slot.StartsAt, Slot.EndsAt, "Agreed in person with the customer", null, null), None);
         Assert.True(chosen.Succeeded, chosen.Message);
         Assert.Equal((InstallationScheduleStatuses.Planned, false), (chosen.Value!.Status, chosen.Value.IsConfirmed));
         return chosen.Value;

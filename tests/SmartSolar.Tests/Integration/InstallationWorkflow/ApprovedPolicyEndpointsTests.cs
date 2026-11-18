@@ -50,7 +50,7 @@ public sealed class ApprovedPolicyEndpointsTests
     }
 
     [Fact]
-    public async Task Only_a_manager_approves_a_substitution_and_only_the_customer_agrees_to_it()
+    public async Task Only_a_manager_approves_a_substitution_and_the_customer_step_is_retired()
     {
         using var factory = Enabled(new FakeStorageObjectVerifier(), new FakeRagServiceClient());
         var id = Guid.NewGuid();
@@ -66,8 +66,9 @@ public sealed class ApprovedPolicyEndpointsTests
         var manager = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Manager);
         await AssertFailureAsync(await manager.PostAsJsonAsync(ManagerSubstitution(id), new { reason = "x" }), HttpStatusCode.BadRequest, "VALIDATION_FAILED");
         await AssertFailureAsync(await manager.PostAsJsonAsync(ManagerSubstitution(id), body), HttpStatusCode.NotFound, InstallationErrorCodes.ProjectNotFound);
+        // The customer's substitution agreement was retired (2026-11-18): the Manager's approval is internal and final.
         await AssertFailureAsync(await CatalogEndpointsTests.ClientFor(factory, RoleCodes.Customer).PostAsync(CustomerSubstitution(id), null),
-            HttpStatusCode.NotFound, InstallationErrorCodes.ProjectNotFound);
+            HttpStatusCode.Gone, "ENDPOINT_RETIRED");
     }
 
     [Fact]
@@ -98,7 +99,8 @@ public sealed class ApprovedPolicyEndpointsTests
                 (await CatalogEndpointsTests.ClientFor(factory, role).PutAsJsonAsync(Audience(id), new { revision = 0, audience = "CUSTOMER", reason = "x" })).StatusCode);
 
         var customer = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Customer);
-        await AssertFailureAsync(await customer.PostAsJsonAsync(Reject(id), new { reason = "x" }), HttpStatusCode.NotFound, QuotationErrorCodes.NotFound);
+        // The customer's quotation decision was retired (2026-11-18): the technician records it on site.
+        await AssertFailureAsync(await customer.PostAsJsonAsync(Reject(id), new { reason = "x" }), HttpStatusCode.Gone, "ENDPOINT_RETIRED");
         await AssertFailureAsync(await customer.PostAsJsonAsync(Withdraw(id), new { reason = "x" }), HttpStatusCode.NotFound, SalesOutcomeErrorCodes.RequestNotFound);
         var sales = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Sales);
         await AssertFailureAsync(await sales.PostAsJsonAsync(Close(id), new { reasonCode = "BORED" }), HttpStatusCode.BadRequest, "VALIDATION_FAILED");

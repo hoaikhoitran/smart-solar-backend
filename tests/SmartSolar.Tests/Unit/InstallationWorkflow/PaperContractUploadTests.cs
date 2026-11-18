@@ -28,7 +28,7 @@ public sealed class PaperContractUploadTests
         request.AssignedSaleId = sales.Id;
         await ctx.Db.SaveChangesAsync();
         ctx.Db.ChangeTracker.Clear();
-        var published = await SimplifiedFlowFixture.PublishedAsync(ctx, manager, await SimplifiedFlowFixture.AcceptAsync(ctx, cart));
+        var published = await SimplifiedFlowFixture.PublishedAsync(ctx, manager, await SimplifiedFlowFixture.LegacyAcceptAsync(ctx, cart));
         Assert.Equal(ContractStatuses.AwaitingSignature, published.Status);
         return new Published(cart, manager, sales, published);
     }
@@ -106,7 +106,7 @@ public sealed class PaperContractUploadTests
         // A DRAFT (generated, never printed and signed) is no evidence of a signature: no scan can be attached to it.
         await using var other = InstallationWorkflowTestContext.Create();
         var cart = await SimplifiedFlowFixture.IssuedAsync(other);
-        var draft = await SimplifiedFlowFixture.AcceptAsync(other, cart);
+        var draft = await SimplifiedFlowFixture.LegacyAcceptAsync(other, cart);
         var manager = await other.Scheduling.Inner.SeedUserAsync("Manager");
         var managerScan = await other.VerifiedFileAsync(manager.Id, FilePurposes.SignedContract, "pdf");
         Assert.Equal(ContractErrorCodes.InvalidState,

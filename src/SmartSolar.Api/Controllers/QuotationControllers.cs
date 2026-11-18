@@ -72,19 +72,62 @@ public sealed class TechnicianQuotationsController(QuotationHandlers handlers) :
         return Respond(await handlers.RemoveCartLineAsync(user, quotationId, lineId, expected, cancellationToken));
     }
 
-    /// <summary>Re-prices every line from the catalog (snapshot), computes the totals and sends the quotation to the customer.</summary>
+    /// <summary>
+    /// Finalizes the cart: re-prices every line from the catalog (snapshot), computes the totals and freezes them for presentation on the
+    /// technician's device. Nothing is sent to the customer's app.
+    /// </summary>
     [HttpPost("quotations/{quotationId:guid}/issue")]
     [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationView>), StatusCodes.Status200OK)]
     [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
     public async Task<IActionResult> Issue(Guid quotationId, [FromBody] RevisionRequest request, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await handlers.IssueCartAsync(user, quotationId, request.Revision, cancellationToken)) : UnauthorizedFailure();
 
-    /// <summary>New draft version answering the customer's revision request (or rejection) of an issued quotation.</summary>
+    /// <summary>New draft version after the customer asked for changes on site (or declined) an issued quotation.</summary>
     [HttpPost("quotations/{quotationId:guid}/revisions")]
     [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationView>), StatusCodes.Status201Created)]
     [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
     public async Task<IActionResult> CreateRevision(Guid quotationId, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await handlers.CreateCartRevisionAsync(user, quotationId, cancellationToken), StatusCodes.Status201Created) : UnauthorizedFailure();
+
+    /// <summary>
+    /// Records the customer's decision taken on site in front of the technician: AGREED (prices frozen; the payment can be opened), DECLINED or
+    /// REVISION_NEEDED (note required). The actor recorded is the technician; the customer never approves in the app.
+    /// </summary>
+    [HttpPost("quotations/{quotationId:guid}/on-site-decision")]
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
+    public async Task<IActionResult> OnSiteDecision(Guid quotationId, [FromBody] OnSiteDecisionRequest request, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (request.Revision is not { } revision) return Invalid("revision", "'revision' is required.");
+        return Respond(await handlers.RecordOnSiteDecisionAsync(user, quotationId, new OnSiteDecisionInput(request.Decision, revision, request.Note), cancellationToken));
+    }
+
+    /// <summary>
+    /// Opens the payment of the AGREED quotation: ONLINE returns the PayOS <c>qrCode</c> / <c>checkoutUrl</c> to show on the technician's device;
+    /// CASH records a pending cash choice that a Manager/Admin confirms. Repeating the same method returns the open payment. The contract is
+    /// created automatically once the payment is verified (<c>contractId</c>).
+    /// </summary>
+    [HttpPost("quotations/{quotationId:guid}/payment")]
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationPaymentView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.PaymentCreatePolicy)]
+    public async Task<IActionResult> StartPayment(Guid quotationId, [FromBody] QuotationPaymentRequest request, [FromServices] OnSiteQuotationPaymentHandlers payments,
+        CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await payments.StartAsync(user, quotationId, request.Method, cancellationToken)) : UnauthorizedFailure();
+
+    /// <summary>Payment state of the quotation (an open online link is checked server-to-server with PayOS; a browser return URL never marks it paid).</summary>
+    [HttpGet("quotations/{quotationId:guid}/payment")]
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationPaymentView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.PaymentStatusPolicy)]
+    public async Task<IActionResult> GetPayment(Guid quotationId, [FromServices] OnSiteQuotationPaymentHandlers payments, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await payments.GetAsync(user, quotationId, cancellationToken)) : UnauthorizedFailure();
+
+    /// <summary>Cancels the open payment (switch method, or the customer stopped). A payment PayOS already reports paid is confirmed instead.</summary>
+    [HttpPost("quotations/{quotationId:guid}/payment/cancel")]
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationPaymentView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.PaymentCreatePolicy)]
+    public async Task<IActionResult> CancelPayment(Guid quotationId, [FromServices] OnSiteQuotationPaymentHandlers payments, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await payments.CancelAsync(user, quotationId, cancellationToken)) : UnauthorizedFailure();
 }
 
 /// <summary>
@@ -194,39 +237,40 @@ public sealed class ManagerQuotationApprovalsController : OperationResultControl
 }
 
 /// <summary>
-/// Customer: own quotations (drafts are never visible) and the decision on an issued one: ACCEPT (the contract draft is created automatically
-/// from the accepted snapshot), REJECT, or REQUEST_REVISION (the technician answers with a new version).
+/// Retired (2026-11-18, technician-led on-site sales): the customer no longer receives, reads, accepts, rejects or sends back installation quotations
+/// in the app. The technician presents the quotation on their device, records the outcome and opens the payment; the customer follows the paid
+/// contract (<c>GET /api/customers/me/contracts</c>) and the installation. Every route answers 410 ENDPOINT_RETIRED.
 /// </summary>
 [ApiController]
 [Route("api/customers/me/quotations")]
 [Authorize(Roles = RoleCodes.Customer)]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
-public sealed class CustomerQuotationsController(QuotationHandlers handlers) : OperationResultControllerBase
+public sealed class CustomerQuotationsController : OperationResultControllerBase
 {
+    private const string Replacement = "None for the customer: the technician records the on-site decision (POST /api/technician/quotations/{id}/on-site-decision); follow GET /api/customers/me/contracts";
+
     [HttpGet]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationReadPolicy)]
-    public async Task<IActionResult> List(CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Ok(Contracts.ApiResponse<IReadOnlyList<QuotationView>>.Success(await handlers.ListForCustomerAsync(user, cancellationToken), HttpContext.GetTraceId())) : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
+    public IActionResult List() => RetiredOnSite(Replacement);
 
     [HttpGet("{quotationId:guid}")]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationReadPolicy)]
-    public async Task<IActionResult> Get(Guid quotationId, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await handlers.GetForCustomerAsync(user, quotationId, cancellationToken)) : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
+    public IActionResult Get(Guid quotationId) => RetiredOnSite(Replacement);
 
-    /// <summary>Accepts the issued quotation; the contract DRAFT is created in the same transaction (exactly one per quotation).</summary>
     [HttpPost("{quotationId:guid}/accept")]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
-    public async Task<IActionResult> Accept(Guid quotationId, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await handlers.AcceptAsync(user, quotationId, cancellationToken)) : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
+    public IActionResult Accept(Guid quotationId) => RetiredOnSite(Replacement);
 
-    /// <summary>Rejects an issued quotation (final for this version; the request stays open for a new offer or its closure).</summary>
     [HttpPost("{quotationId:guid}/reject")]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
-    public async Task<IActionResult> Reject(Guid quotationId, [FromBody] ReasonRequest? request, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await handlers.RejectAsync(user, quotationId, request?.Reason, cancellationToken)) : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
+    public IActionResult Reject(Guid quotationId) => RetiredOnSite(Replacement);
 
     [HttpPost("{quotationId:guid}/revision-request")]
-    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
-    public async Task<IActionResult> RequestRevision(Guid quotationId, [FromBody] ReasonRequest request, CancellationToken cancellationToken)
-        => CurrentUserId() is { } user ? Respond(await handlers.RequestRevisionAsync(user, quotationId, request.Reason ?? "", cancellationToken)) : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    [EnableRateLimiting(RateLimitingExtensions.RetiredEndpointPolicy)]
+    public IActionResult RequestRevision(Guid quotationId) => RetiredOnSite(Replacement);
 }

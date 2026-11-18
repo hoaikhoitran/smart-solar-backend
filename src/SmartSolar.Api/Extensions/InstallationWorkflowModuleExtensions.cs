@@ -26,8 +26,12 @@ public static class InstallationWorkflowModuleExtensions
 
         services.AddScoped<SmartSolar.Modules.CustomerContracts.IContractUnitOfWork, ContractUnitOfWork>();
         services.AddScoped<SmartSolar.Modules.CustomerContracts.ContractHandlers>();
-        // Customer acceptance drafts the contract in the same transaction (same scoped AppDbContext).
-        services.AddScoped<SmartSolar.Modules.Quotations.IAcceptedQuotationContracts>(sp => sp.GetRequiredService<SmartSolar.Modules.CustomerContracts.ContractHandlers>());
+        // Technician-led on-site sales (2026-11-18): the technician opens the payment of the agreed quotation; the verified payment creates the contract.
+        services.AddScoped<SmartSolar.Modules.Quotations.OnSiteQuotationPaymentHandlers>();
+        // Payment settlement: installation-quotation lines create the contract (same transaction, same scoped AppDbContext); every other line goes to
+        // the after-sales settlement (registered by AddAfterSales; absent → those lines are flagged for manual handling).
+        services.AddScoped<SmartSolar.Modules.Payments.IPaymentItemSettlement>(sp => new SmartSolar.Modules.CustomerContracts.InstallationQuotationPaymentSettlement(
+            sp.GetRequiredService<SmartSolar.Modules.CustomerContracts.ContractHandlers>(), sp.GetService<SmartSolar.Modules.AfterSales.AfterSalesPaymentSettlement>()));
         services.AddScoped<SmartSolar.Modules.CustomerContracts.ContractDocumentHandlers>();
 
         var payments = ConfigurationBinding.Bind<SmartSolar.Modules.Payments.PaymentOptions>(configuration, SmartSolar.Modules.Payments.PaymentOptions.SectionName);

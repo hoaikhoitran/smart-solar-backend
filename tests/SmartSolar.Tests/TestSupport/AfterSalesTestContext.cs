@@ -48,7 +48,7 @@ public sealed class AfterSalesTestContext : IAsyncDisposable
     {
         var data = Data(db);
         return new(new PaymentUnitOfWork(db ?? Db), Installation.PayOs.Gateway(), Installation.PaymentOptions, Clock, NullLogger<PaymentService>.Instance,
-            new AfterSalesPaymentSettlement(data, Terms(data)), Installation.OrderCodes, Installation.Files(db));
+            new SmartSolar.Modules.CustomerContracts.InstallationQuotationPaymentSettlement(Installation.Contracts(db), new AfterSalesPaymentSettlement(data, Terms(data))), Installation.OrderCodes, Installation.Files(db));
     }
 
     /// <summary>Full production payment wiring: after-sales settlement, cash evidence verification and the post-PAID schedule confirmation.</summary>
@@ -56,7 +56,7 @@ public sealed class AfterSalesTestContext : IAsyncDisposable
     {
         var data = Data(db);
         return new(new PaymentUnitOfWork(db ?? Db), Installation.PayOs.Gateway(), Installation.PaymentOptions, Clock, NullLogger<PaymentService>.Instance,
-            new AfterSalesPaymentSettlement(data, Terms(data)), Installation.OrderCodes, Installation.Files(db), Installation.Schedules(db));
+            new SmartSolar.Modules.CustomerContracts.InstallationQuotationPaymentSettlement(Installation.Contracts(db), new AfterSalesPaymentSettlement(data, Terms(data))), Installation.OrderCodes, Installation.Files(db), Installation.Schedules(db));
     }
 
     public ServiceCustomerHandlers Customer(AppDbContext? db = null)
@@ -134,7 +134,7 @@ public sealed class AfterSalesTestContext : IAsyncDisposable
         await InstallationTests.AddCompletionEvidenceAsync(Installation, project.ProjectId, technician.Id);
         Assert.True((await InstallationTests.RegisterPanelAndInverterAsync(Installation, project.ProjectId, technician.Id)).Succeeded);
         Assert.True((await installs.ReportCompletionAsync(technician.Id, project.ProjectId, "Done", null, None)).Succeeded);
-        var accepted = await installs.DecideAcceptanceAsync(paid.CustomerId, project.ProjectId, true, null, None);
+        var accepted = await InternalAcceptance.AcceptAsync(Installation, project.ProjectId, paid.ManagerId);
         Assert.True(accepted.Succeeded, accepted.Message);
         var sales = await Installation.Scheduling.SeedSalesAsync("After-sales Sales");
         var inverter = await Db.InstalledAssets.AsNoTracking().SingleAsync(a => a.ProjectId == project.ProjectId && a.AssetType == "INVERTER");

@@ -34,7 +34,7 @@ public sealed class PostgresAfterSalesRemediationTests
         var breaker = await CatalogAsync(ctx, "BRK-C16", "BREAKER", 150_000m);
         var q = Assert.Single((await ctx.Quotations().IssueByTechnicianAsync(h.TechnicianId, requestId,
             new TechnicianQuotationInput([Line(items[0], (breaker.Id, 2))], null, null), None)).Value!.Quotations);
-        Assert.True((await ctx.Quotations().AcceptAsync(h.CustomerId, q.QuotationId, None)).Succeeded);
+        Assert.True((await ctx.Quotations().RecordOnSiteDecisionAsync(h.TechnicianId, q.QuotationId, ServiceOnSiteDecisions.Agreed, null, None)).Succeeded);
         return (h, requestId, q);
     }
 

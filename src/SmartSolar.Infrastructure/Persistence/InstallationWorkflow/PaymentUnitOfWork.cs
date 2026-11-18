@@ -21,6 +21,11 @@ public sealed class PaymentUnitOfWork(AppDbContext db) : TransactionalUnitOfWork
     public async Task<IReadOnlyList<PaymentAttempt>> ListAttemptsAsync(Guid contractId, CancellationToken cancellationToken)
         => await Db.PaymentAttempts.AsNoTracking().Where(a => a.ContractId == contractId).ToListAsync(cancellationToken);
 
+    public async Task<IReadOnlyList<PaymentAttempt>> ListAttemptsForInstallationQuotationAsync(Guid quotationId, CancellationToken cancellationToken)
+        => await Db.PaymentAttempts.AsNoTracking()
+            .Where(a => Db.PaymentAttemptItems.Any(i => i.PaymentAttemptId == a.Id && i.InstallationQuotationId == quotationId))
+            .ToListAsync(cancellationToken);
+
     public Task<int> CountAttemptsSinceAsync(Guid contractId, DateTimeOffset since, CancellationToken cancellationToken)
         => Db.PaymentAttempts.AsNoTracking().CountAsync(a => a.ContractId == contractId && a.CreatedAt >= since, cancellationToken);
 

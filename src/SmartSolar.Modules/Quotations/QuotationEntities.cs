@@ -1,9 +1,8 @@
 namespace SmartSolar.Modules.Quotations;
 
 /// <summary>
-/// One version of a quotation for a survey request. Issued versions are immutable: a customer's
-/// revision request leaves the issued version untouched and Sales issues a new version
-/// (<see cref="PreviousQuotationId"/>), which the customer must accept again. Amounts are server
+/// One version of a quotation for a survey request. Issued versions are immutable: changes asked on site leave the issued version untouched and
+/// the technician issues a new version (<see cref="PreviousQuotationId"/>), which is presented and agreed on site again. Amounts are server
 /// computed from immutable line snapshots, so later catalog changes never alter a quotation.
 /// </summary>
 public sealed class Quotation
@@ -143,6 +142,12 @@ public static class QuotationEventTypes
     public const string Rejected = "REJECTED";
     /// <summary>The request was withdrawn or closed while the quotation was open (detail: "CODE: note").</summary>
     public const string Cancelled = "CANCELLED";
+    /// <summary>The technician recorded that the customer agreed on site (actor = technician; detail: version, total, note).</summary>
+    public const string AgreedOnSite = "AGREED_ON_SITE";
+    /// <summary>The technician recorded that the customer did not agree on site (detail: what was said).</summary>
+    public const string DeclinedOnSite = "DECLINED_ON_SITE";
+    /// <summary>The technician recorded that the customer wants changes; a new version follows.</summary>
+    public const string RevisionRequestedOnSite = "REVISION_REQUESTED_ON_SITE";
     /// <summary>Sales asked a Manager to approve the draft's discount / reduced prices (detail: "fp:{pricing fingerprint}; reason").</summary>
     public const string PricingApprovalRequested = "PRICING_APPROVAL_REQUESTED";
     /// <summary>A Manager approved exactly the pricing named by the fingerprint (detail: "fp:{fingerprint}; reason").</summary>
@@ -158,7 +163,7 @@ public static class QuotationEventTypes
 
     private static readonly string[] LifecycleOrder =
         [AutomaticallyGenerated, Created, RevisionCreated, Updated, SurveyAmended, SurveyVersionConfirmed, PricingApprovalRequested, PricingRejected, PricingApproved,
-         DocumentAttached, Superseded, Issued, RevisionRequested, Accepted, Rejected, Cancelled];
+         DocumentAttached, Superseded, Issued, RevisionRequested, RevisionRequestedOnSite, Accepted, AgreedOnSite, Rejected, DeclinedOnSite, Cancelled];
 }
 
 public static class QuotationErrorCodes
@@ -204,4 +209,8 @@ public static class QuotationErrorCodes
     public const string RequestClosed = "QUOTATION_REQUEST_CLOSED";
     /// <summary>The survey request has no COMPLETED on-site survey report by this technician (404 for the caller: not their job).</summary>
     public const string NotAssignedTechnician = "QUOTATION_SURVEY_NOT_FOUND";
+    /// <summary>A payment of the agreed quotation is in progress or verified: the agreement can no longer be withdrawn (409).</summary>
+    public const string PaymentStarted = "QUOTATION_PAYMENT_STARTED";
+    /// <summary>Only an agreed (ACCEPTED) quotation can be paid (409).</summary>
+    public const string NotAgreed = "QUOTATION_NOT_AGREED";
 }

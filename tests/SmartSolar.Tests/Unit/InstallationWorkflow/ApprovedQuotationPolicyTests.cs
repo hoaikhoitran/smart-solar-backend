@@ -25,7 +25,7 @@ public sealed class ApprovedQuotationPolicyTests
         return (ctx, survey, await AutomaticQuotationFixture.SeedCatalogAsync(ctx));
     }
 
-    /// <summary>Automatic quotation issued from the standard bill, sent back by the customer, and a revision draft (v2) created by Sales.</summary>
+    /// <summary>Automatic quotation issued from the standard bill, sent back on site (changes asked), and a revision draft (v2) created by Sales.</summary>
     private static async Task<(QuotationHandlers Q, QuotationView Draft, Guid Manager)> RevisionDraftAsync(InstallationWorkflowTestContext ctx, ConfirmedSurvey s,
         QuotationCatalog catalog, decimal panels = 2m)
     {
@@ -33,7 +33,7 @@ public sealed class ApprovedQuotationPolicyTests
         Assert.Equal(AutomaticQuotationOutcomes.Issued, completed.Value!.AutomaticQuotationOutcome);
         var v1 = Assert.Single(await AutomaticQuotationFixture.QuotationsAsync(ctx, s.Request.Request.Id));
         var q = ctx.Quotations();
-        Assert.True((await q.RequestRevisionAsync(s.Request.Customer.Id, v1.Id, "Can you do better on the price?", None)).Succeeded);
+        Assert.True((await OnSiteDecision.RevisionAsync(ctx, s.Technician.Id, v1.Id, "Can you do better on the price?")).Succeeded);
         var draft = (await q.CreateRevisionAsync(s.Sales.Id, v1.Id, None)).Value!;
         var manager = await ctx.Scheduling.Inner.SeedUserAsync("Pricing manager");
         return (q, draft, manager.Id);
@@ -205,54 +205,15 @@ public sealed class ApprovedQuotationPolicyTests
         var approved = (await q.DecidePricingApprovalAsync(manager, draft.QuotationId, again.Revision, true, "OK", None)).Value!;
         var issued = (await q.IssueAsync(s.Sales.Id, draft.QuotationId, approved.Revision, None)).Value!;
 
-        // The customer sends it back: the next version copies the discount, but the approval was for version 2 only.
-        Assert.True((await q.RequestRevisionAsync(s.Request.Customer.Id, issued.QuotationId, "One more question", None)).Succeeded);
+        // Sent back on site: the next version copies the discount, but the approval was for version 2 only.
+        Assert.True((await OnSiteDecision.RevisionAsync(ctx, s.Technician.Id, issued.QuotationId, "One more question")).Succeeded);
         var v3 = (await q.CreateRevisionAsync(s.Sales.Id, issued.QuotationId, None)).Value!;
         Assert.Equal((3, 700_000m, PricingApprovalStatuses.Required), (v3.Version, v3.DiscountAmount, v3.PricingApproval!.Status));
         Assert.Equal(QuotationErrorCodes.PricingApprovalRequired, (await q.IssueAsync(s.Sales.Id, v3.QuotationId, v3.Revision, None)).ErrorCode);
     }
 
-    // ------------------------------------------------------------------ D-09
-
-    [Fact]
-    public async Task Every_customer_quotation_response_shows_selling_prices_and_totals_but_no_catalog_reference_or_approval_data()
-    {
-        var (ctx, s, catalog) = await ReadyAsync();
-        await using var _ = ctx;
-        var (q, draft, manager) = await RevisionDraftAsync(ctx, s, catalog);
-        var discounted = (await q.UpdateHeaderAsync(s.Sales.Id, draft.QuotationId, draft.Revision, WithDiscount(draft, 500_000m), None)).Value!;
-        var pending = (await q.RequestPricingApprovalAsync(s.Sales.Id, draft.QuotationId, discounted.Revision, "Promotion", None)).Value!;
-        var approved = (await q.DecidePricingApprovalAsync(manager, draft.QuotationId, pending.Revision, true, "OK", None)).Value!;
-        var issued = (await q.IssueAsync(s.Sales.Id, draft.QuotationId, approved.Revision, None)).Value!;
-        Assert.NotNull(issued.Lines[0].CatalogUnitPrice);   // staff keep the reference for review
-        var customer = s.Request.Customer.Id;
-
-        var list = await q.ListForCustomerAsync(customer, None);
-        var detail = (await q.GetForCustomerAsync(customer, issued.QuotationId, None)).Value!;
-        var accepted = (await q.AcceptAsync(customer, issued.QuotationId, None)).Value!;
-        var acceptedAgain = (await q.AcceptAsync(customer, issued.QuotationId, None)).Value!;
-        var older = list.Single(v => v.Version == 1);
-        foreach (var view in list.Append(detail).Append(accepted).Append(acceptedAgain))
-        {
-            Assert.All(view.Lines, l => Assert.Null(l.CatalogUnitPrice));
-            Assert.Null(view.PricingApproval);
-            Assert.Null(view.PricingBasis);
-            Assert.Null(view.PricingReview);
-            Assert.Null(view.Events);
-        }
-        Assert.Equal((500_000m, issued.TaxAmount, issued.TotalAmount), (detail.DiscountAmount, detail.TaxAmount, detail.TotalAmount));
-        Assert.All(detail.Lines, l => Assert.True(l.UnitPrice > 0 && l.LineTotal == QuotationPricing.LineTotal(l.Quantity, l.UnitPrice)));
-        Assert.Equal(QuotationStatuses.Superseded, older.Status);
-
-        // The revision-request response path too.
-        var (ctx2, s2, catalog2) = await ReadyAsync();
-        await using var __ = ctx2;
-        await AutomaticQuotationFixture.CompleteAsync(ctx2, s2, catalog2.StandardBill());
-        var v1 = Assert.Single(await AutomaticQuotationFixture.QuotationsAsync(ctx2, s2.Request.Request.Id));
-        var sentBack = (await ctx2.Quotations().RequestRevisionAsync(s2.Request.Customer.Id, v1.Id, "Cheaper inverter?", None)).Value!;
-        Assert.All(sentBack.Lines, l => Assert.Null(l.CatalogUnitPrice));
-        Assert.Null(sentBack.PricingApproval);
-    }
+    // ------------------------------------------------------------------ D-09 (retired with the customer quotation views, 2026-11-18: the customer no
+    // longer receives quotations in the app; the technician's view is staff data). Covered by TechnicianLedOnSiteSalesEndpointsTests (410).
 
     // ------------------------------------------------------------------ D-02
 
@@ -308,8 +269,8 @@ public sealed class ApprovedQuotationPolicyTests
             20m, null, null, None)).Value!;
         var issued = (await q.IssueAsync(s.Sales.Id, v2.QuotationId, restored.Revision, None)).Value!;
 
-        // The customer must accept the revised offer; the original stays in the history.
-        Assert.True((await q.AcceptAsync(s.Request.Customer.Id, issued.QuotationId, None)).Succeeded);
+        // The revised offer is agreed on site again; the original stays in the history.
+        Assert.True((await OnSiteDecision.AgreeAsync(ctx, s.Technician.Id, issued.QuotationId)).Succeeded);
         var stored = await AutomaticQuotationFixture.QuotationsAsync(ctx, s.Request.Request.Id);
         Assert.Equal(new[] { (1, QuotationStatuses.Superseded, 1, 2m), (2, QuotationStatuses.Accepted, 2, 20m) },
             stored.Select(x => (x.Version, x.Status, x.OnSiteSurveyVersion,
@@ -335,9 +296,9 @@ public sealed class ApprovedQuotationPolicyTests
         await AutomaticQuotationFixture.CompleteAsync(ctx2, s2, catalog2.StandardBill());
         var issued = Assert.Single(await AutomaticQuotationFixture.QuotationsAsync(ctx2, s2.Request.Request.Id));
         ctx2.Clock.Now = issued.ValidUntil!.Value.AddMinutes(1);
-        var view = (await ctx2.Quotations().GetForCustomerAsync(s2.Request.Customer.Id, issued.Id, None)).Value!;
+        var view = (await ctx2.Quotations().GetForTechnicianAsync(s2.Technician.Id, issued.Id, None)).Value!;
         Assert.Equal((true, false), (view.IsExpired, view.CanAccept));
-        Assert.Equal(QuotationErrorCodes.Expired, (await ctx2.Quotations().AcceptAsync(s2.Request.Customer.Id, issued.Id, None)).ErrorCode);
+        Assert.Equal(QuotationErrorCodes.Expired, (await OnSiteDecision.AgreeAsync(ctx2, s2.Technician.Id, issued.Id)).ErrorCode);
         Assert.Equal(QuotationStatuses.Issued, (await ctx2.Db.Quotations.AsNoTracking().SingleAsync(x => x.Id == issued.Id)).Status);
     }
 }
