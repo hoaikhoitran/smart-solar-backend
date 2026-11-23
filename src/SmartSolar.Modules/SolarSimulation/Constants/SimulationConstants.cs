@@ -27,8 +27,14 @@ public static class ComponentStatusCodes
 
 public static class AlgorithmVersions
 {
-    /// <summary>Bump when layout, footprint, shading or energy-mapping logic changes, so fingerprints change.</summary>
-    public const string Current = "layout-v2+shading-v1";
+    /// <summary>
+    /// Bump when layout, footprint, shading or energy-mapping logic changes, so fingerprints change. The suffix
+    /// <see cref="RegionalBaseline"/> marks results on the 2025 HCMC regional baseline (earlier results used the site's own point).
+    /// </summary>
+    public const string Current = "layout-v2+shading-v1+" + RegionalBaseline;
+
+    /// <summary>Version of the regional baseline model (sampling, weighting, aggregation, scaling). Part of <see cref="Current"/>.</summary>
+    public const string RegionalBaseline = "hcm2025-regional-v1";
 
     /// <summary>Version of the canonical fingerprint document.</summary>
     public const string Fingerprint = "fp-v1";
@@ -89,6 +95,15 @@ public static class SimulationWarningCodes
     public const string EnergyProviderFailed = "ENERGY_PROVIDER_FAILED";
     public const string ClimateProviderFailed = "CLIMATE_PROVIDER_FAILED";
     public const string LayoutInfeasible = "LAYOUT_INFEASIBLE";
+
+    /// <summary>Energy and climate are the 2025 HCMC area-weighted regional average, not a measurement or forecast for this roof.</summary>
+    public const string RegionalEstimate = "REGIONAL_ESTIMATE";
+
+    /// <summary>Some regional samples failed; the estimate is renormalised over the succeeded area (still above the coverage threshold).</summary>
+    public const string RegionalBaselineDegraded = "REGIONAL_BASELINE_DEGRADED";
+
+    /// <summary>The site is outside (or not known to be inside) the supported 2025 HCMC territory; no regional estimate is applied.</summary>
+    public const string RegionNotSupported = "REGION_NOT_SUPPORTED";
 }
 
 public sealed record SimulationWarning(string Code, string Message);

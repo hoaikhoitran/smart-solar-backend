@@ -33,7 +33,7 @@ public sealed class KnowledgeBaseTests
             Assert.Equal(1, await Ingestion().RunDueAsync(10, None));
             var ready = (await Documents().GetAsync(registered.Value!.DocumentId, None)).Value!;
             Assert.Equal(DocumentStatuses.ReadyForReview, ready.Status);
-            var published = await Documents().PublishAsync(ready.DocumentId, ready.Versions![0].VersionId, ready.Revision, None);
+            var published = await Documents().PublishAsync(admin, ready.DocumentId, ready.Versions![0].VersionId, ready.Revision, true, null, None);
             Assert.True(published.Succeeded, published.Message);
             return published.Value!;
         }
@@ -85,11 +85,11 @@ public sealed class KnowledgeBaseTests
         var file = await ctx.VerifiedFileAsync(admin, FilePurposes.KnowledgeDocument, "pdf");
         var doc = (await rig.Documents().RegisterAsync(admin, file, "FAQ", "FAQ", null, None)).Value!;
 
-        Assert.Equal(KnowledgeErrorCodes.InvalidState, (await rig.Documents().PublishAsync(doc.DocumentId, doc.Versions![0].VersionId, doc.Revision, None)).ErrorCode);
+        Assert.Equal(KnowledgeErrorCodes.InvalidState, (await rig.Documents().PublishAsync(admin, doc.DocumentId, doc.Versions![0].VersionId, doc.Revision, true, null, None)).ErrorCode);
         await rig.Ingestion().RunDueAsync(10, None);
         var ready = (await rig.Documents().GetAsync(doc.DocumentId, None)).Value!;
-        Assert.Equal(KnowledgeErrorCodes.StaleRevision, (await rig.Documents().PublishAsync(doc.DocumentId, doc.Versions![0].VersionId, doc.Revision, None)).ErrorCode);
-        Assert.True((await rig.Documents().PublishAsync(doc.DocumentId, doc.Versions![0].VersionId, ready.Revision, None)).Succeeded);
+        Assert.Equal(KnowledgeErrorCodes.StaleRevision, (await rig.Documents().PublishAsync(admin, doc.DocumentId, doc.Versions![0].VersionId, doc.Revision, true, null, None)).ErrorCode);
+        Assert.True((await rig.Documents().PublishAsync(admin, doc.DocumentId, doc.Versions![0].VersionId, ready.Revision, true, null, None)).Succeeded);
     }
 
     [Fact]
@@ -106,7 +106,7 @@ public sealed class KnowledgeBaseTests
         var after = (await rig.Documents().GetAsync(doc.DocumentId, None)).Value!;
         Assert.Equal(VersionStatuses.OcrRequired, after.Versions![0].Status);
         Assert.Equal(DocumentStatuses.Failed, after.Status);
-        Assert.False((await rig.Documents().PublishAsync(doc.DocumentId, after.Versions![0].VersionId, after.Revision, None)).Succeeded);
+        Assert.False((await rig.Documents().PublishAsync(admin, doc.DocumentId, after.Versions![0].VersionId, after.Revision, true, null, None)).Succeeded);
     }
 
     [Fact]
@@ -176,7 +176,7 @@ public sealed class KnowledgeBaseTests
         Assert.True(unpublished.Succeeded, unpublished.Message);
         Assert.Empty(await uow.GetRetrievableVersionsAsync(None));
         // Re-publishing a withdrawn version is allowed without re-ingestion.
-        var republished = await rig.Documents().PublishAsync(doc.DocumentId, doc.Versions![0].VersionId, unpublished.Value!.Revision, None);
+        var republished = await rig.Documents().PublishAsync(admin, doc.DocumentId, doc.Versions![0].VersionId, unpublished.Value!.Revision, true, null, None);
         Assert.True(republished.Succeeded, republished.Message);
         Assert.Single(await uow.GetRetrievableVersionsAsync(None));
 
@@ -185,7 +185,7 @@ public sealed class KnowledgeBaseTests
         Assert.Empty(await uow.GetRetrievableVersionsAsync(None));
         Assert.Equal(1, await rig.Ingestion().RunDueAsync(10, None));
         Assert.Equal(1, rig.Rag.DeleteCalls);
-        Assert.False((await rig.Documents().PublishAsync(doc.DocumentId, doc.Versions![0].VersionId, archived.Value!.Revision, None)).Succeeded);
+        Assert.False((await rig.Documents().PublishAsync(admin, doc.DocumentId, doc.Versions![0].VersionId, archived.Value!.Revision, true, null, None)).Succeeded);
     }
 
     [Fact]
@@ -202,7 +202,7 @@ public sealed class KnowledgeBaseTests
         await rig.Ingestion().RunDueAsync(10, None);
         var current = (await rig.Documents().GetAsync(doc.DocumentId, None)).Value!;
         var v2 = current.Versions!.Single(v => v.VersionNumber == 2);
-        Assert.True((await rig.Documents().PublishAsync(doc.DocumentId, v2.VersionId, current.Revision, None)).Succeeded);
+        Assert.True((await rig.Documents().PublishAsync(admin, doc.DocumentId, v2.VersionId, current.Revision, true, null, None)).Succeeded);
 
         var versions = await ctx.Db.KnowledgeDocumentVersions.AsNoTracking().ToListAsync();
         Assert.Equal(VersionStatuses.Superseded, versions.Single(v => v.VersionNumber == 1).Status);

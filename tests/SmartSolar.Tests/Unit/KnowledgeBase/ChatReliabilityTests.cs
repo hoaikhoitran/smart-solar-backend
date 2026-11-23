@@ -41,7 +41,7 @@ public sealed class ChatReliabilityTests
             Assert.True(registered.Succeeded, registered.Message);
             Assert.Equal(1, await Ingestion().RunDueAsync(10, None));
             var ready = (await Documents().GetAsync(registered.Value!.DocumentId, None)).Value!;
-            Assert.True((await Documents().PublishAsync(ready.DocumentId, ready.Versions![0].VersionId, ready.Revision, None)).Succeeded);
+            Assert.True((await Documents().PublishAsync(admin, ready.DocumentId, ready.Versions![0].VersionId, ready.Revision, true, null, None)).Succeeded);
         }
     }
 
@@ -121,10 +121,12 @@ public sealed class ChatReliabilityTests
     private sealed class CapturingHandler(HttpStatusCode status, string body) : HttpMessageHandler
     {
         public string? LastBody;
+        public readonly List<(string Body, string Timestamp, string Signature)> Calls = [];
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             LastBody = await request.Content!.ReadAsStringAsync(cancellationToken);
+            Calls.Add((LastBody, request.Headers.GetValues("X-SmartSolar-Timestamp").Single(), request.Headers.GetValues("X-SmartSolar-Signature").Single()));
             return new HttpResponseMessage(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
         }
     }
@@ -135,6 +137,30 @@ public sealed class ChatReliabilityTests
         var options = new RagOptions { Enabled = true, ServiceSharedSecret = new string('s', 32), ServiceBaseUrl = "http://rag.test", RequestTimeoutSeconds = timeoutSeconds };
         return (new RagServiceClient(new HttpClient(handler) { BaseAddress = new Uri("http://rag.test/") }, options, TimeProvider.System,
             NullLogger<RagServiceClient>.Instance), handler);
+    }
+
+    [Fact]
+    public async Task Identical_questions_are_signed_with_distinct_request_ids_so_the_replay_cache_only_refuses_true_replays()
+    {
+        var (client, handler) = Client(HttpStatusCode.OK, """{"answer":null,"grounded":false,"citations":[]}""");
+        var request = Request();
+        // A body without "usage" (older service) is read as "no usage reported", never an exception.
+        var result = await client.AnswerAsync(request, None);
+        Assert.True(result.Reached);
+        Assert.Equal((0, 0, false), (result.PromptTokens, result.CompletionTokens, result.Grounded));
+        await client.AnswerAsync(request, None);
+        Assert.Equal(2, handler.Calls.Count);
+        var ids = handler.Calls.Select(c => JsonDocument.Parse(c.Body).RootElement.GetProperty("requestId").GetString()).ToList();
+        Assert.All(ids, id => Assert.Matches("^[0-9a-f]{32}$", id!));
+        Assert.NotEqual(ids[0], ids[1]);
+        Assert.NotEqual(handler.Calls[0].Signature, handler.Calls[1].Signature);
+        // The signature covers the requestId: it is part of the exact signed body.
+        foreach (var (body, timestamp, signature) in handler.Calls)
+        {
+            var expected = Convert.ToHexString(System.Security.Cryptography.HMACSHA256.HashData(Encoding.UTF8.GetBytes(new string('s', 32)),
+                Encoding.UTF8.GetBytes($"{timestamp}.{body}"))).ToLowerInvariant();
+            Assert.Equal(expected, signature);
+        }
     }
 
     private static RagAnswerRequest Request() => new("Câu hỏi?", [], [new RagAllowedVersion(Guid.NewGuid(), Guid.NewGuid(), "T", 1)], 6, 3000, 700);

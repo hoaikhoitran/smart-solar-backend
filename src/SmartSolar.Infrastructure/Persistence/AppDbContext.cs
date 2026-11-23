@@ -141,6 +141,7 @@ public sealed class AppDbContext : DbContext
 
     public DbSet<SmartSolar.Modules.KnowledgeBase.KnowledgeDocument> KnowledgeDocuments => Set<SmartSolar.Modules.KnowledgeBase.KnowledgeDocument>();
     public DbSet<SmartSolar.Modules.KnowledgeBase.KnowledgeDocumentAudienceChange> KnowledgeDocumentAudienceChanges => Set<SmartSolar.Modules.KnowledgeBase.KnowledgeDocumentAudienceChange>();
+    public DbSet<SmartSolar.Modules.KnowledgeBase.KnowledgePublicationApproval> KnowledgePublicationApprovals => Set<SmartSolar.Modules.KnowledgeBase.KnowledgePublicationApproval>();
 
     public DbSet<SmartSolar.Modules.KnowledgeBase.KnowledgeDocumentVersion> KnowledgeDocumentVersions => Set<SmartSolar.Modules.KnowledgeBase.KnowledgeDocumentVersion>();
 

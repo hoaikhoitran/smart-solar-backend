@@ -7,7 +7,8 @@ namespace SmartSolar.Modules.KnowledgeBase;
 
 public sealed record KnowledgeVersionView(Guid VersionId, int VersionNumber, Guid FileId, string Status, int? PageCount, int? ChunkCount, int? ExtractedCharacters,
     string? EmbeddingModel, string? FailureReason, DateTimeOffset CreatedAt, DateTimeOffset? IngestedAt, DateTimeOffset? PublishedAt,
-    int? IndexedConfigVersion = null, int? IndexedChunkCharacters = null, int? IndexedChunkOverlap = null, string? LastIngestStatus = null, string? LastIngestError = null);
+    int? IndexedConfigVersion = null, int? IndexedChunkCharacters = null, int? IndexedChunkOverlap = null, string? LastIngestStatus = null, string? LastIngestError = null,
+    DateTimeOffset? SharedScopeApprovedAt = null);
 
 public sealed record IngestionJobView(Guid JobId, Guid VersionId, string Kind, string Status, int Attempts, int MaxAttempts, DateTimeOffset NextAttemptAt, string? LastError,
     DateTimeOffset CreatedAt, DateTimeOffset? CompletedAt, int? ConfigVersion = null, int? ChunkCharacters = null, int? ChunkOverlap = null);
@@ -34,15 +35,36 @@ public static class KnowledgeJobs
 }
 
 /// <summary>
-/// <see cref="Audience"/> is authoritative for who may retrieve the document. <see cref="LegacyAudienceTag"/> flags a document that still
-/// carries the interim <c>audience:customer</c> tag: it grants nothing and asks an Admin to review the classification.
+/// <see cref="SharedVisibility"/> decides retrieval (shared publication scope since 2026-11-23): a PUBLISHED document is retrievable by every
+/// signed-in role only when its published version is APPROVED. <see cref="Audience"/> and <see cref="LegacyAudienceTag"/> are LEGACY
+/// (read-only, no effect on retrieval), kept for the legacy-content review and audit.
 /// </summary>
 public sealed record KnowledgeDocumentView(Guid DocumentId, string Title, string Category, IReadOnlyList<string> Tags, string Status, Guid? LatestVersionId,
     Guid? PublishedVersionId, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, int Revision, IReadOnlyList<KnowledgeVersionView>? Versions,
     IReadOnlyList<IngestionJobView>? Jobs, string Audience = KnowledgeAudiences.Internal, bool LegacyAudienceTag = false,
-    IReadOnlyList<AudienceChangeView>? AudienceChanges = null);
+    IReadOnlyList<AudienceChangeView>? AudienceChanges = null, SharedVisibilityView? SharedVisibility = null,
+    IReadOnlyList<PublicationApprovalView>? PublicationApprovals = null);
 
 public sealed record AudienceChangeView(string FromAudience, string ToAudience, Guid ActorUserId, string Reason, DateTimeOffset CreatedAt);
+
+/// <summary>
+/// <see cref="Status"/>: <c>APPROVED</c> (retrievable by all signed-in roles), <c>PENDING_REVIEW</c> (published under the former audience policy;
+/// retrievable by nobody until an Admin re-confirms or unpublishes) or <c>NOT_PUBLISHED</c>. <see cref="Scope"/> is always ALL_SIGNED_IN_ROLES.
+/// </summary>
+public sealed record SharedVisibilityView(string Scope, string Status, DateTimeOffset? ApprovedAt, Guid? ApprovedByUserId);
+
+public sealed record PublicationApprovalView(Guid VersionId, string Action, string LegacyAudience, Guid? ActorUserId, string? Note, DateTimeOffset CreatedAt);
+
+public static class SharedVisibilityStatuses
+{
+    public const string Approved = "APPROVED";
+    public const string PendingReview = "PENDING_REVIEW";
+    public const string NotPublished = "NOT_PUBLISHED";
+}
+
+/// <summary>Read-only inventory of published documents still awaiting the shared-scope review (metadata only, no content).</summary>
+public sealed record SharedScopeReviewView(int PendingCount, int PendingInternalCount, int PendingChunkCount, IReadOnlyList<SharedScopeReviewItem> Items,
+    string Guidance);
 
 /// <summary>
 /// Admin lifecycle of knowledge documents: REGISTERED → PROCESSING → READY_FOR_REVIEW → PUBLISHED
@@ -123,51 +145,67 @@ public sealed class KnowledgeDocumentHandlers(IKnowledgeUnitOfWork unitOfWork, F
         }, cancellationToken);
     }
 
-    /// <summary>
-    /// Admin reclassifies who may retrieve the document (INTERNAL ↔ CUSTOMER), with a reason, revision-checked so concurrent changes cannot
-    /// both apply. The change takes effect at once for retrieval, citations and chat history, and is kept as an audit row.
-    /// </summary>
-    public Task<OperationResult<KnowledgeDocumentView>> SetAudienceAsync(Guid adminUserId, Guid documentId, int revision, string? audience, string? reason,
-        CancellationToken cancellationToken)
-    {
-        var target = audience?.Trim().ToUpperInvariant();
-        if (target is null || !KnowledgeAudiences.All.Contains(target))
-            return Task.FromResult(OperationResult<KnowledgeDocumentView>.Fail(CommonErrorCodes.ValidationFailed, $"Audience must be one of {string.Join(", ", KnowledgeAudiences.All)}."));
-        if (string.IsNullOrWhiteSpace(reason) || reason.Trim().Length > 1000)
-            return Task.FromResult(OperationResult<KnowledgeDocumentView>.Fail(CommonErrorCodes.ValidationFailed, "A reason of at most 1000 characters is required."));
-        return MutateAsync(documentId, revision, (document, now, _) =>
-        {
-            if (document.Audience == target)
-                return Task.FromResult(Fail(KnowledgeErrorCodes.AudienceUnchanged, $"The document is already {target}."));
-            unitOfWork.Add(new KnowledgeDocumentAudienceChange
-            {
-                Id = Guid.NewGuid(), DocumentId = document.Id, FromAudience = document.Audience, ToAudience = target, ActorUserId = adminUserId,
-                Reason = reason.Trim(), CreatedAt = now,
-            });
-            document.Audience = target;
-            return Task.FromResult(OperationResult<bool>.Ok(true));
-        }, cancellationToken);
-    }
+    /// <summary>The text the Admin confirms before publishing (also shown by the frontend publish dialog).</summary>
+    public const string SharedVisibilityConfirmation =
+        "Khi xuất bản, nội dung phiên bản này và các trích đoạn mà trợ lý AI trích dẫn sẽ được MỌI người dùng đã đăng nhập (Khách hàng, Kỹ thuật viên, "
+        + "Kinh doanh, Quản lý, Quản trị) đọc được qua chatbot. Không xuất bản tài liệu nội bộ hoặc có dữ liệu nhạy cảm.";
 
-    /// <summary>Publishes a READY_FOR_REVIEW version; the previously published version becomes SUPERSEDED atomically.</summary>
-    public Task<OperationResult<KnowledgeDocumentView>> PublishAsync(Guid documentId, Guid versionId, int revision, CancellationToken cancellationToken)
-        => MutateAsync(documentId, revision, async (document, now, token) =>
+    /// <summary>
+    /// Publishes a READY_FOR_REVIEW (or WITHDRAWN) version for ALL signed-in roles; the previously published version becomes SUPERSEDED
+    /// atomically. Requires <paramref name="confirmSharedVisibility"/> (the Admin's explicit approval of <see cref="SharedVisibilityConfirmation"/>).
+    /// For the version that is already published but not yet approved (published under the former audience policy) the same call approves it
+    /// without changing its status: this is the legacy-content re-confirmation. Every approval is audited.
+    /// </summary>
+    public Task<OperationResult<KnowledgeDocumentView>> PublishAsync(Guid adminUserId, Guid documentId, Guid versionId, int revision, bool confirmSharedVisibility,
+        string? note, CancellationToken cancellationToken)
+    {
+        if (!confirmSharedVisibility)
+            return Task.FromResult(OperationResult<KnowledgeDocumentView>.Fail(KnowledgeErrorCodes.PublishConfirmationRequired,
+                "Publishing makes this version readable by every signed-in role. Send confirmSharedVisibility = true to confirm.",
+                new { confirmation = SharedVisibilityConfirmation }));
+        if (note is { Length: > 1000 })
+            return Task.FromResult(OperationResult<KnowledgeDocumentView>.Fail(CommonErrorCodes.ValidationFailed, "The note must be at most 1000 characters."));
+        return MutateAsync(documentId, revision, async (document, now, token) =>
         {
             if (document.Status == DocumentStatuses.Archived) return Fail(KnowledgeErrorCodes.InvalidState, "Archived documents cannot be published.");
             var versions = await unitOfWork.GetVersionsAsync(documentId, true, token);
             var version = versions.FirstOrDefault(v => v.Id == versionId);
             if (version is null) return Fail(KnowledgeErrorCodes.VersionNotFound, "Version was not found.");
-            if (version.Status == VersionStatuses.Published && document.PublishedVersionId == versionId && document.Status == DocumentStatuses.Published) return OperationResult<bool>.Ok(true);
-            if (version.Status is not (VersionStatuses.ReadyForReview or VersionStatuses.Withdrawn))
-                return Fail(KnowledgeErrorCodes.InvalidState, "Only an ingested version that is ready for review can be published.");
-            foreach (var other in versions.Where(v => v.Id != versionId && v.Status == VersionStatuses.Published))
-                other.Status = VersionStatuses.Superseded;
-            version.Status = VersionStatuses.Published;
-            version.PublishedAt = now;
-            document.PublishedVersionId = versionId;
-            document.Status = DocumentStatuses.Published;
+            var alreadyLive = version.Status == VersionStatuses.Published && document.PublishedVersionId == versionId && document.Status == DocumentStatuses.Published;
+            if (alreadyLive && version.SharedScopeApprovedAt is not null) return OperationResult<bool>.Ok(true);
+            if (!alreadyLive)
+            {
+                if (version.Status is not (VersionStatuses.ReadyForReview or VersionStatuses.Withdrawn))
+                    return Fail(KnowledgeErrorCodes.InvalidState, "Only an ingested version that is ready for review can be published.");
+                foreach (var other in versions.Where(v => v.Id != versionId && v.Status == VersionStatuses.Published))
+                    other.Status = VersionStatuses.Superseded;
+                version.Status = VersionStatuses.Published;
+                version.PublishedAt = now;
+                document.PublishedVersionId = versionId;
+                document.Status = DocumentStatuses.Published;
+            }
+            version.SharedScopeApprovedAt = now;
+            version.SharedScopeApprovedByUserId = adminUserId;
+            unitOfWork.Add(new KnowledgePublicationApproval
+            {
+                Id = Guid.NewGuid(), DocumentId = document.Id, VersionId = version.Id, Action = KnowledgePublicationActions.ApprovedAllSignedInRoles,
+                LegacyAudience = document.Audience, ActorUserId = adminUserId, Note = string.IsNullOrWhiteSpace(note) ? null : note.Trim(), CreatedAt = now,
+            });
+            logger.LogInformation("Knowledge version {VersionId} of document {DocumentId} approved for all signed-in roles by {AdminId} ({Mode}).",
+                version.Id, document.Id, adminUserId, alreadyLive ? "legacy re-confirmation" : "publish");
             return OperationResult<bool>.Ok(true);
         }, cancellationToken);
+    }
+
+    /// <summary>Read-only inventory of published documents awaiting the shared-scope review (none of them is retrievable meanwhile).</summary>
+    public async Task<SharedScopeReviewView> SharedScopeReviewAsync(CancellationToken cancellationToken)
+    {
+        var items = await unitOfWork.GetSharedScopeReviewAsync(cancellationToken);
+        return new SharedScopeReviewView(items.Count, items.Count(i => i.LegacyAudience == KnowledgeAudiences.Internal), items.Sum(i => i.ChunkCount ?? 0), items,
+            "Each document was published under the former audience policy and is not retrievable by anyone. Review its content: either re-confirm it "
+            + "for all signed-in roles (POST …/{documentId}/publish with its publishedVersionId and confirmSharedVisibility = true) or unpublish it "
+            + "(POST …/{documentId}/unpublish). Nothing is deleted.");
+    }
 
     /// <summary>Immediately removes the document from retrieval (the chatbot only reads PublishedVersionId of PUBLISHED documents).</summary>
     public Task<OperationResult<KnowledgeDocumentView>> UnpublishAsync(Guid documentId, int revision, CancellationToken cancellationToken)
@@ -317,7 +355,7 @@ public sealed class KnowledgeDocumentHandlers(IKnowledgeUnitOfWork unitOfWork, F
             versions = (await unitOfWork.GetVersionsAsync(documentId, false, cancellationToken)).OrderBy(v => v.VersionNumber)
                 .Select(v => new KnowledgeVersionView(v.Id, v.VersionNumber, v.FileId, v.Status, v.PageCount, v.ChunkCount, v.ExtractedCharacters, v.EmbeddingModel,
                     v.FailureReason, v.CreatedAt, v.IngestedAt, v.PublishedAt, v.IndexedConfigVersion, v.IndexedChunkCharacters, v.IndexedChunkOverlap,
-                    v.LastIngestStatus, v.LastIngestError)).ToList();
+                    v.LastIngestStatus, v.LastIngestError, v.SharedScopeApprovedAt)).ToList();
             jobs = (await unitOfWork.GetJobsAsync(documentId, cancellationToken)).OrderBy(j => j.CreatedAt)
                 .Select(j => new IngestionJobView(j.Id, j.VersionId, j.Kind, j.Status, j.Attempts, j.MaxAttempts, j.NextAttemptAt, j.LastError, j.CreatedAt, j.CompletedAt,
                     j.ConfigVersion, j.ChunkCharacters, j.ChunkOverlap)).ToList();
@@ -327,8 +365,21 @@ public sealed class KnowledgeDocumentHandlers(IKnowledgeUnitOfWork unitOfWork, F
             ? (await unitOfWork.GetAudienceChangesAsync(documentId, cancellationToken)).OrderBy(c => c.CreatedAt)
                 .Select(c => new AudienceChangeView(c.FromAudience, c.ToAudience, c.ActorUserId, c.Reason, c.CreatedAt)).ToList()
             : null;
+        var approvals = detail
+            ? (await unitOfWork.GetPublicationApprovalsAsync(documentId, cancellationToken)).OrderBy(a => a.CreatedAt)
+                .Select(a => new PublicationApprovalView(a.VersionId, a.Action, a.LegacyAudience, a.ActorUserId, a.Note, a.CreatedAt)).ToList()
+            : null;
+        var published = d.PublishedVersionId is { } pid && d.Status == DocumentStatuses.Published
+            ? await unitOfWork.FindVersionAsync(pid, false, cancellationToken)
+            : null;
+        var visibility = published is null
+            ? new SharedVisibilityView(KnowledgeAudiences.Shared, SharedVisibilityStatuses.NotPublished, null, null)
+            : new SharedVisibilityView(KnowledgeAudiences.Shared,
+                published.SharedScopeApprovedAt is null ? SharedVisibilityStatuses.PendingReview : SharedVisibilityStatuses.Approved,
+                published.SharedScopeApprovedAt, published.SharedScopeApprovedByUserId);
         return new KnowledgeDocumentView(d.Id, d.Title, d.Category, tags, d.Status, d.LatestVersionId,
-            d.PublishedVersionId, d.CreatedAt, d.UpdatedAt, d.Revision, versions, jobs, d.Audience, tags.Contains(KnowledgeAudiences.LegacyCustomerTag), changes);
+            d.PublishedVersionId, d.CreatedAt, d.UpdatedAt, d.Revision, versions, jobs, d.Audience, tags.Contains(KnowledgeAudiences.LegacyCustomerTag), changes,
+            visibility, approvals);
     }
 
     private static string? ValidateMetadata(string title, string category, IReadOnlyList<string>? tags)

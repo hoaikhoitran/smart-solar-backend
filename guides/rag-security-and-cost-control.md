@@ -67,12 +67,20 @@ rollback được.
 
 - **Bí mật**: key OpenAI chỉ trong `.env` của RAG service (`RAG_*_API_KEY`), không bao giờ tới API/FE; không log, không echo
   (kiểm thử: response admin không chứa shared secret hay `sk-`). API ↔ RAG ký HMAC-SHA256 có timestamp + chống replay.
-- **RBAC tài liệu**: API chỉ gửi danh sách version được phép theo audience; RAG service lọc trong câu SQL **và** lọc lại kết quả
-  (defense in depth). Eval offline: 0/8 câu hỏi nội bộ từ khách hàng trích tài liệu INTERNAL.
+- **Phạm vi công bố chung (từ 2026-11-23, thay audience INTERNAL/CUSTOMER)**: mọi vai trò đã đăng nhập (Customer, Technician, Sales,
+  Manager, Admin) nhận **cùng một** allow-list: version PUBLISHED của tài liệu PUBLISHED (`published_version_id` khớp) **và** đã được Admin
+  duyệt cho mọi vai trò (`shared_scope_approved_at`). Không có bộ lọc theo vai trò. RAG service vẫn lọc `version_id = ANY(...)` trong SQL
+  **và** lọc lại kết quả (defense in depth); API kiểm tra lại allow-list sau khi sinh câu trả lời (version bị gỡ giữa chừng không được
+  xuất ra hay trích dẫn: `insufficientReason = CITATIONS_REVOKED`). Ẩn danh vẫn 401; quản lý tài liệu vẫn chỉ Admin.
+  Chi tiết, runbook cutover và kiểm duyệt tài liệu cũ: [hcmc-regional-baseline-and-shared-rag.md](hcmc-regional-baseline-and-shared-rag.md).
 - **Prompt injection**: nội dung nguồn bị trung hòa thẻ `<source>/<system>/…`, system prompt yêu cầu coi nguồn là dữ liệu; câu trả lời
   chỉ được coi là grounded khi trích dẫn nguồn có thật. Eval offline: 6/6 câu injection không lộ system prompt/bí mật.
 - **Ledger** không lưu câu hỏi, câu trả lời hay khóa; dashboard chỉ Admin.
-- **Dữ liệu gửi OpenAI**: câu hỏi, lịch sử ngắn và đoạn tài liệu được phép. Tài liệu INTERNAL chỉ được gửi khi người hỏi là nhân viên.
+- **Dữ liệu gửi OpenAI**: câu hỏi, lịch sử ngắn và đoạn của version đã công bố + đã duyệt cho mọi vai trò. Tài liệu công bố theo luật
+  cũ chưa duyệt lại (PENDING_REVIEW) không được gửi cho bất kỳ ai. Câu trả lời cũ (INTERNAL / trước audience) vẫn bị ẩn với khách hàng và
+  không bao giờ được đưa lại vào lịch sử gửi model.
+- **Chẩn đoán an toàn**: `insufficientReason` (NO_PUBLISHED_DOCUMENTS, NO_INDEXED_CHUNKS, BELOW_MIN_SCORE, MODEL_INSUFFICIENT,
+  CITATIONS_REVOKED) và log có cấu trúc (vai trò, số version được phép, số đoạn truy xuất/đạt ngưỡng) — không log câu hỏi hay nội dung.
 
 ## 6. Vận hành
 

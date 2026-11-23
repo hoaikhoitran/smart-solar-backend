@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using SmartSolar.Api.Controllers;
 using SmartSolar.Modules.Identity.Constants;
 using SmartSolar.Modules.Installations;
@@ -88,7 +89,15 @@ public sealed class IotEndpointsTests
     [Fact]
     public async Task Provision_bind_ingest_and_read_over_http()
     {
-        using var factory = Start();
+        // The connection status is computed from the SERVER clock (receipt time vs now, OfflineAfterSeconds = 30). The server clock is
+        // controlled here so the assertions do not depend on how long the HTTP steps take on a loaded test host (a full parallel run took
+        // 47 s for this test and the device then read OFFLINE); the 30 s threshold is asserted explicitly below instead.
+        var clock = new FixedTimeProvider(DateTimeOffset.UtcNow);
+        using var factory = Enabled(new FakeStorageObjectVerifier(), new FakeRagServiceClient(), null, services =>
+        {
+            services.RemoveAll<TimeProvider>();
+            services.AddSingleton<TimeProvider>(clock);
+        });
         var (adminId, managerId, customerId, otherId) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
         var admin = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Admin, adminId);
         var manager = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Manager, managerId);
@@ -150,6 +159,12 @@ public sealed class IotEndpointsTests
         Assert.Equal(1, (await DataOf(await manager.GetAsync("/api/iot/bindings?status=ACTIVE"))).GetArrayLength());
         Assert.Equal(IotConnectionStatuses.Online, (await DataOf(await admin.GetAsync($"{Admin}/{deviceId}"))).GetProperty("connectionStatus").GetString());
         Assert.Equal(1, (await DataOf(await admin.GetAsync($"{Admin}?search=roof"))).GetProperty("totalItems").GetInt32());
+        // Exactly at the threshold the device is still ONLINE; one second later it is OFFLINE.
+        clock.Now = clock.Now.AddSeconds(30);
+        Assert.Equal(IotConnectionStatuses.Online, (await DataOf(await admin.GetAsync($"{Admin}/{deviceId}"))).GetProperty("connectionStatus").GetString());
+        clock.Now = clock.Now.AddSeconds(1);
+        Assert.Equal(IotConnectionStatuses.Offline, (await DataOf(await admin.GetAsync($"{Admin}/{deviceId}"))).GetProperty("connectionStatus").GetString());
+        Assert.Equal(IotConnectionStatuses.Offline, (await DataOf(await manager.GetAsync(StaffMonitoring(project) + "/readings/latest"))).GetProperty("connectionStatus").GetString());
 
         // Release: history stays, the device is refused again, the customer has no current device.
         await AssertFailureAsync(await manager.PostAsJsonAsync($"/api/iot/bindings/{bindingId}/release", new { }), HttpStatusCode.BadRequest, IotErrorCodes.ValidationFailed);

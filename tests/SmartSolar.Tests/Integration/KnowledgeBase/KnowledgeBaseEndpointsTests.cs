@@ -55,13 +55,27 @@ public sealed class KnowledgeBaseEndpointsTests
         var doc = await DataOf(await admin.PostAsJsonAsync("/api/admin/knowledge-documents", new { fileId = file, title = "Bảo hành", category = "WARRANTY" }),
             HttpStatusCode.Created);
         Assert.Equal(DocumentStatuses.Registered, doc.GetProperty("status").GetString());
-        await AssertFailureAsync(await admin.PostAsJsonAsync($"/api/admin/knowledge-documents/{Guid.NewGuid()}/publish", new { versionId = Guid.NewGuid(), revision = 0 }),
-            HttpStatusCode.NotFound, KnowledgeErrorCodes.DocumentNotFound);
+        await AssertFailureAsync(await admin.PostAsJsonAsync($"/api/admin/knowledge-documents/{Guid.NewGuid()}/publish",
+            new { versionId = Guid.NewGuid(), revision = 0, confirmSharedVisibility = true }), HttpStatusCode.NotFound, KnowledgeErrorCodes.DocumentNotFound);
     }
 
-    /// <summary>Registers, ingests and publishes a document; returns its id and published version.</summary>
+    /// <summary>Registers, ingests and publishes a document for all signed-in roles (explicit confirmation); returns its id and published version.</summary>
     private static async Task<(Guid DocumentId, Guid VersionId)> PublishAsync(AuthApiFactory factory, HttpClient admin, FakeStorageObjectVerifier storage,
-        Guid adminId, string title, string audience, string[]? tags = null)
+        Guid adminId, string title, string[]? tags = null)
+    {
+        var (documentId, versionId, revision) = await ReadyAsync(factory, admin, storage, adminId, title, tags);
+        // Without the explicit confirmation nothing is published.
+        await AssertFailureAsync(await admin.PostAsJsonAsync($"/api/admin/knowledge-documents/{documentId}/publish", new { versionId, revision }),
+            HttpStatusCode.BadRequest, KnowledgeErrorCodes.PublishConfirmationRequired);
+        var published = await DataOf(await admin.PostAsJsonAsync($"/api/admin/knowledge-documents/{documentId}/publish",
+            new { versionId, revision, confirmSharedVisibility = true, note = "Reviewed for all signed-in roles" }));
+        Assert.Equal(SharedVisibilityStatuses.Approved, published.GetProperty("sharedVisibility").GetProperty("status").GetString());
+        Assert.Equal(KnowledgeAudiences.Shared, published.GetProperty("sharedVisibility").GetProperty("scope").GetString());
+        return (documentId, versionId);
+    }
+
+    private static async Task<(Guid DocumentId, Guid VersionId, int Revision)> ReadyAsync(AuthApiFactory factory, HttpClient admin, FakeStorageObjectVerifier storage,
+        Guid adminId, string title, string[]? tags = null)
     {
         var file = await UploadAsync(admin, storage, adminId);
         var doc = await DataOf(await admin.PostAsJsonAsync("/api/admin/knowledge-documents", new { fileId = file, title, category = "WARRANTY", tags }),
@@ -71,20 +85,8 @@ public sealed class KnowledgeBaseEndpointsTests
             Assert.Equal(1, await scope.ServiceProvider.GetRequiredService<KnowledgeIngestionService>().RunDueAsync(10, CancellationToken.None));
         var ready = await DataOf(await admin.GetAsync($"/api/admin/knowledge-documents/{documentId}"));
         Assert.Equal(DocumentStatuses.ReadyForReview, ready.GetProperty("status").GetString());
-        var versionId = ready.GetProperty("versions")[0].GetProperty("versionId").GetGuid();
-        var published = await DataOf(await admin.PostAsJsonAsync($"/api/admin/knowledge-documents/{documentId}/publish",
-            new { versionId, revision = ready.GetProperty("revision").GetInt32() }));
-        Assert.Equal(KnowledgeAudiences.Internal, published.GetProperty("audience").GetString());   // safe default
-        if (audience != KnowledgeAudiences.Internal)
-            await SetAudienceAsync(admin, documentId, audience, "Reviewed: customer-safe content");
-        return (documentId, versionId);
-    }
-
-    private static async Task<System.Text.Json.JsonElement> SetAudienceAsync(HttpClient admin, Guid documentId, string audience, string reason)
-    {
-        var current = await DataOf(await admin.GetAsync($"/api/admin/knowledge-documents/{documentId}"));
-        return await DataOf(await admin.PutAsJsonAsync($"/api/admin/knowledge-documents/{documentId}/audience",
-            new { audience, reason, revision = current.GetProperty("revision").GetInt32() }));
+        Assert.Equal(SharedVisibilityStatuses.NotPublished, ready.GetProperty("sharedVisibility").GetProperty("status").GetString());
+        return (documentId, ready.GetProperty("versions")[0].GetProperty("versionId").GetGuid(), ready.GetProperty("revision").GetInt32());
     }
 
     [Fact]
@@ -95,18 +97,11 @@ public sealed class KnowledgeBaseEndpointsTests
         using var factory = Enabled(storage, rag);
         var adminId = Guid.NewGuid();
         var admin = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Admin, adminId);
-        // D-07 / M-2: the Admin classifies the warranty document CUSTOMER; the pricing guide stays INTERNAL even though it carries the
-        // interim audience tag, which grants nothing any more (it is only flagged for review).
-        var (documentId, versionId) = await PublishAsync(factory, admin, storage, adminId, "Bảo hành", KnowledgeAudiences.Customer);
-        var (internalId, internalVersionId) = await PublishAsync(factory, admin, storage, adminId, "Internal pricing guide", KnowledgeAudiences.Internal,
-            [KnowledgeAudiences.LegacyCustomerTag]);
-        var internalView = await DataOf(await admin.GetAsync($"/api/admin/knowledge-documents/{internalId}"));
-        Assert.Equal((KnowledgeAudiences.Internal, true), (internalView.GetProperty("audience").GetString(), internalView.GetProperty("legacyAudienceTag").GetBoolean()));
-        var classified = await DataOf(await admin.GetAsync($"/api/admin/knowledge-documents/{documentId}"));
-        var change = System.Linq.Enumerable.Single(classified.GetProperty("audienceChanges").EnumerateArray());
-        Assert.Equal((KnowledgeAudiences.Internal, KnowledgeAudiences.Customer, adminId, "Reviewed: customer-safe content"),
-            (change.GetProperty("fromAudience").GetString(), change.GetProperty("toAudience").GetString(), change.GetProperty("actorUserId").GetGuid(),
-             change.GetProperty("reason").GetString()));
+        var (documentId, versionId) = await PublishAsync(factory, admin, storage, adminId, "Bảo hành");
+        // A reviewed-but-unpublished document (READY_FOR_REVIEW): nobody may retrieve it.
+        var (draftId, draftVersionId, _) = await ReadyAsync(factory, admin, storage, adminId, "Bản nháp giá nội bộ", [KnowledgeAudiences.LegacyCustomerTag]);
+        var draftView = await DataOf(await admin.GetAsync($"/api/admin/knowledge-documents/{draftId}"));
+        Assert.True(draftView.GetProperty("legacyAudienceTag").GetBoolean());   // the interim tag grants nothing
 
         var customerId = Guid.NewGuid();
         var customer = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Customer, customerId);
@@ -115,7 +110,7 @@ public sealed class KnowledgeBaseEndpointsTests
             KnowledgeErrorCodes.MessageTooLong);
 
         var answer = await DataOf(await customer.PostAsJsonAsync("/api/chat/messages", new { message = "Tấm pin bảo hành bao lâu?", clientMessageId = "c-1" }));
-        // Retrieval for a customer is filtered server-side to customer-visible documents only.
+        // Retrieval is filtered server-side to the published, approved versions only.
         Assert.Equal([versionId], rag.LastAnswerRequest!.AllowedVersions.Select(v => v.VersionId));
         Assert.True(answer.GetProperty("grounded").GetBoolean());
         var citation = answer.GetProperty("answer").GetProperty("citations")[0];
@@ -128,37 +123,35 @@ public sealed class KnowledgeBaseEndpointsTests
         var stranger = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Customer);
         await AssertFailureAsync(await stranger.GetAsync($"/api/chat/sessions/{sessionId}"), HttpStatusCode.NotFound, KnowledgeErrorCodes.SessionNotFound);
 
-        // Staff retrieve every published document, internal ones included.
+        // Staff retrieve exactly the same versions (no role-specific filter): the unpublished draft is excluded for them too.
         await DataOf(await CatalogEndpointsTests.ClientFor(factory, RoleCodes.Sales).PostAsJsonAsync("/api/chat/messages", new { message = "Giá nội bộ?" }));
-        Assert.Equal(new[] { documentId, internalId }.Order(), rag.LastAnswerRequest!.AllowedVersions.Select(v => v.DocumentId).Order());
+        Assert.Equal([versionId], rag.LastAnswerRequest!.AllowedVersions.Select(v => v.VersionId));
 
-        // Even if the RAG service ignored the filter and cited the internal document, the customer gets no citation and no grounded answer.
+        // Even if the RAG service ignored the filter and cited the unpublished draft, nobody gets a citation or a grounded answer from it.
         rag.Answer = request => new RagAnswerResult(true, null, "Giá vốn là ... [1]", true,
-            [new RagCitation(internalId, internalVersionId, $"{internalVersionId:N}:0", 1, "Giá vốn", 0.9, "Giá vốn nội bộ")], 10, 10, "fake-llm", 1, 1);
-        var leaked = await DataOf(await customer.PostAsJsonAsync("/api/chat/messages", new { message = "Giá vốn tấm pin?" }));
-        Assert.False(leaked.GetProperty("grounded").GetBoolean());
-        Assert.Equal(0, leaked.GetProperty("answer").GetProperty("citations").GetArrayLength());
-        Assert.Equal(ChatService.InsufficientAnswer, leaked.GetProperty("answer").GetProperty("content").GetString());
+            [new RagCitation(draftId, draftVersionId, $"{draftVersionId:N}:0", 1, "Giá vốn", 0.9, "Giá vốn nội bộ")], 10, 10, "fake-llm", 1, 1);
+        foreach (var client in new[] { customer, admin })
+        {
+            var leaked = await DataOf(await client.PostAsJsonAsync("/api/chat/messages", new { message = "Giá vốn tấm pin?" }));
+            Assert.False(leaked.GetProperty("grounded").GetBoolean());
+            Assert.Equal(0, leaked.GetProperty("answer").GetProperty("citations").GetArrayLength());
+            Assert.Equal(ChatService.InsufficientAnswer, leaked.GetProperty("answer").GetProperty("content").GetString());
+            Assert.Equal(InsufficientReasons.CitationsRevoked, leaked.GetProperty("insufficientReason").GetString());
+        }
         rag.Answer = null;
 
-        // Reclassifying the warranty document INTERNAL revokes it at once: the customer's earlier answer built from it is withheld (text and
-        // citations), while the stored row is kept for review; the staff still see the document.
-        await SetAudienceAsync(admin, documentId, KnowledgeAudiences.Internal, "Contains supplier terms");
-        var history = await DataOf(await customer.GetAsync($"/api/chat/sessions/{sessionId}"));
-        var answered = history.GetProperty("messages")[1];
-        Assert.True(answered.GetProperty("withheld").GetBoolean());
-        Assert.Equal(ChatService.WithheldAnswer, answered.GetProperty("content").GetString());
-        Assert.Equal(0, answered.GetProperty("citations").GetArrayLength());
-        var retried = await DataOf(await customer.PostAsJsonAsync("/api/chat/messages", new { message = "Tấm pin bảo hành bao lâu?", clientMessageId = "c-1", sessionId }));
-        Assert.Equal(ChatService.WithheldAnswer, retried.GetProperty("answer").GetProperty("content").GetString());   // the idempotent replay too
-        await SetAudienceAsync(admin, documentId, KnowledgeAudiences.Customer, "Supplier terms removed in v1");
-
-        // Unpublishing removes the document from answers immediately.
+        // Unpublishing removes the document from answers immediately for everyone; the customer's earlier answer stays readable to its owner
+        // but loses its citation (its version is no longer published).
         var current = await DataOf(await admin.GetAsync($"/api/admin/knowledge-documents/{documentId}"));
         await DataOf(await admin.PostAsJsonAsync($"/api/admin/knowledge-documents/{documentId}/unpublish", new { revision = current.GetProperty("revision").GetInt32() }));
+        var history = await DataOf(await customer.GetAsync($"/api/chat/sessions/{sessionId}"));
+        var answered = history.GetProperty("messages")[1];
+        Assert.False(answered.GetProperty("withheld").GetBoolean());
+        Assert.Equal(0, answered.GetProperty("citations").GetArrayLength());
         var after = await DataOf(await customer.PostAsJsonAsync("/api/chat/messages", new { message = "Tấm pin bảo hành bao lâu?" }));
         Assert.False(after.GetProperty("grounded").GetBoolean());
         Assert.Equal(ChatService.InsufficientAnswer, after.GetProperty("answer").GetProperty("content").GetString());
+        Assert.Equal(InsufficientReasons.NoPublishedDocuments, after.GetProperty("insufficientReason").GetString());
     }
 
     [Fact]
@@ -177,37 +170,57 @@ public sealed class KnowledgeBaseEndpointsTests
     }
 
     [Fact]
-    public async Task Every_signed_in_role_can_use_the_chatbot_with_its_own_sessions_and_the_right_audience()
+    public async Task Every_signed_in_role_retrieves_and_cites_the_same_published_documents_with_its_own_sessions()
     {
         var storage = new FakeStorageObjectVerifier();
         var rag = new FakeRagServiceClient();
         using var factory = Enabled(storage, rag);
         var adminId = Guid.NewGuid();
         var admin = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Admin, adminId);
-        var (_, customerVersion) = await PublishAsync(factory, admin, storage, adminId, "Bảo hành", KnowledgeAudiences.Customer);
-        var (_, internalVersion) = await PublishAsync(factory, admin, storage, adminId, "Giá nội bộ", KnowledgeAudiences.Internal);
+        var (warrantyId, warrantyVersion) = await PublishAsync(factory, admin, storage, adminId, "Bảo hành");
+        var (_, maintenanceVersion) = await PublishAsync(factory, admin, storage, adminId, "Bảo trì");
+        var (_, draftVersion, _) = await ReadyAsync(factory, admin, storage, adminId, "Chưa duyệt");
 
         Assert.Equal(HttpStatusCode.Unauthorized, (await factory.CreateClient().PostAsJsonAsync("/api/chat/messages", new { message = "Xin chào" })).StatusCode);
         var invalid = factory.CreateClient();
         invalid.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "not-a-jwt");
         Assert.Equal(HttpStatusCode.Unauthorized, (await invalid.GetAsync("/api/chat/sessions")).StatusCode);
 
+        var expected = new[] { warrantyVersion, maintenanceVersion }.Order().ToList();
+        var answers = new List<(string Role, string Content, Guid CitedVersion)>();
         foreach (var role in new[] { RoleCodes.Customer, RoleCodes.Sales, RoleCodes.Technician, RoleCodes.Manager, RoleCodes.Admin })
         {
             var client = role == RoleCodes.Admin ? admin : CatalogEndpointsTests.ClientFor(factory, role);
-            var answer = await DataOf(await client.PostAsJsonAsync("/api/chat/messages", new { message = $"Câu hỏi của {role}" }));
+            var answer = await DataOf(await client.PostAsJsonAsync("/api/chat/messages", new { message = "Tấm pin bảo hành bao lâu?" }));
             var sessionId = answer.GetProperty("sessionId").GetGuid();
-            // Customers retrieve CUSTOMER documents only; staff roles retrieve every published document.
+            // Every role: the same allow-list (both published versions, never the unapproved draft).
             var allowed = rag.LastAnswerRequest!.AllowedVersions.Select(v => v.VersionId).Order().ToList();
-            Assert.Equal(role == RoleCodes.Customer ? [customerVersion] : new[] { customerVersion, internalVersion }.Order().ToList(), allowed);
+            Assert.Equal(expected, allowed);
+            Assert.DoesNotContain(draftVersion, allowed);
+            Assert.True(answer.GetProperty("grounded").GetBoolean(), role);
+            var cited = answer.GetProperty("answer").GetProperty("citations")[0];
+            answers.Add((role, answer.GetProperty("answer").GetProperty("content").GetString()!, cited.GetProperty("versionId").GetGuid()));
             // Each user sees only their own session.
             var sessions = await DataOf(await client.GetAsync("/api/chat/sessions"));
             Assert.Equal([sessionId], sessions.EnumerateArray().Select(x => x.GetProperty("sessionId").GetGuid()));
             Assert.Equal(2, (await DataOf(await client.GetAsync($"/api/chat/sessions/{sessionId}"))).GetProperty("messages").GetArrayLength());
         }
-        // Knowledge administration stays Admin-only.
+        // Identical grounded answer and citation for every role (deterministic fake model).
+        Assert.Single(answers.Select(a => (a.Content, a.CitedVersion)).Distinct());
+        Assert.Contains(answers[0].CitedVersion, expected);
+
+        // Knowledge and RAG administration stay Admin-only, including the legacy review inventory and the retired audience endpoint.
         foreach (var role in new[] { RoleCodes.Customer, RoleCodes.Sales, RoleCodes.Technician, RoleCodes.Manager })
-            Assert.Equal(HttpStatusCode.Forbidden, (await CatalogEndpointsTests.ClientFor(factory, role).GetAsync("/api/admin/rag-configuration")).StatusCode);
+        {
+            var client = CatalogEndpointsTests.ClientFor(factory, role);
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/admin/rag-configuration")).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/admin/knowledge-documents/shared-visibility-review")).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync($"/api/admin/knowledge-documents/{warrantyId}/publish",
+                new { versionId = warrantyVersion, revision = 0, confirmSharedVisibility = true })).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync($"/api/admin/knowledge-documents/{warrantyId}/unpublish", new { revision = 0 })).StatusCode);
+        }
+        var review = await DataOf(await admin.GetAsync("/api/admin/knowledge-documents/shared-visibility-review"));
+        Assert.Equal(0, review.GetProperty("pendingCount").GetInt32());
     }
 
     [Fact]
@@ -218,7 +231,7 @@ public sealed class KnowledgeBaseEndpointsTests
         using var factory = Enabled(storage, rag);
         var adminId = Guid.NewGuid();
         var admin = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Admin, adminId);
-        await PublishAsync(factory, admin, storage, adminId, "Bảo hành", KnowledgeAudiences.Customer);
+        await PublishAsync(factory, admin, storage, adminId, "Bảo hành");
         var customer = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Customer);
 
         foreach (var (error, status, code) in new[] { ("timeout", HttpStatusCode.GatewayTimeout, KnowledgeErrorCodes.Timeout),

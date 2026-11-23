@@ -30,6 +30,9 @@ logger = logging.getLogger("smartsolar.rag")
 class StrictBody(BaseModel):
     # Unknown fields are rejected (a typo must not silently fall back to a default).
     model_config = ConfigDict(extra="forbid")
+    # Per-call id inside the signed body (API since 2026-11-24): two legitimate calls with identical content in the same second get
+    # different signatures, so the replay cache refuses only a true replay. Optional for older API builds.
+    requestId: Optional[str] = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9-]+$")
 
 
 class IngestBody(StrictBody):
@@ -264,11 +267,14 @@ def create_app(services: Optional[Services] = None) -> FastAPI:
                 s.generations.release()
             # Question text is not logged (it may contain personal data). Token counts and the provider's own breakdown (Ollama:
             # model load, prompt evaluation, generation) show where a slow answer spent its time.
-            logger.info("Answered (grounded=%s, citations=%d, retrieval=%dms, generation=%dms, promptTokens=%d, completionTokens=%d%s).",
-                        outcome.grounded, len(outcome.citations), outcome.retrieval_ms, outcome.generation_ms, outcome.prompt_tokens,
+            logger.info("Answered (grounded=%s, reason=%s, allowedVersions=%d, retrievedChunks=%d, usableChunks=%d, citations=%d, retrieval=%dms, "
+                        "generation=%dms, promptTokens=%d, completionTokens=%d%s).",
+                        outcome.grounded, outcome.insufficient_reason or "-", len(body.allowedVersions), outcome.retrieved_chunks, outcome.usable_chunks,
+                        len(outcome.citations), outcome.retrieval_ms, outcome.generation_ms, outcome.prompt_tokens,
                         outcome.completion_tokens, timing_detail(outcome))
             return {
                 "answer": outcome.answer, "grounded": outcome.grounded, "citations": outcome.citations,
+                "insufficientReason": outcome.insufficient_reason, "retrievedChunks": outcome.retrieved_chunks, "usableChunks": outcome.usable_chunks,
                 "usage": {
                     "promptTokens": outcome.prompt_tokens, "completionTokens": outcome.completion_tokens,
                     "cachedPromptTokens": outcome.cached_prompt_tokens, "reasoningTokens": outcome.reasoning_tokens,

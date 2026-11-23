@@ -112,3 +112,13 @@ returned only when there is neither a saved surface nor a usable area, or when t
 (200 m). Without a saved surface, changing `usableAreaM2` makes existing simulations stale (geometry version +1). The `/surface` endpoints
 are unchanged (deprecated for new clients, kept for compatibility). The installation checklist item `STRUCTURAL_ASSESSMENT` is unrelated
 and still mandatory before an installation starts.
+
+## 2026-11-23 — Regional 2025 HCMC baseline (energy and climate)
+
+Energy and climate are no longer computed at the site's own coordinates. Every site in the 2025 territory of Ho Chi Minh City (province 79,
+including the former Binh Duong and Ba Ria – Vung Tau) uses one area-weighted regional PVGIS / NASA POWER baseline for a 1 kWp reference
+system with the requested tilt, azimuth, losses and mounting, scaled to the installed kWp; local obstacle shading is applied as monthly loss
+fractions. New additive fields: `estimateBasis`, `energy.regional`, `climate.regional`, `shading.correctionBasis` (and `estimateBasis` on
+list items and the selected summary); `climate.context.metadata.requestedLatitude/Longitude` are null for regional results. Sites outside
+the territory get `REGION_NOT_SUPPORTED`; old results keep their values and report `SITE_POINT_PVGIS_LEGACY`.
+Full method, provenance, contract and operations: [hcmc-regional-baseline-and-shared-rag.md](hcmc-regional-baseline-and-shared-rag.md).

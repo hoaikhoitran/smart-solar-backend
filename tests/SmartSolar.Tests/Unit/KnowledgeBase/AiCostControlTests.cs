@@ -41,7 +41,7 @@ public sealed class AiCostControlTests
             var registered = (await Documents().RegisterAsync(admin, file, "Bảo hành", "warranty", null, None)).Value!;
             Assert.Equal(1, await Ingestion().RunDueAsync(10, None));
             var ready = (await Documents().GetAsync(registered.DocumentId, None)).Value!;
-            Assert.True((await Documents().PublishAsync(ready.DocumentId, ready.Versions![0].VersionId, ready.Revision, None)).Succeeded);
+            Assert.True((await Documents().PublishAsync(admin, ready.DocumentId, ready.Versions![0].VersionId, ready.Revision, true, null, None)).Succeeded);
         }
 
         /// <summary>A billed answer: 1 200 prompt tokens (1 024 cached), 80 output, 12 query-embedding tokens, as gpt-6-luna reports them.</summary>

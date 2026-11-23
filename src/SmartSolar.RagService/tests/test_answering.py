@@ -126,3 +126,37 @@ def test_the_answer_budget_is_the_smaller_of_the_request_and_the_environment_cei
     assert model.max_tokens == 400
     answer_question(settings, embedder, store, model, "bảo hành tấm pin", [], allowed("v1"), 4, 2000, 250)
     assert model.max_tokens == 250
+
+
+# ---------------------------------------------------------------- safe "insufficient" diagnostics (2026-11-23): no content, only a reason code
+
+
+def test_no_indexed_chunks_is_distinguished_from_an_unrelated_question(settings):
+    embedder, store = setup(settings)
+    model = ScriptedModel("x [1]")
+    # An allowed version with no chunk for the query embedding model (empty document or reindex required).
+    missing = answer_question(settings, embedder, store, model, "Tấm pin bảo hành bao lâu?", [], allowed("v9"), 4, 2000, 300)
+    assert (missing.grounded, missing.insufficient_reason, missing.retrieved_chunks, missing.usable_chunks) == (False, "NO_INDEXED_CHUNKS", 0, 0)
+    settings.min_score = 0.99
+    unrelated = answer_question(settings, embedder, store, model, "thời tiết hôm nay", [], allowed("v1", "v2"), 4, 2000, 300)
+    assert (unrelated.grounded, unrelated.insufficient_reason, unrelated.usable_chunks) == (False, "BELOW_MIN_SCORE", 0)
+    assert unrelated.retrieved_chunks > 0
+    assert model.calls == 0   # neither case pays for a generation
+
+
+def test_model_insufficient_and_grounded_answers_report_their_reason(settings):
+    embedder, store = setup(settings)
+    refused = answer_question(settings, embedder, store, ScriptedModel("INSUFFICIENT_CONTEXT"), "Tấm pin bảo hành bao lâu?", [], allowed("v1"), 4, 2000, 300)
+    assert (refused.grounded, refused.insufficient_reason) == (False, "MODEL_INSUFFICIENT")
+    assert refused.usable_chunks >= 1
+    grounded = answer_question(settings, embedder, store, ScriptedModel("Bảo hành 12 năm [1]"), "Tấm pin bảo hành bao lâu?", [], allowed("v1"), 4, 2000, 300)
+    assert (grounded.grounded, grounded.insufficient_reason) == (True, None)
+
+
+def test_the_same_allow_list_gives_the_same_grounded_answer_whoever_asks(settings):
+    # The service never sees a role: identical allow-lists (what the API sends for every signed-in role) give identical evidence.
+    embedder, store = setup(settings)
+    first = answer_question(settings, embedder, store, ExtractiveChatModel(), "Tấm pin bảo hành bao lâu?", [], allowed("v1", "v2"), 4, 2000, 300)
+    second = answer_question(settings, embedder, store, ExtractiveChatModel(), "Tấm pin bảo hành bao lâu?", [], allowed("v1", "v2"), 4, 2000, 300)
+    assert first.grounded and second.grounded
+    assert (first.answer, first.citations) == (second.answer, second.citations)

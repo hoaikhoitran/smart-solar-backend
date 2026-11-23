@@ -280,9 +280,8 @@ public sealed class PostgresPendingSchemaConstraintTests(Xunit.Abstractions.ITes
         await new SmartSolar.Modules.KnowledgeBase.KnowledgeIngestionService(uow, new SmartSolar.Infrastructure.Persistence.FileStore(ctx.Db), rag, options, ctx.Clock,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<SmartSolar.Modules.KnowledgeBase.KnowledgeIngestionService>.Instance).RunDueAsync(10, None);
         var ready = (await documents.GetAsync(doc.DocumentId, None)).Value!;
-        var published = (await documents.PublishAsync(doc.DocumentId, ready.Versions![0].VersionId, ready.Revision, None)).Value!;
-        Assert.True((await documents.SetAudienceAsync(admin, doc.DocumentId, published.Revision, SmartSolar.Modules.KnowledgeBase.KnowledgeAudiences.Customer,
-            "Customer-safe warranty FAQ", None)).Succeeded);
+        // Published for all signed-in roles (shared scope): the customer may retrieve it.
+        Assert.NotNull((await documents.PublishAsync(admin, doc.DocumentId, ready.Versions![0].VersionId, ready.Revision, true, null, None)).Value);
         var chat = new SmartSolar.Modules.KnowledgeBase.ChatService(uow, rag, options, ctx.Clock,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<SmartSolar.Modules.KnowledgeBase.ChatService>.Instance);
         var answer = await chat.AskAsync(paid.CustomerId, null, "Bảo hành bao lâu?", "q-1", None);

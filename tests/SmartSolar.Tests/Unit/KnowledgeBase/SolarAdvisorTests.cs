@@ -5,13 +5,15 @@ using SmartSolar.Modules.Catalog.Enums;
 using SmartSolar.Modules.KnowledgeBase;
 using SmartSolar.Modules.KnowledgeBase.Advisor;
 using SmartSolar.Modules.SolarSimulation.Energy;
+using SmartSolar.Modules.SolarSimulation.Regional;
 using SmartSolar.Tests.TestSupport;
 
 namespace SmartSolar.Tests.Unit.KnowledgeBase;
 
 /// <summary>
 /// The configuration advisor: every figure comes from a stated deterministic rule over verified catalog data, the customer's own site /
-/// simulation or PVGIS; missing essentials are asked for, never invented; the model is never called for it. Catalog values are SYNTHETIC.
+/// simulation or the 2025 HCMC regional PVGIS baseline (the same model as /simulations, never a single point); missing essentials are asked
+/// for, never invented; the model is never called for it. Catalog and provider values are SYNTHETIC.
 /// </summary>
 public sealed class SolarAdvisorTests
 {
@@ -45,7 +47,8 @@ public sealed class SolarAdvisorTests
             Calls++;
             Last = request;
             if (fail) return Task.FromResult(PvEnergyResult.Fail(ProviderFailureCodes.Unavailable, "down"));
-            return Task.FromResult(PvEnergyResult.Success(new PvEnergyEstimate(annualPerKwp * request.PeakPowerKwp, null, null, null, [],
+            var monthly = Enumerable.Range(1, 12).Select(m => new PvMonthlyEnergy(m, annualPerKwp * request.PeakPowerKwp / 12m, null, null)).ToList();
+            return Task.FromResult(PvEnergyResult.Success(new PvEnergyEstimate(annualPerKwp * request.PeakPowerKwp, null, null, null, monthly,
                 new PvProviderMetadata("PVGIS", "5.3", "PVGIS-ERA5", null, 2005, 2023, null, request.MountingPlace, "crystSi", true, request.PeakPowerKwp,
                     request.SystemLossPercent, request.TiltDegree, request.CompassAzimuthDegree - 180, DateTimeOffset.UtcNow))));
         }
@@ -55,8 +58,12 @@ public sealed class SolarAdvisorTests
     private static AdvisorCatalog Catalog(params AdvisorInverter[] inverters)
         => new([Panel550], inverters.Length == 0 ? [Inv5k, Inv10k, InvUnknown] : inverters, [LaborPerKwp, TransportTrip], 0);
 
+    /// <summary>PVGIS calls of one regional aggregate: one per verified sample point (26).</summary>
+    private static int Samples => RegionalTestSupport.Dataset.Samples.Count;
+
     private static SolarAdvisorService Service(ISolarAdvisorDataSource data, IPvEnergyEstimator? pvgis = null, SolarYieldCache? cache = null)
-        => new(data, pvgis, cache ?? new SolarYieldCache(), new SolarAdvisorOptions { TaxRatePercent = 8m, SystemLossPercent = 14m }, TimeProvider.System);
+        => new(data, pvgis is null ? null : RegionalTestSupport.Provider(pvgis, new FakeClimateContextProvider()), cache ?? new SolarYieldCache(),
+            new SolarAdvisorOptions { TaxRatePercent = 8m, SystemLossPercent = 14m }, TimeProvider.System);
 
     [Fact]
     public async Task Roof_area_gives_the_theoretical_module_footprint_limit_and_its_catalog_cost()
@@ -78,14 +85,17 @@ public sealed class SolarAdvisorTests
     }
 
     [Fact]
-    public async Task Consumption_uses_PVGIS_once_per_location_and_sizes_kWp_from_the_annual_energy_balance()
+    public async Task Consumption_uses_the_regional_PVGIS_baseline_once_and_sizes_kWp_from_the_annual_energy_balance()
     {
         var pvgis = new FakePvgis(1300m);
         var cache = new SolarYieldCache();
         var input = new SolarAdvisorInput(MonthlyConsumptionKwh: 600m, Latitude: 10.7653m, Longitude: 106.6037m, TiltDegree: 15m, AzimuthDegree: 180m);
         var view = await Service(new FakeData(Catalog()), pvgis, cache).AdviseAsync(Guid.NewGuid(), input, None);
         Assert.Equal(SolarAdvisorStatuses.Ready, view.Status);
-        Assert.Equal((1300m, "PVGIS"), (view.SpecificYieldKwhPerKwpYear, view.YieldSource));
+        Assert.Equal((1300m, "PVGIS_HCMC_REGIONAL"), (view.SpecificYieldKwhPerKwpYear, view.YieldSource));
+        Assert.Contains(view.Sources, s => s.Kind == "PVGIS_HCMC_REGIONAL" && s.Detail.Contains(EstimateBases.LabelVi) && s.Detail.Contains($"{Samples}/{Samples}"));
+        // Never at the customer's point: every call is a regional sample, none is the given coordinate.
+        Assert.DoesNotContain(RegionalTestSupport.Dataset.Samples, s => s.Latitude == 10.7653m && s.Longitude == 106.6037m);
         // 600 × 12 ÷ 1300 = 5.538… → 5.54 kWp → ⌈5540 ÷ 550⌉ = 11 panels = 6.05 kWp (DC 6,050 W ≤ 7,500 W: the 5 kW inverter).
         Assert.Equal(5.54m, view.RequiredKwpForConsumption);
         var c = view.Configurations[0];
@@ -93,9 +103,19 @@ public sealed class SolarAdvisorTests
         Assert.Equal((7865m, 655m, 109m), (c.AnnualProductionKwh!.Value, c.AverageMonthlyProductionKwh!.Value, c.ConsumptionCoveragePercent!.Value));
         Assert.Equal((1m, PvgisMountingPlaces.Building, 14m), (pvgis.Last!.PeakPowerKwp, pvgis.Last.MountingPlace, pvgis.Last.SystemLossPercent));
 
-        // Same rounded location, tilt and azimuth: served from the cache, no second provider call.
-        await Service(new FakeData(Catalog()), pvgis, cache).AdviseAsync(Guid.NewGuid(), input with { MonthlyConsumptionKwh = 300m }, None);
-        Assert.Equal(1, pvgis.Calls);
+        Assert.Equal(Samples, pvgis.Calls);
+
+        // Same tilt and azimuth anywhere in the city (another former province): the same regional yield from the cache, no provider call.
+        var elsewhere = await Service(new FakeData(Catalog()), pvgis, cache).AdviseAsync(Guid.NewGuid(),
+            input with { MonthlyConsumptionKwh = 300m, Latitude = 10.4114m, Longitude = 107.1362m }, None);
+        Assert.Equal(1300m, elsewhere.SpecificYieldKwhPerKwpYear);
+        Assert.Equal(Samples, pvgis.Calls);
+
+        // Outside the 2025 territory (Hà Nội): no regional estimate is applied, nothing is called.
+        var outside = await Service(new FakeData(Catalog()), pvgis).AdviseAsync(Guid.NewGuid(), input with { Latitude = 21.0285m, Longitude = 105.8542m }, None);
+        Assert.Null(outside.SpecificYieldKwhPerKwpYear);
+        Assert.Contains(outside.Limitations, l => l.Contains("ngoài địa bàn TP.HCM"));
+        Assert.Equal(Samples, pvgis.Calls);
     }
 
     [Fact]
@@ -137,7 +157,7 @@ public sealed class SolarAdvisorTests
         var down = await Service(data, new FakePvgis(0, fail: true)).AdviseAsync(Guid.NewGuid(),
             new SolarAdvisorInput(MonthlyConsumptionKwh: 600m, Latitude: 10.7m, Longitude: 106.6m, TiltDegree: 10m, AzimuthDegree: 180m), None);
         Assert.Null(down.SpecificYieldKwhPerKwpYear);
-        Assert.Contains(down.Limitations, l => l.Contains("PROVIDER_UNAVAILABLE"));
+        Assert.Contains(down.Limitations, l => l.Contains("REGIONAL_COVERAGE_INSUFFICIENT"));
         Assert.Empty(down.Configurations);
     }
 
@@ -206,7 +226,8 @@ public sealed class SolarAdvisorTests
         var rag = new FakeRagServiceClient();
         var options = new RagOptions { Enabled = true, ServiceSharedSecret = new string('x', 32) };
         var pvgis = new FakePvgis(1300m);
-        var advisor = new SolarAdvisorService(new SolarAdvisorDataSource(ctx.Db), pvgis, new SolarYieldCache(), new SolarAdvisorOptions(), ctx.Clock);
+        var advisor = new SolarAdvisorService(new SolarAdvisorDataSource(ctx.Db), RegionalTestSupport.Provider(pvgis, new FakeClimateContextProvider()),
+            new SolarYieldCache(), new SolarAdvisorOptions(), ctx.Clock);
         ChatService Chat() => new(new KnowledgeUnitOfWork(ctx.Db), rag, options, ctx.Clock, NullLogger<ChatService>.Instance, advisor);
 
         var first = await Chat().AskAsync(customer.Id, null, "Gia đình dùng 600 kWh/tháng thì nên chọn hệ thống bao nhiêu kWp?", "a-1", None);
@@ -228,7 +249,7 @@ public sealed class SolarAdvisorTests
         Assert.Contains("không phải báo giá chính thức", second.Value.Answer.Content);
         Assert.Empty(second.Value.Answer.Citations);
         Assert.Equal(0, rag.AnswerCalls);
-        Assert.Equal(1, pvgis.Calls);
+        Assert.Equal(Samples, pvgis.Calls);
         // Nothing transactional was created from the chat.
         Assert.Equal((0, 0, 0), (await ctx.Db.Quotations.CountAsync(), await ctx.Db.SurveyRequests.CountAsync(), await ctx.Db.TechnicianAppointments.CountAsync()));
 

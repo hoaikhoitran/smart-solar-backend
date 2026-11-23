@@ -19,7 +19,8 @@ public sealed record SimulationSource(
     decimal? Latitude,
     decimal? Longitude,
     IReadOnlyList<Guid>? AssignedTechnicianUserIds = null,
-    decimal? DeclaredUsableAreaM2 = null);
+    decimal? DeclaredUsableAreaM2 = null,
+    string? ProvinceCode = null);
 
 public enum SelectSimulationOutcome
 {

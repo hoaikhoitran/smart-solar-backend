@@ -167,7 +167,7 @@ public sealed class PostgresKnowledgeBaseConcurrencyTests
         var doc = (await documents.RegisterAsync(admin, file, "Warranty", "WARRANTY", null, None)).Value!;
         await new KnowledgeIngestionService(new KnowledgeUnitOfWork(ctx.Db), new FileStore(ctx.Db), rag, options, ctx.Clock, NullLogger<KnowledgeIngestionService>.Instance).RunDueAsync(5, None);
         var ready = (await documents.GetAsync(doc.DocumentId, None)).Value!;
-        Assert.True((await documents.PublishAsync(doc.DocumentId, ready.Versions![0].VersionId, ready.Revision, None)).Succeeded);
+        Assert.True((await documents.PublishAsync(admin, doc.DocumentId, ready.Versions![0].VersionId, ready.Revision, true, null, None)).Succeeded);
 
         var inFlight = 0;
         var maxInFlight = 0;

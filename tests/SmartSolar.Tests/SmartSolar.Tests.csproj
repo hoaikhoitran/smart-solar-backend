@@ -23,6 +23,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Recorded REAL provider responses for the regional baseline tests (not synthetic). -->
+    <None Include="TestData\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\SmartSolar.Modules\SmartSolar.Modules.csproj" />
     <ProjectReference Include="..\..\src\SmartSolar.Api\SmartSolar.Api.csproj" />
   </ItemGroup>

@@ -41,7 +41,7 @@ public sealed class SolarAdvisorDataSource(AppDbContext db) : ISolarAdvisorDataS
     {
         var site = await db.PropertySites.AsNoTracking()
             .Where(p => p.Id == propertySiteId && p.Customer.UserId == userId)
-            .Select(p => new { p.Id, p.Name, p.Latitude, p.Longitude })
+            .Select(p => new { p.Id, p.Name, p.Latitude, p.Longitude, p.ProvinceCode })
             .FirstOrDefaultAsync(cancellationToken);
         if (site is null) return null;
         var preSurvey = (await db.PreSurveys.AsNoTracking().Where(s => s.PropertyId == propertySiteId)
@@ -51,13 +51,16 @@ public sealed class SolarAdvisorDataSource(AppDbContext db) : ISolarAdvisorDataS
         AdvisorSimulation? simulation = null;
         if (preSurvey?.SelectedSimulationId is { } selectedId)
         {
-            // Only a simulation of the current geometry with a computed specific yield (a stale or failed one is never used).
+            // Only a simulation of the current geometry with a computed specific yield (a stale or failed one is never used), and only one on
+            // the 2025 HCMC regional model: a selection made with the former single-point PVGIS estimate is not used for new advice.
+            var regionalMarker = SmartSolar.Modules.SolarSimulation.Constants.AlgorithmVersions.RegionalBaseline;
             simulation = await db.SelectedSimulations.AsNoTracking()
                 .Where(s => s.SimulationId == selectedId && s.PreSurveyId == preSurvey.Id && s.PreSurveyGeometryVersion == preSurvey.GeometryVersion
-                            && s.SpecificYieldKwhPerKwpYear != null && s.SpecificYieldKwhPerKwpYear > 0)
+                            && s.SpecificYieldKwhPerKwpYear != null && s.SpecificYieldKwhPerKwpYear > 0 && s.AlgorithmVersion.Contains(regionalMarker))
                 .Select(s => new AdvisorSimulation(s.SimulationId, s.SpecificYieldKwhPerKwpYear!.Value, s.InstalledCapacityKwp, s.AnnualEnergyKwh, s.CreatedAt))
                 .FirstOrDefaultAsync(cancellationToken);
         }
-        return new AdvisorSite(site.Id, site.Name, site.Latitude, site.Longitude, preSurvey?.TiltDegree, preSurvey?.AzimuthDegree, preSurvey?.UsableAreaM2, simulation);
+        return new AdvisorSite(site.Id, site.Name, site.Latitude, site.Longitude, preSurvey?.TiltDegree, preSurvey?.AzimuthDegree, preSurvey?.UsableAreaM2, simulation,
+            site.ProvinceCode);
     }
 }

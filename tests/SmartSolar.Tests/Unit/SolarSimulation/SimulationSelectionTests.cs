@@ -141,7 +141,8 @@ public sealed class SimulationSelectionTests
         var again = await ctx.CreateSimulationHandler().HandleAsync(Flush(userId, preSurveyId, productId), CancellationToken.None);
         Assert.Equal(CreateSimulationOutcome.Created, again.Outcome);
         Assert.NotEqual(simulation.SimulationId, again.Simulation!.SimulationId);
-        Assert.Equal(4, ctx.PvEnergy.Requests.Count);
+        // The simulation is recalculated; the city-wide aggregate itself is shared and still cached, so no provider is called again.
+        Assert.Equal(2 * RegionalTestSupport.SampleCount, ctx.PvEnergy.Requests.Count);
     }
 
     [Fact]

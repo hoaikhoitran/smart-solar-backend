@@ -23,6 +23,8 @@ public sealed class PostgresPaymentPlanTests
 {
     private const string Previous = "20261118102011_TechnicianLedOnSiteSales";
     private const string Migration = "20261118202100_PaymentPlan3070PaperSignatureCollection";
+    /// <summary>The latest migration (a clean database is fully migrated).</summary>
+    private const string Latest = "20261123140208_SharedKnowledgePublicationScope";
     private static readonly CancellationToken None = CancellationToken.None;
 
     private static async Task<string?> SqlStateAsync(PostgresTestDatabase database, string sql)
@@ -232,7 +234,7 @@ public sealed class PostgresPaymentPlanTests
 
         await using var empty = await PostgresTestDatabase.CreateAsync();
         await using var clean = empty.NewContext();
-        Assert.Equal(Migration, (await clean.Database.GetAppliedMigrationsAsync()).Last());
+        Assert.Equal(Latest, (await clean.Database.GetAppliedMigrationsAsync()).Last());
         await clean.GetService<IMigrator>().MigrateAsync(Previous);
         Assert.False(await clean.Database.SqlQueryRaw<bool>(
             "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'contract_installment') AS \"Value\"").SingleAsync());

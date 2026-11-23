@@ -25,32 +25,44 @@ public sealed class FakeCacheStore : ICacheStore
 
     public void Seed<T>(string key, T value) => _entries[key] = (JsonSerializer.Serialize(value), TimeSpan.FromMinutes(10));
 
+    // Thread-safe like Redis: concurrent writers (e.g. two regional aggregates computed in parallel) never lose an entry.
+    private readonly object _gate = new();
+
     public Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default)
     {
-        Gets.Add(key);
-        ThrowIfFailing();
+        lock (_gate)
+        {
+            Gets.Add(key);
+            ThrowIfFailing();
 
-        return Task.FromResult(_entries.TryGetValue(key, out var entry)
-            ? JsonSerializer.Deserialize<T>(entry.Json)
-            : default);
+            return Task.FromResult(_entries.TryGetValue(key, out var entry)
+                ? JsonSerializer.Deserialize<T>(entry.Json)
+                : default);
+        }
     }
 
     public Task SetAsync<T>(string key, T value, TimeSpan expiration, CancellationToken cancellationToken = default)
     {
-        Sets.Add(key);
-        ThrowIfFailing();
+        lock (_gate)
+        {
+            Sets.Add(key);
+            ThrowIfFailing();
 
-        _entries[key] = (JsonSerializer.Serialize(value), expiration);
-        return Task.CompletedTask;
+            _entries[key] = (JsonSerializer.Serialize(value), expiration);
+            return Task.CompletedTask;
+        }
     }
 
     public Task RemoveAsync(string key, CancellationToken cancellationToken = default)
     {
-        Removes.Add(key);
-        ThrowIfFailing();
+        lock (_gate)
+        {
+            Removes.Add(key);
+            ThrowIfFailing();
 
-        _entries.Remove(key);
-        return Task.CompletedTask;
+            _entries.Remove(key);
+            return Task.CompletedTask;
+        }
     }
 
     private void ThrowIfFailing()

@@ -8,7 +8,13 @@ public sealed record AddKnowledgeVersionRequest(Guid FileId);
 
 public sealed record UpdateKnowledgeMetadataRequest(int Revision, string? Title, string? Category, IReadOnlyList<string>? Tags);
 
-public sealed record PublishKnowledgeVersionRequest(Guid VersionId, int Revision);
+/// <param name="ConfirmSharedVisibility">
+/// Required true: the Admin confirms that the version's content and any snippet the assistant cites become readable by EVERY signed-in role
+/// (Customer, Technician, Sales, Manager, Admin). Also used, with the currently published version, to re-confirm a document published under
+/// the former audience policy.
+/// </param>
+/// <param name="Note">Optional review note kept in the approval audit (at most 1000 characters).</param>
+public sealed record PublishKnowledgeVersionRequest(Guid VersionId, int Revision, bool ConfirmSharedVisibility = false, string? Note = null);
 
 public sealed record KnowledgeRevisionRequest(int Revision);
 
@@ -67,4 +73,5 @@ public sealed record ActivateRagConfigurationRequest(int ExpectedRevision);
 public sealed record RollbackRagConfigurationRequest(int Version);
 
 /// <summary>Admin reclassification of a knowledge document: audience INTERNAL or CUSTOMER, reason required.</summary>
+/// <summary>Retired (410): the audience classification no longer decides retrieval. Kept only so old clients get a clear 410.</summary>
 public sealed record SetKnowledgeAudienceRequest(int Revision, string? Audience, string? Reason);

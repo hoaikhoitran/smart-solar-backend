@@ -14,6 +14,7 @@ using SmartSolar.Modules.SolarSimulation.Geometry;
 using SmartSolar.Modules.SolarSimulation.Installation;
 using SmartSolar.Modules.SolarSimulation.Models;
 using SmartSolar.Modules.SolarSimulation.Options;
+using SmartSolar.Modules.SolarSimulation.Regional;
 using SmartSolar.Modules.SolarSimulation.Shading;
 
 namespace SmartSolar.Modules.SolarSimulation.CreateSimulation;
@@ -32,19 +33,29 @@ namespace SmartSolar.Modules.SolarSimulation.CreateSimulation;
 /// Provider failures become explicit statuses; energy is never fabricated. Results with a failed
 /// provider are cached (readable, selectable) but not indexed for reuse, so a retry recalculates.
 /// A cache outage fails the request with <see cref="CreateSimulationOutcome.CacheUnavailable"/>.
+/// <para>
+/// Energy and climate (2026-11-23): one 2025 Ho Chi Minh City regional baseline (<see cref="IRegionalSolarBaselineProvider"/>,
+/// area-weighted over verified sample points) is applied to every site in province 79 and scaled to the site's installed kWp; the
+/// site's own coordinates are used only for local shading geometry (as monthly loss fractions) and rack row spacing, never to pick a
+/// different irradiance baseline. Sites outside (or not known to be inside) the territory get UNAVAILABLE energy and climate.
+/// </para>
 /// </summary>
 public sealed class CreateSimulationHandler
 {
     private const string EnergyDisclaimer =
-        "Typical-year estimate from PVGIS using historical data. Not a forecast for a specific year and not a production guarantee.";
+        "Ước tính trung bình khu vực TP.HCM (sau sáp nhập): typical-year regional estimate, the area-weighted average of PVGIS over the 2025 "
+        + "Ho Chi Minh City territory scaled to this system's installed capacity. Not a forecast for a specific year, not a measurement at this roof "
+        + "and not a production guarantee.";
 
     private const string ClimateDisclaimer =
-        "Historical monthly averages from NASA POWER for the stated period. Context only; not a forecast and not applied to the energy estimate.";
+        "Area-weighted average of NASA POWER historical monthly means over the 2025 Ho Chi Minh City territory for the stated period. "
+        + "Context only; not a forecast, not measured weather and not applied to the energy estimate.";
 
     private readonly ISolarSimulationUnitOfWork _unitOfWork;
     private readonly ICatalogUnitOfWork _catalog;
     private readonly IPvEnergyEstimator _pvEnergy;
     private readonly IClimateContextProvider _climate;
+    private readonly IRegionalSolarBaselineProvider _regional;
     private readonly SolarSimulationOptions _options;
     private readonly SimulationSingleFlight _singleFlight;
     private readonly ISimulationResultCache _cache;
@@ -56,6 +67,7 @@ public sealed class CreateSimulationHandler
         ICatalogUnitOfWork catalog,
         IPvEnergyEstimator pvEnergy,
         IClimateContextProvider climate,
+        IRegionalSolarBaselineProvider regional,
         SolarSimulationOptions options,
         SimulationSingleFlight singleFlight,
         ISimulationResultCache cache,
@@ -66,6 +78,7 @@ public sealed class CreateSimulationHandler
         _catalog = catalog;
         _pvEnergy = pvEnergy;
         _climate = climate;
+        _regional = regional;
         _options = options;
         _singleFlight = singleFlight;
         _cache = cache;
@@ -182,6 +195,9 @@ public sealed class CreateSimulationHandler
             [_options.Shading.DeclinationDegree, -_options.Shading.DeclinationDegree],
             _options.Shading.StartSolarHour, _options.Shading.EndSolarHour, _options.Shading.StepMinutes);
 
+        // The regional model applies by the site's official province code (or, without one, its coordinates inside the verified boundary).
+        var membership = _regional.ResolveMembership(source.ProvinceCode, source.Latitude, source.Longitude);
+
         var fingerprint = SimulationFingerprint.Compute(new Dictionary<string, object?>
         {
             ["fingerprintVersion"] = AlgorithmVersions.Fingerprint,
@@ -201,6 +217,9 @@ public sealed class CreateSimulationHandler
             ["systemLossSpecified"] = command.SystemLossPercent.HasValue,
             ["pvSettings"] = _pvEnergy.Settings,
             ["climateSettings"] = _climate.Settings,
+            ["estimateBasis"] = EstimateBases.HcmcRegionalAreaWeighted,
+            ["regionalBaseline"] = _regional.Fingerprint,
+            ["regionMembership"] = membership,
             ["shadingWindow"] = window,
             ["shadingAnalysis"] = _options.ShadingAnalysis,
             ["layoutOffsetSamples"] = _options.LayoutOffsetSamples,
@@ -253,7 +272,7 @@ public sealed class CreateSimulationHandler
             async () =>
             {
                 ranHere = true;
-                var result = await ComputeAsync(layout, input, product, specParse, installation, systemLoss, command.SystemLossPercent.HasValue, source, command.MountingType!, obstacles, surfaceFrame);
+                var result = await ComputeAsync(layout, input, product, specParse, installation, systemLoss, command.SystemLossPercent.HasValue, source, command.MountingType!, obstacles, surfaceFrame, membership);
                 return result with { SimulationId = Guid.NewGuid(), CreatedAt = _time.GetUtcNow() };
             },
             cancellationToken);
@@ -307,18 +326,25 @@ public sealed class CreateSimulationHandler
         SimulationSource source,
         string mountingType,
         IReadOnlyList<SurfaceObstacle> obstacles,
-        SurfaceFrame surface)
+        SurfaceFrame surface,
+        RegionMembership membership)
     {
         var panelCount = layout.Placements.Count;
         var kwp = Math.Round(panelCount * product.RatedPowerW!.Value / 1000m, 3);
+        // Site coordinates: local shading geometry and rack row spacing only. The energy / climate baseline is regional.
         var hasLocation = source.Latitude is not null && source.Longitude is not null;
+        var inRegion = _regional.Enabled && membership.InRegion;
+        var regionReason = !_regional.Enabled ? RegionalFailureCodes.Disabled
+            : membership.Status == RegionMembershipStatus.OutOfRegion ? RegionalFailureCodes.RegionNotSupported
+            : membership.Status == RegionMembershipStatus.Unknown ? RegionalFailureCodes.RegionUnknown
+            : null;
 
         // One budget for every provider call; independent of any single HTTP request so a shared
         // (single-flight) calculation is not cancelled when one caller disconnects.
         using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(_options.ProviderBudgetSeconds));
 
         var scenarios = new List<(string Role, string Place)>();
-        if (panelCount > 0 && hasLocation)
+        if (panelCount > 0 && inRegion)
         {
             if (mountingType == MountingTypes.Flush)
             {
@@ -331,11 +357,12 @@ public sealed class CreateSimulationHandler
             }
         }
 
-        var energyTasks = scenarios.Select(s => SafeEstimateAsync(new PvEnergyRequest(
-            source.Latitude!.Value, source.Longitude!.Value, kwp, systemLoss, input.PanelTiltDegree, input.PanelAzimuthDegree, s.Place), budget.Token)).ToList();
-        var climateTask = hasLocation
-            ? SafeClimateAsync(source.Latitude!.Value, source.Longitude!.Value, budget.Token)
-            : Task.FromResult<ClimateContextResult?>(null);
+        // One city-wide 1 kWp baseline per mounting place (shared cache, bounded provider concurrency), scaled to this system below.
+        var energyTasks = scenarios.Select(s => SafeRegionalPvAsync(new RegionalPvRequest(systemLoss, input.PanelTiltDegree, input.PanelAzimuthDegree, s.Place),
+            budget.Token)).ToList();
+        var climateTask = inRegion
+            ? SafeRegionalClimateAsync(budget.Token)
+            : Task.FromResult<RegionalClimateResult?>(null);
 
         // Shading: decided before the provider calls; the hourly series uses exactly the primary scenario's system parameters.
         var shadingOptions = _options.ShadingAnalysis;
@@ -363,8 +390,16 @@ public sealed class CreateSimulationHandler
 
         if (!hasLocation)
         {
-            warnings.Add(new(SimulationWarningCodes.LocationMissing,
-                "The property site has no coordinates, so energy and climate estimates are unavailable."));
+            warnings.Add(new(SimulationWarningCodes.LocationMissing, inRegion
+                ? "The property site has no coordinates, so local obstacle shading cannot be estimated; the regional energy estimate is unshaded."
+                : "The property site has no coordinates and no official province code, so energy and climate estimates are unavailable."));
+        }
+
+        if (regionReason is RegionalFailureCodes.RegionNotSupported or RegionalFailureCodes.RegionUnknown)
+        {
+            warnings.Add(new(SimulationWarningCodes.RegionNotSupported, regionReason == RegionalFailureCodes.RegionNotSupported
+                ? "The site is outside the supported 2025 Ho Chi Minh City territory (province 79); no regional energy or climate estimate is applied."
+                : "The site has neither an official province code nor coordinates, so it cannot be placed in the supported 2025 Ho Chi Minh City territory."));
         }
 
         if (source.DeclaredTotalAreaM2 is { } declared && layout.Areas.GrossSurfaceAreaM2 > 0)
@@ -378,20 +413,24 @@ public sealed class CreateSimulationHandler
         }
 
         // Energy.
+        // E_site[m] = Y_HCM[m] × kWp per scenario; the annual value is the sum of the months. The interannual standard deviation of a
+        // regional mean is not the weighted mean of the point deviations, so it is not reported (null, never invented).
         var scenarioDocs = scenarios.Select((s, i) =>
         {
             var result = energyTasks[i].Result;
-            var estimate = result.Estimate;
+            var baseline = result.Baseline;
+            var monthly = baseline is null ? [] : RegionalAggregationCalculator.ScaleToSite(baseline, kwp);
             return new EnergyScenarioDocument(
                 s.Role, s.Place,
                 result.Succeeded ? ComponentStatusCodes.Succeeded : ComponentStatusCodes.Failed,
                 result.Failure,
-                estimate?.AnnualEnergyKwh,
-                estimate?.AnnualStdDevKwh,
-                estimate is null || kwp == 0 ? null : Math.Round(estimate.AnnualEnergyKwh / kwp, 1),
-                estimate?.Monthly ?? [],
-                estimate?.Provider);
+                baseline is null ? null : monthly.Sum(m => m.EnergyKwh),
+                null,
+                baseline is null ? null : Math.Round(baseline.AnnualSpecificYieldKwhPerKwp, 1),
+                monthly,
+                baseline?.ReferenceRequest);
         }).ToList();
+        var primaryBaseline = scenarios.Count > 0 ? energyTasks[0].Result.Baseline : null;
 
         string energyStatus;
         string? energyReason;
@@ -400,9 +439,9 @@ public sealed class CreateSimulationHandler
         {
             (energyStatus, energyReason) = (ComponentStatusCodes.NotApplicable, "NO_PANELS");
         }
-        else if (!hasLocation)
+        else if (regionReason is not null)
         {
-            (energyStatus, energyReason) = (ComponentStatusCodes.Unavailable, "LOCATION_MISSING");
+            (energyStatus, energyReason) = (ComponentStatusCodes.Unavailable, regionReason);
         }
         else if (primary is { Status: ComponentStatusCodes.Succeeded })
         {
@@ -416,18 +455,30 @@ public sealed class CreateSimulationHandler
         if (scenarioDocs.Any(s => s.Status == ComponentStatusCodes.Failed))
         {
             warnings.Add(new(SimulationWarningCodes.EnergyProviderFailed,
-                "PVGIS did not return an estimate for at least one scenario: " +
+                "The regional PVGIS baseline is unavailable for at least one scenario: " +
                 string.Join("; ", scenarioDocs.Where(s => s.Failure is not null).Select(s => $"{s.MountingPlace}: {s.Failure!.Code}")) + "."));
+        }
+
+        var degradedEnergy = energyTasks.Select(t => t.Result.Baseline).Where(b => b?.Coverage.Quality == RegionalQualities.Degraded).ToList();
+        if (degradedEnergy.Count > 0)
+        {
+            var c = degradedEnergy[0]!.Coverage;
+            warnings.Add(new(SimulationWarningCodes.RegionalBaselineDegraded,
+                $"The regional energy baseline used {c.SucceededSampleCount} of {c.SampleCount} samples ({c.CoveredWeightFraction:P1} of the area, renormalised); missing: {string.Join(", ", c.MissingLocationIds)}."));
         }
 
         var shading = BuildShading(shadingPlan, layout.Placements.Select(p => p.Index).ToList(), energyStatus, primary, hourlyTask.Result, source, shadingOptions);
         var shadingApplied = shading.Status == ComponentStatusCodes.Succeeded;
+        if (shadingApplied) shading = shading with { CorrectionBasis = ShadingCorrectionBases.LocalLossFractionOnRegionalBaseline };
         var assumptions = new List<string>
         {
+            primaryBaseline is { } pb && _regional.Dataset is { } ds
+                ? $"Energy baseline: {EstimateBases.LabelVi} — area-weighted PVGIS average of {pb.Coverage.SucceededSampleCount}/{pb.Coverage.SampleCount} verified sample points ({ds.DatasetKey}) for a 1 kWp reference system with this tilt, azimuth, losses and mounting, scaled to {kwp} kWp."
+                : "Energy baseline: the 2025 Ho Chi Minh City regional area-weighted PVGIS average (not computed for this result).",
             $"System losses {systemLoss}% ({(systemLossSpecified ? "site-specified" : "PVGIS documented default")}); PVGIS system losses do not include nearby-object shading, so the shading estimate is not double-counted.",
             $"Module technology '{_pvEnergy.Settings.Technology}' (PVGIS default; the catalog has no technology field).",
             $"Terrain horizon {(_pvEnergy.Settings.UseHorizon ? "included" : "excluded")} (PVGIS); " +
-            (shadingApplied ? "nearby obstacle and rack-row shading applied as a linear irradiance-based estimate." : "local obstacle shading not applied."),
+            (shadingApplied ? "nearby obstacle and rack-row shading applied once as monthly loss fractions from this site's geometry (a local shading correction, not a local climate baseline)." : "local obstacle shading not applied."),
         };
         if (shadingApplied)
         {
@@ -437,7 +488,7 @@ public sealed class CreateSimulationHandler
                 && Math.Abs(reference - shading.AnnualEnergyBeforeShadingKwh.Value) / shading.AnnualEnergyBeforeShadingKwh.Value > 0.05m)
             {
                 warnings.Add(new(SimulationWarningCodes.ShadingBaselineDiffers,
-                    $"The PVGIS hourly series ({shading.StartYear}–{shading.EndYear}) gives {reference} kWh/year unshaded versus the typical-year {shading.AnnualEnergyBeforeShadingKwh} kWh; only its monthly loss fractions are used."));
+                    $"The PVGIS hourly series at the site ({shading.StartYear}–{shading.EndYear}) gives {reference} kWh/year unshaded versus the regional typical-year baseline {shading.AnnualEnergyBeforeShadingKwh} kWh; only its monthly loss fractions are used."));
             }
             if (shading.SunHeightCheckDeviationDegree is > 1.0)
             {
@@ -482,39 +533,57 @@ public sealed class CreateSimulationHandler
             assumptions,
             EnergyDisclaimer,
             succeeded ? primary!.AnnualEnergyKwh : null,
-            succeeded ? annualEnergy : null);
+            succeeded ? annualEnergy : null,
+            EstimateBases.HcmcRegionalAreaWeighted,
+            succeeded && primaryBaseline is not null && _regional.Dataset is { } dataset ? RegionalDocuments.ForPv(dataset, primaryBaseline, membership) : null);
+        if (succeeded)
+        {
+            warnings.Add(new(SimulationWarningCodes.RegionalEstimate,
+                $"{EstimateBases.LabelVi}: one area-weighted regional baseline for the whole 2025 Ho Chi Minh City territory, scaled to this system; not a forecast or a measurement for this roof."));
+        }
 
         // Climate.
         var climateResult = climateTask.Result;
         string climateStatus;
-        if (!hasLocation)
+        if (!inRegion)
         {
             climateStatus = ComponentStatusCodes.Unavailable;
         }
         else if (climateResult!.Succeeded)
         {
             climateStatus = ComponentStatusCodes.Succeeded;
+            if (climateResult.Baseline!.Coverage.Quality == RegionalQualities.Degraded)
+            {
+                var c = climateResult.Baseline.Coverage;
+                warnings.Add(new(SimulationWarningCodes.RegionalBaselineDegraded,
+                    $"The regional climate context used {c.SucceededSampleCount} of {c.SampleCount} samples ({c.CoveredWeightFraction:P1} of the area, renormalised)."));
+            }
         }
         else
         {
             climateStatus = ComponentStatusCodes.Failed;
-            warnings.Add(new(SimulationWarningCodes.ClimateProviderFailed, $"NASA POWER climate context is unavailable: {climateResult.Failure!.Code}."));
+            warnings.Add(new(SimulationWarningCodes.ClimateProviderFailed, $"NASA POWER regional climate context is unavailable: {climateResult.Failure!.Code}."));
         }
 
         var climate = new ClimateDocument(
             climateStatus,
-            hasLocation ? climateResult?.Failure?.Code : "LOCATION_MISSING",
+            inRegion ? climateResult?.Failure?.Code : regionReason,
             climateResult?.Failure,
-            climateResult?.Context,
-            ClimateDisclaimer);
+            climateResult?.Baseline?.Context,
+            ClimateDisclaimer,
+            EstimateBases.HcmcRegionalAreaWeighted,
+            climateResult?.Baseline is { } cb && _regional.Dataset is { } cds ? RegionalDocuments.ForClimate(cds, cb, membership) : null);
 
         var status = energyStatus is ComponentStatusCodes.Succeeded or ComponentStatusCodes.NotApplicable
                      && climateStatus == ComponentStatusCodes.Succeeded
             ? SimulationStatusCodes.Completed
             : SimulationStatusCodes.PartiallyCompleted;
 
+        // A DEGRADED regional baseline is readable and selectable, but never reused: a retry may complete it.
         var isReusable = scenarioDocs.All(s => s.Status == ComponentStatusCodes.Succeeded)
+                         && degradedEnergy.Count == 0
                          && climateStatus != ComponentStatusCodes.Failed
+                         && climateResult?.Baseline?.Coverage.Quality != RegionalQualities.Degraded
                          && shading.Status != ComponentStatusCodes.Failed;
 
         return new ComputedSimulation(
@@ -593,37 +662,37 @@ public sealed class CreateSimulationHandler
         }
     }
 
-    private async Task<PvEnergyResult> SafeEstimateAsync(PvEnergyRequest request, CancellationToken budget)
+    private async Task<RegionalPvResult> SafeRegionalPvAsync(RegionalPvRequest request, CancellationToken budget)
     {
         try
         {
-            return await _pvEnergy.EstimateAsync(request, budget);
+            return await _regional.GetPvBaselineAsync(request, budget);
         }
         catch (OperationCanceledException)
         {
-            return PvEnergyResult.Fail(ProviderFailureCodes.Timeout, "The provider time budget for this simulation was exceeded.");
+            return new RegionalPvResult(null, new ProviderFailure(ProviderFailureCodes.Timeout, "The provider time budget for this simulation was exceeded."), null);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unexpected PVGIS failure.");
-            return PvEnergyResult.Fail(ProviderFailureCodes.Unavailable, "PVGIS failed unexpectedly.");
+            _logger.LogError(ex, "Unexpected regional PVGIS baseline failure.");
+            return new RegionalPvResult(null, new ProviderFailure(ProviderFailureCodes.Unavailable, "The regional PVGIS baseline failed unexpectedly."), null);
         }
     }
 
-    private async Task<ClimateContextResult?> SafeClimateAsync(decimal latitude, decimal longitude, CancellationToken budget)
+    private async Task<RegionalClimateResult?> SafeRegionalClimateAsync(CancellationToken budget)
     {
         try
         {
-            return await _climate.GetMonthlyClimatologyAsync(latitude, longitude, budget);
+            return await _regional.GetClimateBaselineAsync(budget);
         }
         catch (OperationCanceledException)
         {
-            return ClimateContextResult.Fail(ProviderFailureCodes.Timeout, "The provider time budget for this simulation was exceeded.");
+            return new RegionalClimateResult(null, new ProviderFailure(ProviderFailureCodes.Timeout, "The provider time budget for this simulation was exceeded."), null);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unexpected NASA POWER failure.");
-            return ClimateContextResult.Fail(ProviderFailureCodes.Unavailable, "NASA POWER failed unexpectedly.");
+            _logger.LogError(ex, "Unexpected regional NASA POWER baseline failure.");
+            return new RegionalClimateResult(null, new ProviderFailure(ProviderFailureCodes.Unavailable, "The regional NASA POWER baseline failed unexpectedly."), null);
         }
     }
 

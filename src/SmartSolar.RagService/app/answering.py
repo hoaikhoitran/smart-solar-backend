@@ -47,6 +47,12 @@ class AnswerOutcome:
     reasoning_tokens: int = 0
     usage_reported: bool = True
     context_ms: int = 0
+    # Why an answer is not grounded (safe diagnostics, no content): NO_INDEXED_CHUNKS (nothing indexed for the allowed versions with the
+    # query embedding model: empty documents or a reindex is required), BELOW_MIN_SCORE (chunks exist but none is relevant enough) or
+    # MODEL_INSUFFICIENT (the model found no supported answer or cited nothing provided). None when grounded.
+    insufficient_reason: Optional[str] = None
+    retrieved_chunks: int = 0
+    usable_chunks: int = 0
 
 
 # Below this much time before the caller's deadline a generation is not started: it could not finish in time.
@@ -97,14 +103,16 @@ def answer_question(
     provider = getattr(query_side, "provider", None)
     embedded = embed_counted(query_side, [question])
     query, embedding_tokens = embedded.vectors[0], embedded.tokens
-    hits = store.search(query, list(titles.keys()), min(top_k, settings.max_top_k), query_side.model)
+    raw = store.search(query, list(titles.keys()), min(top_k, settings.max_top_k), query_side.model)
     # Defence in depth: never trust the store to have applied the filter.
-    hits = [h for h in hits if h.version_id in titles and h.score >= threshold]
+    allowed_hits = [h for h in raw if h.version_id in titles]
+    hits = [h for h in allowed_hits if h.score >= threshold]
     retrieval_ms = int((time.monotonic() - started) * 1000)
     usage = dict(embedding_tokens=embedding_tokens, embedding_model=query_side.model, embedding_provider=provider)
     if not hits:
         # No usable evidence: the model is not called (nothing to ground an answer on, nothing paid for generation).
-        return AnswerOutcome(None, False, retrieval_ms=retrieval_ms, **usage)
+        return AnswerOutcome(None, False, retrieval_ms=retrieval_ms, insufficient_reason="BELOW_MIN_SCORE" if allowed_hits else "NO_INDEXED_CHUNKS",
+                             retrieved_chunks=len(allowed_hits), usable_chunks=0, **usage)
 
     started = time.monotonic()
     sources = select_sources(hits, titles, min(max_context_tokens, settings.max_context_tokens))
@@ -165,5 +173,8 @@ def answer_question(
         reasoning_tokens=getattr(completion, "reasoning_tokens", 0),
         usage_reported=getattr(completion, "usage_reported", True),
         context_ms=context_ms,
+        insufficient_reason=None if grounded else "MODEL_INSUFFICIENT",
+        retrieved_chunks=len(allowed_hits),
+        usable_chunks=len(hits),
         **usage,
     )

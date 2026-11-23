@@ -110,6 +110,11 @@ public sealed record EnergyScenarioDocument(
     IReadOnlyList<PvMonthlyEnergy> Monthly,
     PvProviderMetadata? Provider);
 
+/// <summary>
+/// <see cref="EstimateBasis"/>: <c>HCMC_2025_REGIONAL_AREA_WEIGHTED</c> for results on the regional baseline; null in results stored before it
+/// (readers map null to <c>SITE_POINT_PVGIS_LEGACY</c>). <see cref="Regional"/> documents the regional model (null for legacy results and when
+/// no regional estimate was attempted).
+/// </summary>
 public sealed record EnergyDocument(
     string Status,
     string? Reason,
@@ -122,7 +127,48 @@ public sealed record EnergyDocument(
     IReadOnlyList<string> Assumptions,
     string Disclaimer,
     decimal? AnnualEnergyBeforeShadingKwh = null,
-    decimal? AnnualEnergyAfterShadingKwh = null);
+    decimal? AnnualEnergyAfterShadingKwh = null,
+    string? EstimateBasis = null,
+    RegionalEstimateDocument? Regional = null);
+
+/// <summary>Provenance of the verified territory boundary the regional weights come from.</summary>
+public sealed record RegionalBoundaryDocument(string Publisher, string DatasetPage, string DownloadUrl, string FileSha256, string FeaturePcode, string? ValidOn,
+    string License, string Crs);
+
+/// <summary>
+/// The 2025 HCMC regional estimate: SmartSolar's derived area-weighted average over verified sample points (not an official PVGIS or NASA
+/// POWER product). <see cref="ReferencePoint"/> is display-only and distinct from the site coordinates in <see cref="SurfaceSnapshotView"/>.
+/// <see cref="Quality"/> is COMPLETE or DEGRADED (renormalised over <see cref="CoveredWeightFraction"/> of the area).
+/// </summary>
+public sealed record RegionalEstimateDocument(
+    string EstimateBasis,
+    string Label,
+    string RegionCode,
+    string RegionName,
+    string AlgorithmVersion,
+    string DatasetKey,
+    string SourceDatasetVersion,
+    string ManifestSha256,
+    string SamplesSha256,
+    string WeightMethod,
+    decimal CellKm,
+    int SampleCount,
+    int SucceededSampleCount,
+    decimal CoveredWeightFraction,
+    string Quality,
+    IReadOnlyList<string> MissingLocationIds,
+    decimal? ReferenceKwp,
+    IReadOnlyList<string> ProviderDatabases,
+    int? ProviderYearMin,
+    int? ProviderYearMax,
+    DateTimeOffset? ProviderRetrievedFrom,
+    DateTimeOffset? ProviderRetrievedTo,
+    DateTimeOffset ComputedAt,
+    string MembershipBasis,
+    Regional.RegionalReferencePoint ReferencePoint,
+    RegionalBoundaryDocument Boundary,
+    string Formula,
+    IReadOnlyList<string> Limitations);
 
 public static class ShadingMethods
 {
@@ -179,14 +225,27 @@ public sealed record ShadingDocument(
     double? SunHeightCheckDeviationDegree,
     int SamplesPerPanel,
     double DirectionBinDegree,
-    IReadOnlyList<string> Limitations);
+    IReadOnlyList<string> Limitations,
+    string? CorrectionBasis = null);
 
+public static class ShadingCorrectionBases
+{
+    /// <summary>
+    /// Monthly loss FRACTIONS from the site's own geometry and the PVGIS hourly series at the site are applied once to the regional
+    /// monthly baseline: a local shading correction, never a local climate baseline (the site series' absolute kWh are not used).
+    /// </summary>
+    public const string LocalLossFractionOnRegionalBaseline = "LOCAL_SHADING_LOSS_FRACTION_ON_REGIONAL_BASELINE";
+}
+
+/// <summary>See <see cref="EnergyDocument"/> for <see cref="EstimateBasis"/> and <see cref="Regional"/>.</summary>
 public sealed record ClimateDocument(
     string Status,
     string? Reason,
     ProviderFailure? Failure,
     ClimateContext? Context,
-    string Disclaimer);
+    string Disclaimer,
+    string? EstimateBasis = null,
+    RegionalEstimateDocument? Regional = null);
 
 public sealed record ProductSnapshotView(Guid Id, string Sku, string Name, string Brand, string? Model, decimal RatedPowerW, decimal WidthMm, decimal HeightMm);
 
@@ -262,7 +321,8 @@ public sealed record SimulationDetail(
     IReadOnlyList<string> Limitations,
     DateTimeOffset? ExpiresAt = null,
     string Source = SimulationSources.Cache,
-    ShadingDocument? Shading = null);
+    ShadingDocument? Shading = null,
+    string? EstimateBasis = null);
 
 /// <summary>A cached (temporary) result in the list; it disappears from the list when it expires.</summary>
 public sealed record SimulationListItem(
@@ -281,7 +341,8 @@ public sealed record SimulationListItem(
     decimal InstalledCapacityKwp,
     decimal? AnnualEnergyKwh,
     DateTimeOffset CreatedAt,
-    DateTimeOffset ExpiresAt);
+    DateTimeOffset ExpiresAt,
+    string? EstimateBasis = null);
 
 /// <summary>
 /// The durable selected-simulation summary (PostgreSQL). Returned by select, in the list, and by
@@ -310,7 +371,8 @@ public sealed record SelectedSimulationView(
     DateTimeOffset SelectedAt,
     bool SnapshotStored,
     string SnapshotStatus,
-    string Source = SimulationSources.Summary);
+    string Source = SimulationSources.Summary,
+    string? EstimateBasis = null);
 
 public static class SnapshotStatuses
 {
@@ -354,8 +416,8 @@ public static class SimulationLimitations
     public static IReadOnlyList<string> For(string shadingWindow) =>
     [
         "Preliminary estimate. Engineering review is required before any installation decision.",
-        "Energy values are PVGIS typical-year estimates from historical data, not a forecast or guarantee.",
-        "Climate values are NASA POWER historical averages for the stated period, shown as context only.",
+        "Energy values are a typical-year regional estimate: the area-weighted average of PVGIS over the 2025 territory of Ho Chi Minh City, scaled to this system's installed capacity. It is SmartSolar's derived regional average from historical data, not a forecast, not a measurement for this roof and not a guarantee.",
+        "Climate values are the area-weighted average of NASA POWER historical monthly means over the same territory and period, shown as context only.",
         "The layout is a best-found preliminary result, not a proven optimum.",
         $"Rack row shading is an advisory estimate for the recorded design window ({shadingWindow}), not proof of year-round shade-free operation.",
         "Obstacle and rack-row shading is a linear irradiance-based estimate (direct beam only); electrical mismatch, bypass diodes, string layout and diffuse-sky obstruction are not modeled.",

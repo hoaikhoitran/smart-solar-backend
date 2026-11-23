@@ -71,7 +71,9 @@ public sealed class RagServiceClient(HttpClient http, RagOptions options, TimePr
                 : (Int(usage, "completionTokens") ?? 0) > 0 ? RagProviders.OpenAi : null,
             CachedPromptTokens: hasUsage ? Int(usage, "cachedPromptTokens") ?? 0 : 0, ReasoningTokens: hasUsage ? Int(usage, "reasoningTokens") ?? 0 : 0,
             UsageReported: !hasUsage || !usage.TryGetProperty("usageReported", out var ur) || ur.ValueKind != JsonValueKind.False,
-            ContextMs: Int(b, "contextMs") ?? 0);
+            ContextMs: Int(b, "contextMs") ?? 0,
+            // Safe diagnostics (no content); absent from older services.
+            InsufficientReason: Str(b, "insufficientReason"), RetrievedChunks: Int(b, "retrievedChunks"), UsableChunks: Int(b, "usableChunks"));
     }
 
     /// <summary>
@@ -111,7 +113,12 @@ public sealed class RagServiceClient(HttpClient http, RagOptions options, TimePr
         CancellationToken cancellationToken)
     {
         if (!options.Enabled || string.IsNullOrWhiteSpace(options.ServiceSharedSecret)) return (false, null, "RAG service not configured", "none", null);
-        var json = JsonSerializer.Serialize(payload, Json);
+        // Every call carries its own requestId inside the signed body. The service accepts a signature once (replay protection); without
+        // a unique field two legitimate calls with identical content in the same second (two users asking the same question — common now
+        // that every role sends the same allow-list) had the same signature and the second was refused as "replayed" (503 to the user).
+        var node = JsonSerializer.SerializeToNode(payload, Json)!.AsObject();
+        node["requestId"] = Guid.NewGuid().ToString("N");
+        var json = node.ToJsonString(Json);
         var timestamp = time.GetUtcNow().ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
         using var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
         request.Headers.Add("X-SmartSolar-Timestamp", timestamp);
@@ -170,7 +177,11 @@ public sealed class RagServiceClient(HttpClient http, RagOptions options, TimePr
         }
     }
 
-    private static string? Str(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-    private static int? Int(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var i) ? i : null;
-    private static long? Long(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var i) ? i : null;
+    // A missing block (e.g. no "usage" from an older service) is a default JsonElement: TryGetProperty would throw on it, so it reads as absent.
+    private static string? Str(JsonElement e, string name)
+        => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+    private static int? Int(JsonElement e, string name)
+        => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var i) ? i : null;
+    private static long? Long(JsonElement e, string name)
+        => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var i) ? i : null;
 }

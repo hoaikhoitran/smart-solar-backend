@@ -53,6 +53,8 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
         // AddInfrastructure requires a non-empty connection string; the real
         // provider is replaced below, so this value is never used to connect.
         builder.UseSetting("ConnectionStrings:DefaultConnection", "Host=localhost;Database=unused");
+        // No background provider calls in tests (the regional climate warm-up would call the fake providers outside any test).
+        builder.UseSetting("SolarSimulation:RegionalBaseline:WarmClimateOnStartup", "false");
         builder.UseSetting("Frontend:EmailVerificationUrl", "https://app.test/verify-email");
         builder.UseSetting("Frontend:PasswordResetUrl", "https://app.test/reset-password");
 

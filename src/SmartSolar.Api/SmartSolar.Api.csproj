@@ -20,6 +20,9 @@
     <!-- Official administrative catalog datasets, shipped with the host for the `admin-catalog import` CLI (never loaded at startup). -->
     <None Include="..\SmartSolar.Infrastructure\Persistence\ReferenceData\AdministrativeCatalog\**\*" LinkBase="ReferenceData\AdministrativeCatalog"
           CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <!-- 2025 HCMC regional solar baseline (verified sample manifest + simplified boundary), loaded and hash-checked at startup. -->
+    <None Include="..\SmartSolar.Infrastructure\Persistence\ReferenceData\RegionalBaseline\**\*" LinkBase="ReferenceData\RegionalBaseline"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

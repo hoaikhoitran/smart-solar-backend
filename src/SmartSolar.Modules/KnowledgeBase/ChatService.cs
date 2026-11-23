@@ -8,38 +8,69 @@ public sealed record CitationView(int Rank, Guid DocumentId, string DocumentTitl
     double Score, string? Snippet);
 
 /// <summary>
-/// <see cref="Withheld"/>: an assistant answer whose text a customer may not read (it was generated before customer-only retrieval
-/// existed, or for staff), shown as <see cref="ChatService.WithheldAnswer"/> without citations. The stored text is kept for review.
+/// <see cref="Withheld"/>: a LEGACY assistant answer whose text a customer may not read (generated before audiences existed, or by the former
+/// staff retrieval that could use internal documents), shown as <see cref="ChatService.WithheldAnswer"/> without citations. The stored text is
+/// kept for review. Citations are shown only while their source version is still retrievable (published and approved for all signed-in roles).
 /// </summary>
 public sealed record ChatMessageView(Guid MessageId, string Role, string Content, string Status, DateTimeOffset CreatedAt, IReadOnlyList<CitationView> Citations,
     bool Withheld = false);
 
 /// <param name="Advisor">The structured configuration advice when the question was answered by the deterministic advisor (null otherwise).</param>
+/// <param name="InsufficientReason">Why a knowledge answer is not grounded (null when grounded or for the advisor): see <see cref="InsufficientReasons"/>.</param>
 public sealed record ChatAnswerView(Guid SessionId, ChatMessageView Question, ChatMessageView Answer, bool Grounded, string Notice,
-    Advisor.SolarAdvisorView? Advisor = null);
+    Advisor.SolarAdvisorView? Advisor = null, string? InsufficientReason = null);
+
+/// <summary>Safe, content-free reasons for an INSUFFICIENT_CONTEXT answer (identical for every role: retrieval has no role filter).</summary>
+public static class InsufficientReasons
+{
+    /// <summary>No published version is approved for all signed-in roles (nothing can be retrieved by anyone).</summary>
+    public const string NoPublishedDocuments = "NO_PUBLISHED_DOCUMENTS";
+    /// <summary>The allowed versions have no chunks for the query embedding model (empty documents or a reindex is required).</summary>
+    public const string NoIndexedChunks = "NO_INDEXED_CHUNKS";
+    /// <summary>Chunks exist but none reaches the configured minimum score for this question.</summary>
+    public const string BelowMinScore = "BELOW_MIN_SCORE";
+    /// <summary>The model found no answer supported by the provided sources (or cited none).</summary>
+    public const string ModelInsufficient = "MODEL_INSUFFICIENT";
+    /// <summary>A cited version stopped being retrievable while the answer was generated (unpublished / superseded meanwhile).</summary>
+    public const string CitationsRevoked = "CITATIONS_REVOKED";
+    /// <summary>The RAG service did not say why (older service).</summary>
+    public const string Unspecified = "UNSPECIFIED";
+}
 
 public sealed record ChatSessionView(Guid SessionId, string Title, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
 
 public sealed record ChatSessionDetailView(ChatSessionView Session, IReadOnlyList<ChatMessageView> Messages);
 
-/// <summary>Who the knowledge is retrieved for. <see cref="Customer"/> is the restricted default.</summary>
+/// <summary>
+/// The reader class for LEGACY chat history only (answers stored before the shared publication scope). It no longer changes what is
+/// retrieved: every signed-in role retrieves the same approved published versions. <see cref="Customer"/> is the restricted default.
+/// </summary>
 public enum KnowledgeAudience
 {
-    /// <summary>Only documents classified as customer-visible (unclassified documents are internal).</summary>
+    /// <summary>A customer (or a token without a staff role): legacy INTERNAL / pre-audience answers stay withheld.</summary>
     Customer,
-    /// <summary>Signed-in staff: every published document.</summary>
+    /// <summary>Signed-in staff: may read the text of their own legacy answers.</summary>
     Staff,
 }
 
-/// <summary>Persisted audience of a knowledge document (<c>knowledge_document.audience</c>) and of a generated answer.</summary>
+/// <summary>
+/// Persisted LEGACY audience of a knowledge document (<c>knowledge_document.audience</c>: INTERNAL / CUSTOMER, no longer used for retrieval)
+/// and the retrieval scope of a generated answer (<c>chat_message.retrieval_audience</c>: <see cref="Shared"/> for every new answer).
+/// </summary>
 public static class KnowledgeAudiences
 {
-    /// <summary>Staff only. The default, and the value of every document that existed before the column.</summary>
+    /// <summary>Legacy: staff only. The default, and the value of every document that existed before the column.</summary>
     public const string Internal = "INTERNAL";
-    /// <summary>Customers (and staff) may retrieve it.</summary>
+    /// <summary>Legacy: customers (and staff) could retrieve it.</summary>
     public const string Customer = "CUSTOMER";
+    /// <summary>Retrieval scope of answers since 2026-11-23: only versions an Admin approved for all signed-in roles.</summary>
+    public const string Shared = "ALL_SIGNED_IN_ROLES";
 
+    /// <summary>Values of the legacy document classification.</summary>
     public static readonly IReadOnlyList<string> All = [Internal, Customer];
+
+    /// <summary>Values allowed in <c>chat_message.retrieval_audience</c>.</summary>
+    public static readonly IReadOnlyList<string> RetrievalScopes = [Internal, Customer, Shared];
 
     /// <summary>
     /// The tag of the interim (never deployed) classification. It grants nothing: the column is authoritative. Documents still carrying it are
@@ -49,9 +80,10 @@ public static class KnowledgeAudiences
 }
 
 /// <summary>
-/// Knowledge chat. The API (not the RAG service) decides what may be read: only the published version of each published document
-/// the caller's audience may read (a Customer: customer-visible documents only) is passed as the retrieval filter, and the citations are
-/// re-checked against the same audience after generation so a document unpublished or reclassified meanwhile never appears.
+/// Knowledge chat. The API (not the RAG service) decides what may be read. Shared publication scope (2026-11-23): every signed-in role
+/// (Customer, Technician, Sales, Manager, Admin) retrieves exactly the same set — the published version of each PUBLISHED document that an Admin
+/// approved for all signed-in roles — passed as the retrieval allow-list; the citations are re-checked against the same set after generation,
+/// so a version unpublished or superseded meanwhile is never output or cited.
 /// Cost is bounded by a transactional per-user/global token ledger with leased reservations and a per-user
 /// concurrent-generation cap.
 /// Retrieval and generation values (top-k, context and output budgets, min score, model, temperature, history length, prompt
@@ -102,7 +134,7 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
             // A retried FIRST question (the client did not receive the new session id): the stored exchange, not a second session and a
             // second generation.
             return OperationResult<ChatAnswerView>.Ok(await AnswerViewAsync(retriedFirst.SessionId, retriedFirst, firstReply, cancellationToken,
-                await VisibleDocumentsAsync(audience, cancellationToken), audience));
+                await VisibleAsync(cancellationToken), audience));
         }
         if (sessionId is { } id)
         {
@@ -111,7 +143,7 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
             // A retried request (same client message id) returns the stored exchange instead of paying twice.
             if (clientMessageId is not null && await unitOfWork.FindMessageByClientIdAsync(id, clientMessageId, cancellationToken) is { } existing
                 && await unitOfWork.FindReplyAsync(existing.Id, cancellationToken) is { } reply)
-                return OperationResult<ChatAnswerView>.Ok(await AnswerViewAsync(id, existing, reply, cancellationToken, await VisibleDocumentsAsync(audience, cancellationToken), audience));
+                return OperationResult<ChatAnswerView>.Ok(await AnswerViewAsync(id, existing, reply, cancellationToken, await VisibleAsync(cancellationToken), audience));
         }
 
         // ---- route before admission (reads only): the deterministic advisor never needs a paid call
@@ -121,7 +153,7 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
             // The same rule as the session view: an answer the customer may not read is never fed back to the model either.
             var previous = await unitOfWork.GetMessagesAsync(session.Id, c.MaxHistoryMessages, cancellationToken);
             var previousCitations = await unitOfWork.GetCitationsAsync(previous.Select(m => m.Id).ToList(), cancellationToken);
-            var visible = await VisibleDocumentsAsync(audience, cancellationToken);
+            var visible = await VisibleAsync(cancellationToken);
             history = previous.Where(m => m.Status != ChatMessageStatuses.Failed && !View(m, previousCitations, visible, audience).Withheld)
                 .Select(m => new RagHistoryTurn(m.Role, m.Content)).ToList();
         }
@@ -136,7 +168,7 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
             if (advisorInput is not null || Advisor.SolarAdvisorTextExtractor.IsAdvisorQuestion(question, extracted) || followUp)
                 advice = (advisorInput ?? new Advisor.SolarAdvisorInput()).Over(extracted.Over(earlier));
         }
-        var allowed = advice is null ? await AllowedAsync(audience, cancellationToken) : [];
+        var allowed = advice is null ? await AllowedAsync(cancellationToken) : [];
         // A paid call happens only on the knowledge path with something the caller may read.
         var billable = advice is null && allowed.Count > 0;
         if (billable && !c.GenerationEnabled)
@@ -191,7 +223,7 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
                         "The configuration advisor is temporarily unavailable. Please try again later; other questions still work.");
                 }
                 var stored = await PersistAsync(userId, session, question, clientMessageId, Advisor.SolarAdvisorRenderer.Render(view), true, [],
-                    new Dictionary<Guid, RagAllowedVersion>(), new RagAnswerResult(true, null, null, true, [], 0, 0, "solar-advisor", 0, 0), audience, cancellationToken);
+                    new Dictionary<Guid, RagAllowedVersion>(), new RagAnswerResult(true, null, null, true, [], 0, 0, "solar-advisor", 0, 0), audience, cancellationToken, null);
                 settlement = Settlement(AiUsageOutcomes.Answered, false, null, stored.Value?.Answer.MessageId, time.GetUtcNow());
                 logger.LogInformation("Chat advisor answer: status={Status} advisor={AdvisorMs}ms (provider={ProviderMs}ms) total={TotalMs}ms; no model call.",
                     view.Status, clock.ElapsedMilliseconds - prepareMs, view.ProviderMs, clock.ElapsedMilliseconds);
@@ -201,7 +233,7 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
             RagAnswerResult result;
             if (allowed.Count == 0)
             {
-                result = new RagAnswerResult(true, null, null, false, [], 0, 0, null, 0, 0);
+                result = new RagAnswerResult(true, null, null, false, [], 0, 0, null, 0, 0, InsufficientReason: InsufficientReasons.NoPublishedDocuments);
             }
             else
             {
@@ -248,14 +280,21 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
             input = result.PromptTokens;
             output = result.CompletionTokens;
 
-            // Re-check after generation: a version unpublished during the call must not be cited.
-            var stillAllowed = (await AllowedAsync(audience, cancellationToken)).ToDictionary(v => v.VersionId);
+            // Re-check after generation: a version unpublished during the call must not be output or cited.
+            var stillAllowed = (await AllowedAsync(cancellationToken)).ToDictionary(v => v.VersionId);
             var citations = result.Citations.Where(c => stillAllowed.ContainsKey(c.VersionId)).ToList();
             var grounded = result.Grounded && !string.IsNullOrWhiteSpace(result.Answer) && citations.Count > 0 && citations.Count == result.Citations.Count;
             var answerText = grounded ? result.Answer!.Trim() : InsufficientAnswer;
+            var insufficientReason = grounded ? null
+                : result.Citations.Count > 0 && citations.Count < result.Citations.Count ? InsufficientReasons.CitationsRevoked
+                : result.InsufficientReason ?? (result.Grounded ? InsufficientReasons.ModelInsufficient : InsufficientReasons.Unspecified);
+            // Safe structured diagnostics: no question text, no document content, no secrets.
+            logger.LogInformation("Chat knowledge outcome: grounded={Grounded} reason={Reason} role={Role} allowedVersions={Allowed} retrievedChunks={Retrieved} usableChunks={Usable} citations={Citations}/{Proposed}.",
+                grounded, insufficientReason ?? "-", userRole ?? "-", allowed.Count, result.RetrievedChunks, result.UsableChunks, citations.Count, result.Citations.Count);
 
             var persistStarted = clock.ElapsedMilliseconds;
-            var persisted = await PersistAsync(userId, session, question, clientMessageId, answerText, grounded, grounded ? citations : [], stillAllowed, result, audience, cancellationToken);
+            var persisted = await PersistAsync(userId, session, question, clientMessageId, answerText, grounded, grounded ? citations : [], stillAllowed, result, audience, cancellationToken,
+                insufficientReason);
             settlement = Costed(result, grounded ? AiUsageOutcomes.Answered : AiUsageOutcomes.InsufficientContext, uncertain: false, persisted.Value?.Answer.MessageId,
                 config, (int)clock.ElapsedMilliseconds);
             // Where the time went (no question text): API preparation (configuration, session, history, routing, admission), the RAG call
@@ -336,8 +375,8 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
         => (await unitOfWork.ListSessionsAsync(userId, cancellationToken)).Select(s => new ChatSessionView(s.Id, s.Title, s.CreatedAt, s.UpdatedAt)).ToList();
 
     /// <summary>
-    /// A session with its messages. For a Customer, stored citations (snippets) are shown only for documents still customer-visible, so a
-    /// document reclassified as internal no longer surfaces through old citations.
+    /// A session with its messages (owner only). Stored citations (snippets) are shown only while their version is still retrievable; legacy
+    /// answers follow <see cref="WithheldFor"/>.
     /// </summary>
     public async Task<OperationResult<ChatSessionDetailView>> GetSessionAsync(Guid userId, Guid sessionId, CancellationToken cancellationToken,
         KnowledgeAudience audience = KnowledgeAudience.Customer)
@@ -346,14 +385,14 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
         if (session is null || session.UserId != userId) return OperationResult<ChatSessionDetailView>.Fail(KnowledgeErrorCodes.SessionNotFound, "Chat session was not found.");
         var messages = await unitOfWork.GetMessagesAsync(sessionId, null, cancellationToken);
         var citations = await unitOfWork.GetCitationsAsync(messages.Select(m => m.Id).ToList(), cancellationToken);
-        var visible = await VisibleDocumentsAsync(audience, cancellationToken);
+        var visible = await VisibleAsync(cancellationToken);
         return OperationResult<ChatSessionDetailView>.Ok(new ChatSessionDetailView(new ChatSessionView(session.Id, session.Title, session.CreatedAt, session.UpdatedAt),
             messages.Select(m => View(m, citations, visible, audience)).ToList()));
     }
 
     private async Task<OperationResult<ChatAnswerView>> PersistAsync(Guid userId, ChatSession? session, string question, string? clientMessageId, string answer,
         bool grounded, IReadOnlyList<RagCitation> citations, IReadOnlyDictionary<Guid, RagAllowedVersion> versions, RagAnswerResult result, KnowledgeAudience audience,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, string? insufficientReason)
     {
         var now = time.GetUtcNow();
         var isNew = session is null;
@@ -369,7 +408,8 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
             Status = grounded ? ChatMessageStatuses.Completed : ChatMessageStatuses.InsufficientContext, ReplyToMessageId = userMessage.Id,
             PromptTokens = result.PromptTokens, CompletionTokens = result.CompletionTokens, Model = result.Model,
             LatencyMs = result.RetrievalMs + result.GenerationMs, CreatedAt = now.AddTicks(1),
-            RetrievalAudience = audience == KnowledgeAudience.Staff ? KnowledgeAudiences.Internal : KnowledgeAudiences.Customer,
+            // Every new answer is retrieved from the shared scope, whoever asked.
+            RetrievalAudience = KnowledgeAudiences.Shared,
         };
         try
         {
@@ -400,45 +440,52 @@ public sealed class ChatService(IKnowledgeUnitOfWork unitOfWork, IRagServiceClie
             var existing = await unitOfWork.FindMessageByClientIdAsync(session.Id, clientMessageId, cancellationToken);
             var reply = existing is null ? null : await unitOfWork.FindReplyAsync(existing.Id, cancellationToken);
             if (existing is not null && reply is not null)
-                return OperationResult<ChatAnswerView>.Ok(await AnswerViewAsync(session.Id, existing, reply, cancellationToken, versions.Values.Select(v => v.DocumentId).ToHashSet(), audience));
+                return OperationResult<ChatAnswerView>.Ok(await AnswerViewAsync(session.Id, existing, reply, cancellationToken, await VisibleAsync(cancellationToken), audience));
             throw;
         }
-        return OperationResult<ChatAnswerView>.Ok(await AnswerViewAsync(session.Id, userMessage, assistant, cancellationToken, null, audience));
+        return OperationResult<ChatAnswerView>.Ok((await AnswerViewAsync(session.Id, userMessage, assistant, cancellationToken, await VisibleAsync(cancellationToken), audience))
+            with { InsufficientReason = insufficientReason });
     }
 
-    private Task<IReadOnlyList<RagAllowedVersion>> AllowedAsync(KnowledgeAudience audience, CancellationToken cancellationToken)
-        => audience == KnowledgeAudience.Staff ? unitOfWork.GetRetrievableVersionsAsync(cancellationToken) : unitOfWork.GetCustomerRetrievableVersionsAsync(cancellationToken);
+    /// <summary>The one retrieval allow-list for every signed-in role (published + approved for all signed-in roles).</summary>
+    private Task<IReadOnlyList<RagAllowedVersion>> AllowedAsync(CancellationToken cancellationToken) => unitOfWork.GetRetrievableVersionsAsync(cancellationToken);
 
-    /// <summary>Documents whose stored citations the audience may still see (null = staff: every stored citation).</summary>
-    private async Task<IReadOnlySet<Guid>?> VisibleDocumentsAsync(KnowledgeAudience audience, CancellationToken cancellationToken)
-        => audience == KnowledgeAudience.Staff ? null : (await unitOfWork.GetCustomerRetrievableVersionsAsync(cancellationToken)).Select(v => v.DocumentId).ToHashSet();
+    /// <summary>What stored citations may still show: the currently retrievable versions (and their documents, for the legacy rule).</summary>
+    private async Task<Retrievable> VisibleAsync(CancellationToken cancellationToken)
+    {
+        var allowed = await AllowedAsync(cancellationToken);
+        return new Retrievable(allowed.Select(v => v.VersionId).ToHashSet(), allowed.Select(v => v.DocumentId).ToHashSet());
+    }
 
-    private async Task<ChatAnswerView> AnswerViewAsync(Guid sessionId, ChatMessage question, ChatMessage answer, CancellationToken cancellationToken, IReadOnlySet<Guid>? visibleDocuments,
+    private sealed record Retrievable(IReadOnlySet<Guid> Versions, IReadOnlySet<Guid> Documents);
+
+    private async Task<ChatAnswerView> AnswerViewAsync(Guid sessionId, ChatMessage question, ChatMessage answer, CancellationToken cancellationToken, Retrievable visible,
         KnowledgeAudience audience)
     {
         var citations = await unitOfWork.GetCitationsAsync([answer.Id], cancellationToken);
-        var view = View(answer, citations, visibleDocuments, audience);
-        return new ChatAnswerView(sessionId, View(question, citations, visibleDocuments, audience), view, answer.Status == ChatMessageStatuses.Completed && !view.Withheld, Notice);
+        var view = View(answer, citations, visible, audience);
+        return new ChatAnswerView(sessionId, View(question, citations, visible, audience), view, answer.Status == ChatMessageStatuses.Completed && !view.Withheld, Notice);
     }
 
     /// <summary>
-    /// A customer never reads an answer that was not retrieved for the customer audience: answers from before audiences existed (null) may
-    /// have used any published document, and answers retrieved for staff may use internal ones. Their text cannot be redacted safely, so it is
-    /// withheld (kept in the database for review), and it is never fed back to the model as conversation history.
+    /// Migration-compatible rule for LEGACY answers (stored before the shared scope): a customer never reads an answer that was not retrieved
+    /// for the customer audience — answers from before audiences existed (null) may have used any published document, and answers retrieved
+    /// for staff (INTERNAL) may use internal ones. Their text cannot be redacted safely, so it is withheld (kept in the database for review)
+    /// and never fed back to the model. A legacy CUSTOMER answer is withheld from a customer when it cites a document that is no longer
+    /// retrievable. Answers retrieved from the shared scope are never withheld from their owner (every role could read their sources).
     /// </summary>
-    private static bool WithheldFor(KnowledgeAudience audience, ChatMessage m)
-        => audience == KnowledgeAudience.Customer && m.Role == ChatRoles.Assistant && m.RetrievalAudience != KnowledgeAudiences.Customer;
+    private static bool WithheldFor(KnowledgeAudience audience, ChatMessage m, IReadOnlyList<ChatCitation> own, Retrievable visible)
+        => audience == KnowledgeAudience.Customer && m.Role == ChatRoles.Assistant && m.RetrievalAudience != KnowledgeAudiences.Shared
+           && (m.RetrievalAudience != KnowledgeAudiences.Customer || own.Any(c => !visible.Documents.Contains(c.DocumentId)));
 
-    /// <param name="visibleDocuments">Documents the reader may still see (null = staff: all). An answer citing any other document is withheld
-    /// as a whole for the customer, because its text was written from that document (e.g. one reclassified as INTERNAL since).</param>
-    private static ChatMessageView View(ChatMessage m, IReadOnlyList<ChatCitation> citations, IReadOnlySet<Guid>? visibleDocuments, KnowledgeAudience audience)
+    /// <summary>Citations are shown only for versions still retrievable (published and approved): unpublished or superseded sources disappear.</summary>
+    private static ChatMessageView View(ChatMessage m, IReadOnlyList<ChatCitation> citations, Retrievable visible, KnowledgeAudience audience)
     {
         var own = citations.Where(c => c.MessageId == m.Id).ToList();
-        var withheld = WithheldFor(audience, m) || (visibleDocuments is not null && own.Any(c => !visibleDocuments.Contains(c.DocumentId)));
-        return withheld
+        return WithheldFor(audience, m, own, visible)
             ? new(m.Id, m.Role, WithheldAnswer, m.Status, m.CreatedAt, [], Withheld: true)
             : new(m.Id, m.Role, m.Content, m.Status, m.CreatedAt,
-                own.OrderBy(c => c.Rank)
+                own.Where(c => visible.Versions.Contains(c.VersionId)).OrderBy(c => c.Rank)
                     .Select(c => new CitationView(c.Rank, c.DocumentId, c.DocumentTitle, c.VersionId, c.VersionNumber, c.ChunkId, c.PageNumber, c.Section, c.Score, c.Snippet)).ToList());
     }
 }

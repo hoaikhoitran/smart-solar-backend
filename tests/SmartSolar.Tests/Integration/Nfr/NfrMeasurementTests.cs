@@ -37,6 +37,7 @@ public sealed class NfrFactAttribute : FactAttribute
 /// guides/full-project-production-audit.md §9): PayOS PAID within 2 minutes, simulation p95 ≤ 25 s over ≥ 30 runs, presigned URLs expiring at the
 /// configured TTL (300 s), rate limits holding under concurrent requests. Results are written to the test output (TRX).
 /// </summary>
+[Collection(WallClockSensitiveCollection.Name)]
 public sealed class NfrMeasurementTests(ITestOutputHelper output)
 {
     private static readonly CancellationToken None = CancellationToken.None;
@@ -78,6 +79,60 @@ public sealed class NfrMeasurementTests(ITestOutputHelper output)
         }
         output.WriteLine($"worst case {worst.TotalSeconds:0.0} s (target ≤ 120 s; interval {options.ReconciliationIntervalSeconds} s, re-check age {options.ReconcileAfterSeconds} s)");
         Assert.True(worst <= TimeSpan.FromMinutes(2), $"worst case {worst.TotalSeconds:0.0} s");
+    }
+
+    /// <summary>
+    /// NFR-READ-P95 (always runs, in-process TestServer + SQLite, NOT a VPS measurement): the read endpoints touched by the 2026-11-23 changes —
+    /// simulation detail (regional metadata), simulation list, the caller's chat sessions and the Admin shared-visibility review — are each read 50
+    /// times sequentially; target p95 ≤ 1.5 s. Raw percentiles are written to the test output.
+    /// </summary>
+    [Fact]
+    public async Task NFR_READ_P95_Changed_read_endpoints_stay_within_1_5_seconds_at_p95()
+    {
+        // A latency measurement, not a rate-limit test (those are separate): the 60/min read policies would refuse the 100 reads of one user.
+        using var factory = FeatureEndpointTestSupport.Enabled(new FakeStorageObjectVerifier(), new FakeRagServiceClient(), new Dictionary<string, string?>
+        {
+            ["RateLimiting:PortalRead:PermitLimit"] = "500",
+            ["RateLimiting:RagHistory:PermitLimit"] = "500",
+            ["RateLimiting:RagAdminRead:PermitLimit"] = "500",
+        });
+        var customer = await factory.SeedCustomerWithSiteAsync("NFR read customer");
+        var preSurvey = await factory.SeedAsync(PreSurveyTestContext.NewPreSurvey(customer.Site.Id));
+        var product = await factory.SeedAsync(PreSurveyTestContext.NewPanelProduct());
+        var surface = await customer.Client.PutAsJsonAsync($"/api/pre-surveys/{preSurvey.Id}/surface", new
+        {
+            expectedRevision = 0, surfaceLengthM = 12, surfaceWidthM = 8, surfaceTiltDegree = 15, surfaceAzimuthDegree = 180, obstacles = Array.Empty<object>(),
+        });
+        Assert.True(surface.IsSuccessStatusCode, await surface.Content.ReadAsStringAsync());
+        var created = await customer.Client.PostAsJsonAsync($"/api/pre-surveys/{preSurvey.Id}/simulations",
+            new { expectedGeometryVersion = 1, productId = product.Id, mountingType = "FLUSH", installation = new { panelGapMm = 20 } });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var simulationId = System.Text.Json.JsonDocument.Parse(await created.Content.ReadAsStringAsync()).RootElement.GetProperty("data").GetProperty("simulationId").GetGuid();
+        var admin = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Admin);
+
+        var reads = new (string Name, HttpClient Client, string Url)[]
+        {
+            ("simulation detail", customer.Client, $"/api/pre-surveys/{preSurvey.Id}/simulations/{simulationId}"),
+            ("simulation list", customer.Client, $"/api/pre-surveys/{preSurvey.Id}/simulations"),
+            ("chat sessions", customer.Client, "/api/chat/sessions"),
+            ("shared-visibility review", admin, "/api/admin/knowledge-documents/shared-visibility-review"),
+        };
+        foreach (var (name, client, url) in reads)
+        {
+            var durations = new List<double>();
+            for (var i = 0; i < 50; i++)
+            {
+                var watch = Stopwatch.StartNew();
+                var response = await client.GetAsync(url);
+                watch.Stop();
+                Assert.True(response.IsSuccessStatusCode, $"{name}: {(int)response.StatusCode} {await response.Content.ReadAsStringAsync()}");
+                durations.Add(watch.Elapsed.TotalMilliseconds);
+            }
+            durations.Sort();
+            double P(double q) => durations[(int)Math.Ceiling(q * durations.Count) - 1];
+            output.WriteLine($"{name}: n=50 p50 {P(0.5):0.0} ms p95 {P(0.95):0.0} ms max {durations[^1]:0.0} ms");
+            Assert.True(P(0.95) <= 1500, $"{name} p95 {P(0.95):0.0} ms");
+        }
     }
 
     /// <summary>
@@ -135,6 +190,13 @@ public sealed class NfrMeasurementTests(ITestOutputHelper output)
             watch.Stop();
             Assert.True(created.StatusCode == HttpStatusCode.Created, $"run {i}: {(int)created.StatusCode} {await created.Content.ReadAsStringAsync()}");
             durations.Add(watch.Elapsed.TotalSeconds);
+            // Since 2026-11-23 each run is a cold 2025 HCMC regional baseline: 26 samples × 2 mounting places of real PVGIS calls (new tilt each run).
+            var body = System.Text.Json.JsonDocument.Parse(await created.Content.ReadAsStringAsync()).RootElement.GetProperty("data").GetProperty("energy");
+            var regional = body.TryGetProperty("regional", out var r) && r.ValueKind == System.Text.Json.JsonValueKind.Object ? r : default;
+            output.WriteLine($"run {i}: {watch.Elapsed.TotalSeconds:0.00} s energy {body.GetProperty("status").GetString()} {body.GetProperty("reason")}"
+                + (regional.ValueKind == System.Text.Json.JsonValueKind.Object
+                    ? $" quality {regional.GetProperty("quality").GetString()} samples {regional.GetProperty("succeededSampleCount").GetInt32()}/{regional.GetProperty("sampleCount").GetInt32()} specific {body.GetProperty("specificYieldKwhPerKwpYear")}"
+                    : ""));
         }
         // Evidence that the real providers answered: the factory's synthetic providers were never called.
         Assert.Empty(factory.PvEnergy.Requests);

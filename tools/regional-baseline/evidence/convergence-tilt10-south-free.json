@@ -1,0 +1,203 @@
+{
+  "reference": {
+    "peakpowerKwp": 1,
+    "tilt": 10,
+    "aspect": 0,
+    "loss": 14,
+    "mountingplace": "free",
+    "pvtechchoice": "crystSi",
+    "usehorizon": 1
+  },
+  "grids": {
+    "m5": {
+      "sampleCount": 327,
+      "monthlySpecificYieldKwhPerKwp": [
+        129.2484,
+        131.9327,
+        146.4904,
+        135.0674,
+        119.6887,
+        106.7163,
+        107.4806,
+        115.3291,
+        107.0897,
+        112.5304,
+        113.4823,
+        119.2736
+      ],
+      "annualSpecificYieldKwhPerKwp": 1444.33,
+      "pointAnnualMin": 1366.89,
+      "pointAnnualMax": 1589.02,
+      "unweightedMeanAnnual": 1446.88,
+      "radiationDatabases": [
+        "PVGIS-ERA5"
+      ],
+      "yearRanges": [
+        [
+          2005,
+          2023
+        ]
+      ],
+      "nasaGhiKwhPerM2PerDay": [
+        5.1491,
+        5.9235,
+        6.1528,
+        6.119,
+        5.533,
+        5.1299,
+        5.0437,
+        5.0313,
+        4.8869,
+        4.9558,
+        4.8936,
+        4.7531
+      ],
+      "nasaDistinctGridSeries": 4,
+      "nasaRequests": 327
+    },
+    "m10": {
+      "sampleCount": 89,
+      "monthlySpecificYieldKwhPerKwp": [
+        129.1011,
+        131.8244,
+        146.3814,
+        134.9943,
+        119.6216,
+        106.6939,
+        107.4952,
+        115.3605,
+        107.1393,
+        112.4946,
+        113.3557,
+        119.0482
+      ],
+      "annualSpecificYieldKwhPerKwp": 1443.51,
+      "pointAnnualMin": 1368.17,
+      "pointAnnualMax": 1574.47,
+      "unweightedMeanAnnual": 1445.212,
+      "radiationDatabases": [
+        "PVGIS-ERA5"
+      ],
+      "yearRanges": [
+        [
+          2005,
+          2023
+        ]
+      ],
+      "nasaGhiKwhPerM2PerDay": [
+        5.1449,
+        5.9217,
+        6.1555,
+        6.1201,
+        5.5214,
+        5.1201,
+        5.0374,
+        5.0279,
+        4.8869,
+        4.9471,
+        4.8862,
+        4.7461
+      ],
+      "nasaDistinctGridSeries": 4,
+      "nasaRequests": 89,
+      "annualRelativeDifferenceVsFinest": 0.000568,
+      "maxMonthlyRelativeDifferenceVsFinest": 0.00189
+    },
+    "m15": {
+      "sampleCount": 45,
+      "monthlySpecificYieldKwhPerKwp": [
+        129.1203,
+        131.9042,
+        146.4448,
+        135.025,
+        119.6678,
+        106.6939,
+        107.4249,
+        115.2882,
+        107.1022,
+        112.5019,
+        113.4123,
+        119.1042
+      ],
+      "annualSpecificYieldKwhPerKwp": 1443.69,
+      "pointAnnualMin": 1367.44,
+      "pointAnnualMax": 1553.94,
+      "unweightedMeanAnnual": 1444.026,
+      "radiationDatabases": [
+        "PVGIS-ERA5"
+      ],
+      "yearRanges": [
+        [
+          2005,
+          2023
+        ]
+      ],
+      "nasaGhiKwhPerM2PerDay": [
+        5.1449,
+        5.9217,
+        6.1555,
+        6.1201,
+        5.5214,
+        5.1201,
+        5.0374,
+        5.0279,
+        4.8869,
+        4.9471,
+        4.8862,
+        4.7461
+      ],
+      "nasaDistinctGridSeries": 4,
+      "nasaRequests": 45,
+      "annualRelativeDifferenceVsFinest": 0.000443,
+      "maxMonthlyRelativeDifferenceVsFinest": 0.00142
+    },
+    "m20": {
+      "sampleCount": 26,
+      "monthlySpecificYieldKwhPerKwp": [
+        129.3681,
+        131.9421,
+        146.4868,
+        135.1386,
+        119.8344,
+        106.9277,
+        107.7195,
+        115.5299,
+        107.2772,
+        112.7438,
+        113.6915,
+        119.4665
+      ],
+      "annualSpecificYieldKwhPerKwp": 1446.126,
+      "pointAnnualMin": 1367.63,
+      "pointAnnualMax": 1554.69,
+      "unweightedMeanAnnual": 1450.523,
+      "radiationDatabases": [
+        "PVGIS-ERA5"
+      ],
+      "yearRanges": [
+        [
+          2005,
+          2023
+        ]
+      ],
+      "nasaGhiKwhPerM2PerDay": [
+        5.1538,
+        5.9255,
+        6.1499,
+        6.1179,
+        5.5461,
+        5.1407,
+        5.0506,
+        5.0352,
+        4.887,
+        4.9655,
+        4.9018,
+        4.7608
+      ],
+      "nasaDistinctGridSeries": 4,
+      "nasaRequests": 26,
+      "annualRelativeDifferenceVsFinest": 0.001243,
+      "maxMonthlyRelativeDifferenceVsFinest": 0.002223
+    }
+  }
+}
