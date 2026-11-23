@@ -111,6 +111,14 @@ public sealed class PreSurveyTestContext : IAsyncDisposable
 
     public FakePvEnergyEstimator PvEnergy { get; } = new();
     public FakeClimateContextProvider Climate { get; } = new();
+    /// <summary>The shared cache of the regional baseline aggregates (separate from the provider fakes' own caches).</summary>
+    public FakeCacheStore RegionalCache { get; } = new();
+    private SmartSolar.Modules.SolarSimulation.Regional.RegionalBaselineRuntime? _regionalRuntime;
+    /// <summary>One process-wide regional runtime per context (dataset, provider gates, in-flight computations).</summary>
+    public SmartSolar.Modules.SolarSimulation.Regional.RegionalBaselineRuntime RegionalRuntime
+        => _regionalRuntime ??= RegionalTestSupport.Runtime(SimulationOptions.RegionalBaseline);
+    public SmartSolar.Modules.SolarSimulation.Regional.RegionalSolarBaselineProvider RegionalProvider
+        => RegionalTestSupport.Provider(PvEnergy, Climate, RegionalCache, RegionalRuntime, Time);
     public SolarSimulationOptions SimulationOptions { get; } = new();
     public SimulationSingleFlight SingleFlight { get; } = new();
 
@@ -153,6 +161,7 @@ public sealed class PreSurveyTestContext : IAsyncDisposable
         new CatalogUnitOfWork(db),
         PvEnergy,
         Climate,
+        RegionalProvider,
         SimulationOptions,
         SingleFlight,
         SimulationCache,

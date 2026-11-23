@@ -66,27 +66,31 @@ public sealed partial class KnowledgeUnitOfWork(AppDbContext db) : Transactional
             .Where(j => (j.Status == JobStatuses.Pending || j.Status == JobStatuses.RetryWaiting || (j.Status == JobStatuses.Running && j.LockedUntil < now)) && j.NextAttemptAt <= now)
             .OrderBy(j => j.NextAttemptAt).Take(limit).Select(j => j.Id).ToListAsync(cancellationToken);
 
+    // Shared publication scope: one query for every role. The legacy audience column is deliberately not read.
     public async Task<IReadOnlyList<RagAllowedVersion>> GetRetrievableVersionsAsync(CancellationToken cancellationToken)
         => await Db.KnowledgeDocuments.AsNoTracking()
             .Where(d => d.Status == DocumentStatuses.Published && d.PublishedVersionId != null)
             .Join(Db.KnowledgeDocumentVersions, d => d.PublishedVersionId, v => v.Id, (d, v) => new { d, v })
-            .Where(x => x.v.Status == VersionStatuses.Published)
+            .Where(x => x.v.Status == VersionStatuses.Published && x.v.DocumentId == x.d.Id && x.v.SharedScopeApprovedAt != null)
+            .OrderBy(x => x.v.Id)   // deterministic: every role sends the identical allow-list
             .Select(x => new RagAllowedVersion(x.v.Id, x.d.Id, x.d.Title, x.v.VersionNumber))
             .ToListAsync(cancellationToken);
 
-    public async Task<IReadOnlyList<RagAllowedVersion>> GetCustomerRetrievableVersionsAsync(CancellationToken cancellationToken)
-    {
-        // The persisted audience is the only source: tags grant nothing.
-        return await Db.KnowledgeDocuments.AsNoTracking()
-            .Where(d => d.Status == DocumentStatuses.Published && d.PublishedVersionId != null && d.Audience == KnowledgeAudiences.Customer)
-            .Join(Db.KnowledgeDocumentVersions, d => d.PublishedVersionId, v => v.Id, (d, v) => new { d, v })
-            .Where(x => x.v.Status == VersionStatuses.Published)
-            .Select(x => new RagAllowedVersion(x.v.Id, x.d.Id, x.d.Title, x.v.VersionNumber))
-            .ToListAsync(cancellationToken);
-    }
+    public async Task<IReadOnlyList<SharedScopeReviewItem>> GetSharedScopeReviewAsync(CancellationToken cancellationToken)
+        => (await Db.KnowledgeDocuments.AsNoTracking()
+                .Where(d => d.Status == DocumentStatuses.Published && d.PublishedVersionId != null)
+                .Join(Db.KnowledgeDocumentVersions, d => d.PublishedVersionId, v => v.Id, (d, v) => new { d, v })
+                .Where(x => x.v.SharedScopeApprovedAt == null)
+                .Select(x => new SharedScopeReviewItem(x.d.Id, x.d.Title, x.d.Category, x.d.Status, x.d.Audience, x.v.Id, x.v.VersionNumber, x.v.ChunkCount,
+                    x.v.PublishedAt, x.d.Revision))
+                .ToListAsync(cancellationToken))
+            .OrderBy(x => x.Title, StringComparer.Ordinal).ThenBy(x => x.DocumentId).ToList();
 
     public async Task<IReadOnlyList<KnowledgeDocumentAudienceChange>> GetAudienceChangesAsync(Guid documentId, CancellationToken cancellationToken)
         => await Db.KnowledgeDocumentAudienceChanges.AsNoTracking().Where(c => c.DocumentId == documentId).ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<KnowledgePublicationApproval>> GetPublicationApprovalsAsync(Guid documentId, CancellationToken cancellationToken)
+        => await Db.KnowledgePublicationApprovals.AsNoTracking().Where(a => a.DocumentId == documentId).ToListAsync(cancellationToken);
 
     public Task<ChatSession?> FindSessionAsync(Guid sessionId, CancellationToken cancellationToken)
         => Db.ChatSessions.AsNoTracking().FirstOrDefaultAsync(s => s.Id == sessionId, cancellationToken);

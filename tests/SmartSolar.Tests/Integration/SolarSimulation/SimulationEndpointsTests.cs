@@ -14,6 +14,7 @@ namespace SmartSolar.Tests.Integration.SolarSimulation;
 /// Surface and simulation endpoints through the real pipeline (JWT, roles, validation,
 /// envelope, persistence). Providers are SYNTHETIC fakes; no external service is called.
 /// </summary>
+[Collection(WallClockSensitiveCollection.Name)]
 public sealed class SimulationEndpointsTests
 {
     private static async Task<JsonElement> BodyOf(HttpResponseMessage response)
@@ -120,6 +121,23 @@ public sealed class SimulationEndpointsTests
         var placement = simulation.GetProperty("layout").GetProperty("details").GetProperty("placements")[0];
         Assert.True(placement.GetProperty("frontCenter").TryGetProperty("xM", out _));
         Assert.True(placement.GetProperty("worldRotation").TryGetProperty("w", out _));
+        // Regional contract (additive fields, camelCase): one 2025 HCMC area-weighted baseline, provenance, display-only reference point,
+        // and the site's own coordinates kept apart.
+        Assert.Equal("HCMC_2025_REGIONAL_AREA_WEIGHTED", simulation.GetProperty("estimateBasis").GetString());
+        var energy = simulation.GetProperty("energy");
+        Assert.Equal("HCMC_2025_REGIONAL_AREA_WEIGHTED", energy.GetProperty("estimateBasis").GetString());
+        var regional = energy.GetProperty("regional");
+        Assert.Equal(("79", "Ước tính trung bình khu vực TP.HCM (sau sáp nhập)", "COMPLETE"),
+            (regional.GetProperty("regionCode").GetString(), regional.GetProperty("label").GetString(), regional.GetProperty("quality").GetString()));
+        Assert.Equal(26, regional.GetProperty("sampleCount").GetInt32());
+        Assert.Equal("VN79", regional.GetProperty("boundary").GetProperty("featurePcode").GetString());
+        Assert.True(regional.GetProperty("referencePoint").GetProperty("displayOnly").GetBoolean());
+        Assert.Equal(1m, regional.GetProperty("referenceKwp").GetDecimal());
+        Assert.False(string.IsNullOrWhiteSpace(regional.GetProperty("formula").GetString()));
+        Assert.NotEqual(JsonValueKind.Null, simulation.GetProperty("surface").GetProperty("latitude").ValueKind);   // site point, separate
+        Assert.Equal(JsonValueKind.Null, simulation.GetProperty("climate").GetProperty("context").GetProperty("metadata").GetProperty("requestedLatitude").ValueKind);
+        Assert.Equal("HCMC_2025_REGIONAL_AREA_WEIGHTED", simulation.GetProperty("climate").GetProperty("regional").GetProperty("estimateBasis").GetString());
+        Assert.Equal("LOCAL_SHADING_LOSS_FRACTION_ON_REGIONAL_BASELINE", simulation.GetProperty("shading").GetProperty("correctionBasis").GetString());
 
         var repeated = await client.PostAsJsonAsync($"/api/pre-surveys/{preSurveyId}/simulations", FlushBody(1, productId));
         Assert.Equal(HttpStatusCode.OK, repeated.StatusCode);
@@ -140,6 +158,7 @@ public sealed class SimulationEndpointsTests
         var selection = await DataOf(select);
         Assert.Equal(simulationId, selection.GetProperty("simulationId").GetGuid());
         Assert.Equal("SUMMARY", selection.GetProperty("source").GetString());
+        Assert.Equal("HCMC_2025_REGIONAL_AREA_WEIGHTED", selection.GetProperty("estimateBasis").GetString());
         list = await DataOf(await client.GetAsync($"/api/pre-surveys/{preSurveyId}/simulations"));
         Assert.True(list.GetProperty("items")[0].GetProperty("isSelected").GetBoolean());
         Assert.Equal(simulationId, list.GetProperty("selected").GetProperty("simulationId").GetGuid());

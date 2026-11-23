@@ -17,11 +17,22 @@ namespace SmartSolar.Tests.Integration.RateLimiting;
 /// only has a generous per-IP guard. The shared counter is an in-memory stand-in for Redis; the last
 /// test runs the real Redis script when SMARTSOLAR_TEST_REDIS points at a disposable local Redis.
 /// </summary>
+[Collection(WallClockSensitiveCollection.Name)]
 public sealed class DistributedRateLimitingTests
 {
+    private const int WindowMinutes = 60;
+    private const int ChatWindowSeconds = WindowMinutes * 60;
+
     private static AuthApiFactory Replica(IDistributedRateLimitCounter counter, int chatLimit, Dictionary<string, string?>? extra = null)
     {
-        var settings = new Dictionary<string, string?> { ["RateLimiting:RagChat:PermitLimit"] = chatLimit.ToString() };
+        // The permit limit under test is unchanged; the window is WindowMinutes (instead of the 1-minute default) so a fixed window cannot roll
+        // over between the requests of one test on a loaded host (a full parallel run took 75 s for a 3-request test, letting a request that
+        // must be refused through).
+        var settings = new Dictionary<string, string?>
+        {
+            ["RateLimiting:RagChat:PermitLimit"] = chatLimit.ToString(),
+            ["RateLimiting:RagChat:WindowMinutes"] = WindowMinutes.ToString(),
+        };
         foreach (var (k, v) in extra ?? []) settings[k] = v;
         return Enabled(new FakeStorageObjectVerifier(), new FakeRagServiceClient(), settings, s =>
         {
@@ -32,11 +43,12 @@ public sealed class DistributedRateLimitingTests
 
     private static Task<HttpResponseMessage> AskAsync(HttpClient client, int i) => client.PostAsJsonAsync("/api/chat/messages", new { message = $"Question {i}" });
 
-    private static async Task AssertEnvelopedTooManyRequestsAsync(HttpResponseMessage response)
+    /// <param name="windowSeconds">The policy's configured window: Retry-After is at least 1 s and never more than the window.</param>
+    private static async Task AssertEnvelopedTooManyRequestsAsync(HttpResponseMessage response, int windowSeconds = 60)
     {
         Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
         Assert.NotNull(response.Headers.RetryAfter);
-        Assert.InRange(response.Headers.RetryAfter!.Delta!.Value.TotalSeconds, 1, 60);
+        Assert.InRange(response.Headers.RetryAfter!.Delta!.Value.TotalSeconds, 1, windowSeconds);
         var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
         Assert.False(body.GetProperty("isSuccess").GetBoolean());
         Assert.Equal(AuthErrorCodes.TooManyRequests, body.GetProperty("error").GetProperty("code").GetString());
@@ -55,8 +67,8 @@ public sealed class DistributedRateLimitingTests
         Assert.Equal(HttpStatusCode.OK, (await AskAsync(a, 1)).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await AskAsync(b, 2)).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await AskAsync(a, 3)).StatusCode);
-        await AssertEnvelopedTooManyRequestsAsync(await AskAsync(b, 4));
-        await AssertEnvelopedTooManyRequestsAsync(await AskAsync(a, 5));
+        await AssertEnvelopedTooManyRequestsAsync(await AskAsync(b, 4), ChatWindowSeconds);
+        await AssertEnvelopedTooManyRequestsAsync(await AskAsync(a, 5), ChatWindowSeconds);
         // Another user is not affected.
         Assert.Equal(HttpStatusCode.OK, (await AskAsync(CatalogEndpointsTests.ClientFor(second, RoleCodes.Customer), 6)).StatusCode);
     }
@@ -103,7 +115,7 @@ public sealed class DistributedRateLimitingTests
 
         Assert.Equal(HttpStatusCode.OK, (await AskAsync(a, 1)).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await AskAsync(a, 2)).StatusCode);
-        await AssertEnvelopedTooManyRequestsAsync(await AskAsync(a, 3));
+        await AssertEnvelopedTooManyRequestsAsync(await AskAsync(a, 3), ChatWindowSeconds);
         // Each instance enforces the limit on its own while Redis is down.
         Assert.Equal(HttpStatusCode.OK, (await AskAsync(b, 4)).StatusCode);
         Assert.True(counter.Calls > 0);

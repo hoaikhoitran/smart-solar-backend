@@ -12,7 +12,9 @@ namespace SmartSolar.Api.Controllers;
 /// <summary>
 /// Admin lifecycle of chatbot knowledge documents. The PDF/DOCX/TXT is uploaded by the frontend
 /// to S3 (purpose KNOWLEDGE_DOCUMENT) and registered through <c>POST /api/files</c>; only verified
-/// files are accepted. Only a PUBLISHED version is ever used to answer questions.
+/// files are accepted. Only a PUBLISHED version approved for all signed-in roles is ever used to answer questions
+/// (shared publication scope: publishing requires <c>confirmSharedVisibility = true</c>). Admin only; chat access grants
+/// no document administration.
 /// </summary>
 [ApiController]
 [Route("api/admin/knowledge-documents")]
@@ -37,6 +39,15 @@ public sealed class AdminKnowledgeDocumentsController(KnowledgeDocumentHandlers 
     public async Task<IActionResult> Get(Guid documentId, CancellationToken cancellationToken)
         => Respond(await handlers.GetAsync(documentId, cancellationToken));
 
+    /// <summary>
+    /// Read-only legacy-content inventory: published documents not yet approved for all signed-in roles (none of them is retrievable meanwhile).
+    /// Metadata only (document id, title, legacy audience, published version, chunk count), never content.
+    /// </summary>
+    [HttpGet("shared-visibility-review")]
+    [EnableRateLimiting(RateLimitingExtensions.RagAdminReadPolicy)]
+    public async Task<IActionResult> SharedVisibilityReview(CancellationToken cancellationToken)
+        => Respond(Modules.Common.Results.OperationResult<SharedScopeReviewView>.Ok(await handlers.SharedScopeReviewAsync(cancellationToken)));
+
     [HttpPost]
     [EnableRateLimiting(RateLimitingExtensions.RagAdminRegisterPolicy)]
     public async Task<IActionResult> Register([FromBody] RegisterKnowledgeDocumentRequest request, CancellationToken cancellationToken)
@@ -54,18 +65,32 @@ public sealed class AdminKnowledgeDocumentsController(KnowledgeDocumentHandlers 
     public async Task<IActionResult> UpdateMetadata(Guid documentId, [FromBody] UpdateKnowledgeMetadataRequest request, CancellationToken cancellationToken)
         => Respond(await handlers.UpdateMetadataAsync(documentId, request.Revision, request.Title ?? "", request.Category ?? "", request.Tags, cancellationToken));
 
-    /// <summary>Reclassifies who may retrieve the document (INTERNAL or CUSTOMER) with a reason; audited, effective immediately.</summary>
+    /// <summary>
+    /// RETIRED (410 RAG_AUDIENCE_RETIRED, 2026-11-23): INTERNAL / CUSTOMER no longer decides who may retrieve a document. Every published
+    /// version approved for all signed-in roles is shared; to restrict content, unpublish it. Nothing is changed by this call.
+    /// </summary>
     [HttpPut("{documentId:guid}/audience")]
     [EnableRateLimiting(RateLimitingExtensions.RagAdminPublishPolicy)]
-    public async Task<IActionResult> SetAudience(Guid documentId, [FromBody] SetKnowledgeAudienceRequest request, CancellationToken cancellationToken)
-        => CurrentUserId() is { } admin
-            ? Respond(await handlers.SetAudienceAsync(admin, documentId, request.Revision, request.Audience, request.Reason, cancellationToken))
-            : UnauthorizedFailure();
+    [ProducesResponseType(StatusCodes.Status410Gone)]
+    public IActionResult SetAudience(Guid documentId, [FromBody] SetKnowledgeAudienceRequest request)
+        => StatusCode(StatusCodes.Status410Gone, Contracts.ApiResponse<object>.Failure(new Contracts.ApiError(KnowledgeErrorCodes.AudienceRetired,
+            "The document audience was retired: every signed-in role reads the same published, Admin-approved versions.",
+            new
+            {
+                replacement = "POST /api/admin/knowledge-documents/{documentId}/publish with confirmSharedVisibility = true (share), or POST …/unpublish (withdraw)",
+                review = "GET /api/admin/knowledge-documents/shared-visibility-review",
+            }), HttpContext.GetTraceId()));
 
+    /// <summary>
+    /// Publishes a version for ALL signed-in roles (requires confirmSharedVisibility = true, otherwise 400 RAG_PUBLISH_CONFIRMATION_REQUIRED with
+    /// the confirmation text). With the currently published version of a document awaiting the shared-scope review, re-confirms it.
+    /// </summary>
     [HttpPost("{documentId:guid}/publish")]
     [EnableRateLimiting(RateLimitingExtensions.RagAdminPublishPolicy)]
     public async Task<IActionResult> Publish(Guid documentId, [FromBody] PublishKnowledgeVersionRequest request, CancellationToken cancellationToken)
-        => Respond(await handlers.PublishAsync(documentId, request.VersionId, request.Revision, cancellationToken));
+        => CurrentUserId() is { } admin
+            ? Respond(await handlers.PublishAsync(admin, documentId, request.VersionId, request.Revision, request.ConfirmSharedVisibility, request.Note, cancellationToken))
+            : UnauthorizedFailure();
 
     [HttpPost("{documentId:guid}/unpublish")]
     [EnableRateLimiting(RateLimitingExtensions.RagAdminPublishPolicy)]
@@ -159,9 +184,10 @@ public sealed class AdminRagConfigurationController(RagConfigurationService serv
 }
 
 /// <summary>
-/// Grounded chatbot for signed-in users. Answers cite published knowledge only; when the documents
-/// do not support an answer the assistant says so instead of guessing. Per-user and global daily
-/// quotas and a per-user concurrency cap are enforced atomically in the database.
+/// Grounded chatbot for signed-in users (Customer, Technician, Sales, Manager, Admin; anonymous callers get 401). Every role retrieves the
+/// same published, Admin-approved versions; answers cite them only, and when they do not support an answer the assistant says so instead
+/// of guessing. Per-user and global daily quotas and a per-user concurrency cap are enforced atomically in the database. Sessions are
+/// private to their owner.
 /// </summary>
 [ApiController]
 [Route("api/chat")]
@@ -214,7 +240,9 @@ public sealed class ChatController(ChatService chat) : OperationResultController
     private string? HighestRole()
         => new[] { RoleCodes.Admin, RoleCodes.Manager, RoleCodes.Sales, RoleCodes.Technician, RoleCodes.Customer }.FirstOrDefault(IsInRole);
 
-    /// <summary>Staff roles read every published document; anyone else (customers, or a token without a staff role) only customer-visible ones.</summary>
+    /// <summary>
+    /// Reader class for LEGACY chat history only (see <see cref="ChatService"/>): it never changes retrieval, which is identical for every role.
+    /// </summary>
     private KnowledgeAudience Audience()
         => IsInRole(RoleCodes.Admin) || IsInRole(RoleCodes.Manager) || IsInRole(RoleCodes.Sales) || IsInRole(RoleCodes.Technician)
             ? KnowledgeAudience.Staff

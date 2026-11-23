@@ -1,6 +1,7 @@
 using SmartSolar.Modules.SolarSimulation.CreateSimulation;
 using SmartSolar.Modules.SolarSimulation.GetSimulation;
 using SmartSolar.Modules.SolarSimulation.Options;
+using SmartSolar.Modules.SolarSimulation.Regional;
 using SmartSolar.Modules.SolarSimulation.SelectSimulation;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -21,6 +22,12 @@ public static class SolarSimulationModuleExtensions
 
         services.AddSingleton(options);
         services.AddSingleton<SimulationSingleFlight>();
+        // The regional dataset is loaded and verified now: an enabled but missing or altered dataset stops the host at startup
+        // (never a silent fallback to a single point). Shared by simulations and the solar advisor.
+        services.AddSingleton(RegionalBaselineRuntime.Create(options.RegionalBaseline, AppContext.BaseDirectory));
+        services.AddScoped<IRegionalSolarBaselineProvider, RegionalSolarBaselineProvider>();
+        if (options.RegionalBaseline.Enabled && options.RegionalBaseline.WarmClimateOnStartup)
+            services.AddHostedService<Background.RegionalClimateWarmupService>();
         services.AddScoped<CreateSimulationHandler>();
         services.AddScoped<GetSimulationHandler>();
         services.AddScoped<ListSimulationsHandler>();
@@ -70,6 +77,13 @@ public static class SolarSimulationModuleExtensions
         if (o.Snapshots.TimeoutSeconds is < 1 or > 120) errors.Add("SolarSimulation:Snapshots:TimeoutSeconds must be between 1 and 120.");
         if (o.Snapshots.MaxSnapshotBytes is < 1024 or > 64L * 1024 * 1024) errors.Add("SolarSimulation:Snapshots:MaxSnapshotBytes must be between 1 KiB and 64 MiB.");
         if (o.DeclaredAreaMismatchRatio < 0) errors.Add("SolarSimulation:DeclaredAreaMismatchRatio must not be negative.");
+        var r = o.RegionalBaseline;
+        if (r.MaxConcurrentPvgisRequests is < 1 or > 16 || r.MaxConcurrentNasaRequests is < 1 or > 16)
+            errors.Add("SolarSimulation:RegionalBaseline:MaxConcurrent*Requests must be between 1 and 16.");
+        if (r.MinCoveredWeightFraction is <= 0m or > 1m) errors.Add("SolarSimulation:RegionalBaseline:MinCoveredWeightFraction must be in (0, 1].");
+        if (r.CacheHours is < 1 or > 8760) errors.Add("SolarSimulation:RegionalBaseline:CacheHours must be between 1 and 8760.");
+        if (r.ComputationBudgetSeconds is < 5 or > 120) errors.Add("SolarSimulation:RegionalBaseline:ComputationBudgetSeconds must be between 5 and 120.");
+        if (r.Enabled && string.IsNullOrWhiteSpace(r.DatasetDirectory)) errors.Add("SolarSimulation:RegionalBaseline:DatasetDirectory is required.");
         if (o.Shading.StartSolarHour < 0 || o.Shading.EndSolarHour > 24 || o.Shading.StartSolarHour > o.Shading.EndSolarHour
             || o.Shading.StepMinutes <= 0 || o.Shading.DeclinationDegree is < 0 or > 23.5)
             errors.Add("SolarSimulation:Shading contains an out-of-range value.");

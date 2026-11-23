@@ -70,7 +70,7 @@ public sealed class RagConfigurationTests
             var doc = await RegisteredAsync(admin, title);
             await Ingestion().RunDueAsync(10, None);
             var ready = (await Documents().GetAsync(doc.DocumentId, None)).Value!;
-            var published = await Documents().PublishAsync(ready.DocumentId, ready.Versions![0].VersionId, ready.Revision, None);
+            var published = await Documents().PublishAsync(admin, ready.DocumentId, ready.Versions![0].VersionId, ready.Revision, true, null, None);
             Assert.True(published.Succeeded, published.Message);
             return published.Value!;
         }
@@ -552,7 +552,7 @@ public sealed class RagConfigurationTests
         Assert.False(string.IsNullOrEmpty(after.LastIngestError));
         // Still publishable without re-ingestion.
         var current = (await rig.Documents().GetAsync(doc.DocumentId, None)).Value!;
-        Assert.True((await rig.Documents().PublishAsync(doc.DocumentId, before.Id, current.Revision, None)).Succeeded);
+        Assert.True((await rig.Documents().PublishAsync(admin, doc.DocumentId, before.Id, current.Revision, true, null, None)).Succeeded);
     }
 
     [Fact]

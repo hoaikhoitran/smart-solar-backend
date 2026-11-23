@@ -45,6 +45,9 @@ public sealed class SolarSimulationOptions
     public int MaxRecentResults { get; set; } = 20;
 
     public SimulationSnapshotOptions Snapshots { get; set; } = new();
+
+    /// <summary>The 2025 Ho Chi Minh City regional energy / climate baseline. Section "SolarSimulation:RegionalBaseline".</summary>
+    public Regional.RegionalBaselineOptions RegionalBaseline { get; set; } = new();
 }
 
 /// <summary>

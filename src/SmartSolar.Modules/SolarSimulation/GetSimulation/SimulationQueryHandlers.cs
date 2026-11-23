@@ -108,7 +108,8 @@ public sealed class GetSimulationHandler
                 var document = SnapshotJson.Deserialize<SimulationSnapshotDocument>(System.Text.Encoding.UTF8.GetString(content));
                 if (document.SimulationId == selection.SimulationId && document.PreSurveyId == selection.PreSurveyId)
                 {
-                    return new(SimulationQueryOutcome.Found, document.Detail with
+                    // The stored snapshot is immutable; only its estimate basis is made explicit for pre-regional snapshots (legacy site point).
+                    return new(SimulationQueryOutcome.Found, CreateSimulation.SimulationDetailMapper.WithBasis(document.Detail) with
                     {
                         IsStale = document.GeometryVersion != source.GeometryVersion,
                         IsSelected = true,

@@ -21,8 +21,9 @@ public sealed class KnowledgeDocument
     public DateTimeOffset UpdatedAt { get; set; }
     public DateTimeOffset? ArchivedAt { get; set; }
     /// <summary>
-    /// Who may retrieve the document: <see cref="KnowledgeAudiences.Internal"/> (staff only, the default, also for every document that
-    /// existed before the column) or <see cref="KnowledgeAudiences.Customer"/>. Changed only by an Admin, with an audit row.
+    /// LEGACY classification (INTERNAL / CUSTOMER) from before the shared publication scope (2026-11-23). It no longer decides retrieval
+    /// and can no longer be changed; it is kept for audit and for the legacy-content review (an INTERNAL document published under the old
+    /// policy stays unretrievable until an Admin re-confirms its publication for all signed-in roles).
     /// </summary>
     public string Audience { get; set; } = KnowledgeAudiences.Internal;
     public int Revision { get; set; }
@@ -67,7 +68,41 @@ public sealed class KnowledgeDocumentVersion
     /// </summary>
     public string? LastIngestStatus { get; set; }
     public string? LastIngestError { get; set; }
+    /// <summary>
+    /// When an Admin approved THIS version for the shared publication scope (every signed-in Customer, Technician, Sales, Manager and
+    /// Admin may retrieve and cite it). Null = never approved under that rule (for example a version published before 2026-11-23): such a
+    /// version is not retrievable by anyone, even while PUBLISHED. Set by publish with an explicit confirmation, or by the cutover
+    /// migration for versions that were already customer-visible.
+    /// </summary>
+    public DateTimeOffset? SharedScopeApprovedAt { get; set; }
+    /// <summary>The approving Admin; null only for the cutover migration of already customer-visible versions.</summary>
+    public Guid? SharedScopeApprovedByUserId { get; set; }
     public int Revision { get; set; }
+}
+
+/// <summary>Append-only audit of shared-scope approvals (who approved which version for all signed-in roles, and how).</summary>
+public sealed class KnowledgePublicationApproval
+{
+    public Guid Id { get; set; }
+    public Guid DocumentId { get; set; }
+    public Guid VersionId { get; set; }
+    /// <summary><see cref="KnowledgePublicationActions"/>.</summary>
+    public string Action { get; set; } = null!;
+    /// <summary>The document's legacy audience when the action happened (INTERNAL / CUSTOMER).</summary>
+    public string LegacyAudience { get; set; } = null!;
+    /// <summary>Null only for the cutover migration.</summary>
+    public Guid? ActorUserId { get; set; }
+    public string? Note { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+}
+
+public static class KnowledgePublicationActions
+{
+    /// <summary>An Admin published (or re-confirmed) the version for all signed-in roles.</summary>
+    public const string ApprovedAllSignedInRoles = "APPROVED_ALL_SIGNED_IN_ROLES";
+    /// <summary>The cutover migration carried over a version that was already PUBLISHED with audience CUSTOMER (already visible to every role).</summary>
+    public const string MigratedFromCustomerAudience = "MIGRATED_FROM_CUSTOMER_AUDIENCE";
+    public static readonly IReadOnlyList<string> All = [ApprovedAllSignedInRoles, MigratedFromCustomerAudience];
 }
 
 /// <summary>Durable ingestion work item, leased by one worker at a time and retried with backoff.</summary>
@@ -120,8 +155,9 @@ public sealed class ChatMessage
     public string? Model { get; set; }
     public int? LatencyMs { get; set; }
     /// <summary>
-    /// Assistant messages: the audience the answer was retrieved for (CUSTOMER or INTERNAL = staff). Null for answers generated before
-    /// audiences existed, which may draw on any published document; a customer never sees their text.
+    /// Assistant messages: the scope the answer was retrieved from. <see cref="KnowledgeAudiences.Shared"/> (since 2026-11-23): only versions
+    /// approved for all signed-in roles. Legacy values: CUSTOMER (customer-visible documents) or INTERNAL (staff retrieval, may include internal
+    /// documents); null for answers generated before audiences existed. A customer never sees the text of an INTERNAL or null answer.
     /// </summary>
     public string? RetrievalAudience { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
@@ -242,8 +278,12 @@ public static class KnowledgeErrorCodes
 {
     public const string DocumentNotFound = "RAG_DOCUMENT_NOT_FOUND";
     public const string VersionNotFound = "RAG_VERSION_NOT_FOUND";
-    /// <summary>The document already has the requested audience (409).</summary>
+    /// <summary>The document already has the requested audience (409). Legacy: the audience endpoint is retired (see <see cref="AudienceRetired"/>).</summary>
     public const string AudienceUnchanged = "RAG_DOCUMENT_AUDIENCE_UNCHANGED";
+    /// <summary>PUT …/audience was retired with the shared publication scope (410).</summary>
+    public const string AudienceRetired = "RAG_AUDIENCE_RETIRED";
+    /// <summary>Publishing requires the explicit confirmation that every signed-in role may read the version (400).</summary>
+    public const string PublishConfirmationRequired = "RAG_PUBLISH_CONFIRMATION_REQUIRED";
     public const string InvalidState = "RAG_INVALID_STATE";
     public const string StaleRevision = "RAG_STALE_REVISION";
     public const string SessionNotFound = "RAG_SESSION_NOT_FOUND";

@@ -106,9 +106,11 @@ public sealed class ApprovedPolicyEndpointsTests
         await AssertFailureAsync(await sales.PostAsJsonAsync(Close(id), new { reasonCode = "BORED" }), HttpStatusCode.BadRequest, "VALIDATION_FAILED");
         await AssertFailureAsync(await sales.PostAsJsonAsync(Close(id), new { reasonCode = "NO_RESPONSE" }), HttpStatusCode.NotFound, SalesOutcomeErrorCodes.RequestNotFound);
         var admin = CatalogEndpointsTests.ClientFor(factory, RoleCodes.Admin);
-        await AssertFailureAsync(await admin.PutAsJsonAsync(Audience(id), new { revision = 0, audience = "PUBLIC", reason = "x" }), HttpStatusCode.BadRequest, "VALIDATION_FAILED");
-        await AssertFailureAsync(await admin.PutAsJsonAsync(Audience(id), new { revision = 0, audience = "CUSTOMER", reason = "x" }), HttpStatusCode.NotFound,
-            SmartSolar.Modules.KnowledgeBase.KnowledgeErrorCodes.DocumentNotFound);
+        // The audience endpoint is retired (shared publication scope): still Admin-only (401 / 403 above), and 410 with guidance for the Admin.
+        await AssertFailureAsync(await admin.PutAsJsonAsync(Audience(id), new { revision = 0, audience = "PUBLIC", reason = "x" }), HttpStatusCode.Gone,
+            SmartSolar.Modules.KnowledgeBase.KnowledgeErrorCodes.AudienceRetired);
+        await AssertFailureAsync(await admin.PutAsJsonAsync(Audience(id), new { revision = 0, audience = "CUSTOMER", reason = "x" }), HttpStatusCode.Gone,
+            SmartSolar.Modules.KnowledgeBase.KnowledgeErrorCodes.AudienceRetired);
     }
 
     [Fact]

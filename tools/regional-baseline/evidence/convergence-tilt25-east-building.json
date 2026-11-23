@@ -1,0 +1,75 @@
+{
+  "reference": {
+    "peakpowerKwp": 1,
+    "tilt": 25.0,
+    "aspect": -90.0,
+    "loss": 14,
+    "mountingplace": "building",
+    "pvtechchoice": "crystSi",
+    "usehorizon": 1
+  },
+  "grids": {
+    "m5": {
+      "sampleCount": 327,
+      "monthlySpecificYieldKwhPerKwp": [
+        110.3344,
+        116.3535,
+        133.9512,
+        127.1279,
+        116.7129,
+        106.2521,
+        106.5251,
+        111.5368,
+        99.9595,
+        101.0657,
+        98.3668,
+        101.9046
+      ],
+      "annualSpecificYieldKwhPerKwp": 1330.09,
+      "pointAnnualMin": 1257.69,
+      "pointAnnualMax": 1427.11,
+      "unweightedMeanAnnual": 1331.125,
+      "radiationDatabases": [
+        "PVGIS-ERA5"
+      ],
+      "yearRanges": [
+        [
+          2005,
+          2023
+        ]
+      ]
+    },
+    "m20": {
+      "sampleCount": 26,
+      "monthlySpecificYieldKwhPerKwp": [
+        110.301,
+        116.3431,
+        133.8202,
+        127.0499,
+        116.7306,
+        106.3714,
+        106.6945,
+        111.6444,
+        100.0151,
+        101.127,
+        98.4663,
+        101.998
+      ],
+      "annualSpecificYieldKwhPerKwp": 1330.561,
+      "pointAnnualMin": 1275.81,
+      "pointAnnualMax": 1392.34,
+      "unweightedMeanAnnual": 1331.765,
+      "radiationDatabases": [
+        "PVGIS-ERA5"
+      ],
+      "yearRanges": [
+        [
+          2005,
+          2023
+        ]
+      ],
+      "annualRelativeDifferenceVsFinest": 0.000354,
+      "maxMonthlyRelativeDifferenceVsFinest": 0.00159
+    }
+  }
+}

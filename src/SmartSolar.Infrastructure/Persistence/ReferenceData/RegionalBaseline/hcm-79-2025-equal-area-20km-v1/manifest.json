@@ -1,0 +1,192 @@
+{
+  "datasetKey": "hcm-79-2025-equal-area-20km-v1",
+  "regionCode": "79",
+  "regionName": "Thành phố Hồ Chí Minh (sau sắp xếp 2025: TP.HCM, Bình Dương, Bà Rịa – Vũng Tàu cũ)",
+  "estimateBasis": "HCMC_2025_REGIONAL_AREA_WEIGHTED",
+  "weightMethod": "EQUAL_AREA_GRID_CLIPPED_AREA",
+  "toolVersion": "hcm-regional-samples-v1",
+  "boundary": {
+    "publisher": "OCHA HDX COD-AB Viet Nam (source: General Statistics Office of Vietnam, GSO)",
+    "datasetPage": "https://data.humdata.org/dataset/cod-ab-vnm",
+    "downloadUrl": "https://data.humdata.org/dataset/3cb544a9-9d04-4f54-94e2-93230efd8ceb/resource/048a6012-a8c2-4fa9-be87-cb6c01e9afbf/download/vnm_admin_boundaries.geojson.zip",
+    "downloadSha256": "0a74e8ee18eb84b21f980fa4bd2a3135d2bc42fbd6e31450472368ff48abe41b",
+    "file": "vnm_admin1.geojson",
+    "fileSha256": "d606ad96b97bf1686709738b4ab7b228442f8e5666e05c7c0e9693329ab44fad",
+    "featurePcode": "VN79",
+    "featureName": "TP. Hồ Chí Minh",
+    "featureVersion": "v02",
+    "validOn": "2025-09-25",
+    "license": "CC BY-IGO (Creative Commons Attribution for Intergovernmental Organisations)",
+    "crs": "OGC:CRS84 (WGS84 lon/lat)",
+    "legalBasisNote": "Boundary alignments follow Decision 19/2025/QD-TTg (effective 2025-07-01) and GSO API data, per the dataset methodology."
+  },
+  "projection": {
+    "method": "Lambert Azimuthal Equal-Area (ellipsoidal, EPSG method 9820)",
+    "ellipsoid": "WGS84",
+    "lat0": 10.75,
+    "lon0": 106.75
+  },
+  "grid": {
+    "cellKm": 20.0,
+    "anchor": "projected origin (0, 0)",
+    "minCellFraction": 0.1
+  },
+  "stats": {
+    "simplifyToleranceM": 100.0,
+    "simplifiedPolygonCount": 40,
+    "simplifiedVertexCount": 1857,
+    "simplifiedAreaRelativeDifference": 0.000106,
+    "referencePointInsideBoundary": true,
+    "boundaryAreaKm2Computed": 6692.757,
+    "boundaryAreaKm2Declared": 6780.43,
+    "areaRelativeDifference": 0.01293,
+    "polygonCount": 40,
+    "polygonsWithHoles": 0,
+    "vertexCount": 39939,
+    "candidateCells": 44,
+    "retainedCells": 26,
+    "mergedCells": 18,
+    "mergedAreaKm2": 221.367698,
+    "sampledAreaKm2": 6692.757,
+    "weightSum": 1.0,
+    "minWeight": 0.007189147,
+    "maxWeight": 0.060774527,
+    "latitudeRange": [
+      8.69673,
+      11.38048
+    ],
+    "longitudeRange": [
+      106.36407,
+      107.5176
+    ],
+    "maxDistanceFromCellSampleKm": 20.159,
+    "weightSouthOf9N": 0.011949341
+  },
+  "merges": [
+    {
+      "from": "-4:-13",
+      "to": "-1:-12",
+      "areaKm2": 0.006328,
+      "distanceKm": 60.04
+    },
+    {
+      "from": "-4:-12",
+      "to": "-1:-12",
+      "areaKm2": 0.088082,
+      "distanceKm": 53.379
+    },
+    {
+      "from": "-2:-12",
+      "to": "-1:-12",
+      "areaKm2": 8.996046,
+      "distanceKm": 8.553
+    },
+    {
+      "from": "-1:-11",
+      "to": "-1:-12",
+      "areaKm2": 0.016221,
+      "distanceKm": 8.517
+    },
+    {
+      "from": "0:-3",
+      "to": "0:-2",
+      "areaKm2": 4.71923,
+      "distanceKm": 12.774
+    },
+    {
+      "from": "1:-3",
+      "to": "1:-2",
+      "areaKm2": 29.755281,
+      "distanceKm": 17.13
+    },
+    {
+      "from": "2:-3",
+      "to": "2:-2",
+      "areaKm2": 7.48019,
+      "distanceKm": 12.236
+    },
+    {
+      "from": "-1:-2",
+      "to": "0:-2",
+      "areaKm2": 5.531547,
+      "distanceKm": 11.598
+    },
+    {
+      "from": "2:0",
+      "to": "2:-1",
+      "areaKm2": 17.129996,
+      "distanceKm": 11.219
+    },
+    {
+      "from": "3:0",
+      "to": "3:-1",
+      "areaKm2": 39.712346,
+      "distanceKm": 14.047
+    },
+    {
+      "from": "4:0",
+      "to": "4:-1",
+      "areaKm2": 5.67761,
+      "distanceKm": 12.833
+    },
+    {
+      "from": "-3:1",
+      "to": "-2:1",
+      "areaKm2": 7.132891,
+      "distanceKm": 13.529
+    },
+    {
+      "from": "1:1",
+      "to": "0:1",
+      "areaKm2": 11.607709,
+      "distanceKm": 12.652
+    },
+    {
+      "from": "-3:2",
+      "to": "-3:3",
+      "areaKm2": 19.770149,
+      "distanceKm": 10.244
+    },
+    {
+      "from": "1:2",
+      "to": "0:2",
+      "areaKm2": 18.785934,
+      "distanceKm": 13.231
+    },
+    {
+      "from": "1:3",
+      "to": "0:3",
+      "areaKm2": 9.005807,
+      "distanceKm": 13.621
+    },
+    {
+      "from": "-2:4",
+      "to": "-2:3",
+      "areaKm2": 29.07327,
+      "distanceKm": 11.552
+    },
+    {
+      "from": "0:4",
+      "to": "0:3",
+      "areaKm2": 6.879058,
+      "distanceKm": 14.612
+    }
+  ],
+  "sampleCount": 26,
+  "samplesFile": "samples.csv",
+  "samplesSha256": "c4af9b2725933cf0f954876d77b331871f6c0d68e96d1249ac045adf243583af",
+  "samplesCanonicalSha256": "a60ae400f5625d899496d828812d5bcbc2c5714cbc3a74c1c1ba27bfff2514d6",
+  "sourceDatasetVersion": "hdx-cod-ab-vnm-v02-2025-09-25",
+  "notes": [
+    "SmartSolar's derived regional estimate; neither PVGIS nor NASA POWER publishes an official 'HCMC average'.",
+    "Weights are clipped-cell areas on an equal-area projection; slivers below minCellFraction are merged into the nearest retained cell (listed in merges)."
+  ],
+  "boundaryFile": "boundary-simplified.geojson",
+  "boundaryFileSha256": "eb006030090c309523bc75653df3450d04b1d9f69ce37d512b3a655131fe6f57",
+  "referencePoint": {
+    "latitude": 10.86549,
+    "longitude": 106.84559,
+    "displayOnly": true,
+    "method": "Area centroid of the full-resolution boundary on the equal-area plane; display only, never used for any calculation."
+  }
+}

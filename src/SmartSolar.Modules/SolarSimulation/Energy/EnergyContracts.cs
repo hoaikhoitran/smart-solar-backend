@@ -142,6 +142,10 @@ public sealed record ClimateMonthly(
     decimal? PrecipitationMmPerDay,
     decimal? PrecipitationMm);
 
+/// <summary>
+/// <see cref="RequestedLatitude"/> / <see cref="RequestedLongitude"/>: the single point sent to the provider; null for a regional
+/// aggregate over many samples (see the climate document's regional block), so no aggregate is ever labelled with one point.
+/// </summary>
 public sealed record ClimateMetadata(
     string Provider,
     string? ApiVersion,
@@ -149,8 +153,8 @@ public sealed record ClimateMetadata(
     int EndYear,
     string Community,
     IReadOnlyList<string> Sources,
-    decimal RequestedLatitude,
-    decimal RequestedLongitude,
+    decimal? RequestedLatitude,
+    decimal? RequestedLongitude,
     IReadOnlyDictionary<string, string> ParameterUnits,
     DateTimeOffset RetrievedAt);
 

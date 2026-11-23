@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using SmartSolar.Modules.SolarSimulation.Energy;
+using SmartSolar.Modules.SolarSimulation.Regional;
 
 namespace SmartSolar.Modules.KnowledgeBase.Advisor;
 
@@ -48,9 +49,12 @@ public sealed record AdvisorServiceItem(Guid ProductId, string Sku, string Name,
 public sealed record AdvisorCatalog(IReadOnlyList<AdvisorPanel> Panels, IReadOnlyList<AdvisorInverter> Inverters, IReadOnlyList<AdvisorServiceItem> Services,
     int BatteryProductCount);
 
-/// <summary>The customer's own site: location, the latest pre-survey surface values and its selected (non-stale) simulation.</summary>
+/// <summary>
+/// The customer's own site: location (official province code and coordinates), the latest pre-survey surface values and its selected
+/// (non-stale, regional-model) simulation.
+/// </summary>
 public sealed record AdvisorSite(Guid PropertySiteId, string Name, decimal? Latitude, decimal? Longitude, decimal? TiltDegree, decimal? AzimuthDegree,
-    decimal? UsableAreaM2, AdvisorSimulation? Simulation);
+    decimal? UsableAreaM2, AdvisorSimulation? Simulation, string? ProvinceCode = null);
 
 public sealed record AdvisorSimulation(Guid SimulationId, decimal SpecificYieldKwhPerKwpYear, decimal InstalledCapacityKwp, decimal? AnnualEnergyKwh, DateTimeOffset CreatedAt);
 
@@ -123,14 +127,17 @@ public sealed class SolarAdvisorOptions
 
     public int MaxConfigurations { get; set; } = 3;
 
-    /// <summary>Seconds the PVGIS yield lookup may take inside a chat request.</summary>
+    /// <summary>
+    /// Seconds the regional yield lookup may take inside a chat request. A slower first (uncached) computation keeps running on its own
+    /// budget and is cached for the next question; this request then reports the yield as unavailable (never invented).
+    /// </summary>
     public int ProviderTimeoutSeconds { get; set; } = 8;
 
-    /// <summary>How long a PVGIS specific yield for the same rounded location / tilt / azimuth is reused.</summary>
+    /// <summary>How long a regional specific yield for the same tilt / azimuth / losses is reused in process.</summary>
     public int YieldCacheMinutes { get; set; } = 1440;
 }
 
-/// <summary>Process-wide cache of PVGIS specific yields (location rounded to 0.01°, tilt / azimuth to 1°). Bounded.</summary>
+/// <summary>Process-wide cache of regional specific yields (tilt / azimuth rounded to 1°, losses). Bounded.</summary>
 public sealed class SolarYieldCache
 {
     private readonly ConcurrentDictionary<string, (decimal Yield, string Detail, DateTimeOffset Expires)> _entries = new();
@@ -155,8 +162,10 @@ public sealed class SolarYieldCache
 /// <list type="bullet">
 /// <item>Module footprint = catalog width × height. Theoretical maximum panels by area = ⌊area ÷ footprint⌋ — an UPPER bound without row gaps,
 /// setbacks, walkways or obstacles; the real count needs the layout simulation or the on-site survey.</item>
-/// <item>Specific yield (kWh/kWp/year): the site's selected, non-stale simulation; otherwise PVGIS for 1 kWp at the given location, tilt and compass
-/// azimuth with the configured system losses and the conservative "building" (flush) mounting. No default location, tilt or azimuth is assumed.</item>
+/// <item>Specific yield (kWh/kWp/year): the site's selected, non-stale simulation on the regional model; otherwise the 2025 Ho Chi Minh City
+/// regional baseline (area-weighted PVGIS over the verified territory, <see cref="IRegionalSolarBaselineProvider"/> — the same model as
+/// /simulations) for 1 kWp at the given tilt and compass azimuth with the configured system losses and the conservative "building" (flush)
+/// mounting. The location only decides whether the site is in the supported territory; no default location, tilt or azimuth is assumed.</item>
 /// <item>kWp to cover the stated use = monthly kWh × 12 ÷ specific yield (annual energy balance; self-consumption, export and tariffs are not
 /// assessed). Panels = ⌈kWp × 1000 ÷ rated W⌉.</item>
 /// <item>Inverter: the cheapest ACTIVE inverter whose documented maximum DC input power ≥ the array's rated DC power. Inverters without that
@@ -166,7 +175,7 @@ public sealed class SolarYieldCache
 /// <item>Battery storage: BLOCKED (no battery capacity specification in the catalog and no approved backup-sizing rule).</item>
 /// </list>
 /// </summary>
-public sealed class SolarAdvisorService(ISolarAdvisorDataSource data, IPvEnergyEstimator? pvgis, SolarYieldCache cache, SolarAdvisorOptions options, TimeProvider time)
+public sealed class SolarAdvisorService(ISolarAdvisorDataSource data, IRegionalSolarBaselineProvider? regional, SolarYieldCache cache, SolarAdvisorOptions options, TimeProvider time)
 {
     public const string Disclaimer =
         "Đây là cấu hình và chi phí tham khảo tính từ danh mục sản phẩm hiện hành, không phải báo giá chính thức. Báo giá, hợp đồng và lịch hẹn chỉ được tạo khi bạn chủ động gửi yêu cầu; "
@@ -233,19 +242,30 @@ public sealed class SolarAdvisorService(ISolarAdvisorDataSource data, IPvEnergyE
         var wantsProduction = input2.MonthlyConsumptionKwh is not null;
         if (yield is null && wantsProduction)
         {
-            if (lat is null || lon is null)
+            // The location only decides whether the regional baseline applies (official province code, or coordinates in the territory).
+            var siteProvince = input.Latitude is null && input.Longitude is null ? site?.ProvinceCode : null;
+            var locationKnown = (lat is not null && lon is not null) || siteProvince is not null;
+            if (!locationKnown)
                 missing.Add(new("LOCATION", "Công trình ở đâu? Hãy chọn địa điểm đã lưu (có tọa độ) hoặc cung cấp vị trí để ước tính sản lượng."));
             if (tilt is null)
                 missing.Add(new("TILT", "Mái nghiêng khoảng bao nhiêu độ (0° là mái bằng)?"));
             if (azimuth is null)
                 missing.Add(new("AZIMUTH", "Mặt mái hướng về đâu (độ la bàn, ví dụ 180° = hướng Nam)?"));
-            if (lat is { } la && lon is { } lo && tilt is { } t && azimuth is { } az)
+            // Membership: explicit coordinates in the question, else the site's official province code (or its coordinates).
+            var membership = regional?.ResolveMembership(siteProvince, lat, lon);
+            if (locationKnown && membership is { Status: RegionMembershipStatus.OutOfRegion })
             {
-                if (pvgis is null)
-                    blocked.Add("Không có dịch vụ PVGIS để ước tính sản lượng tại vị trí này.");
+                limitations.Add("Vị trí nằm ngoài địa bàn TP.HCM (sau sáp nhập) mà SmartSolar phục vụ, nên không áp dụng ước tính sản lượng trung bình khu vực.");
+            }
+            else if (locationKnown && tilt is { } t && azimuth is { } az)
+            {
+                if (regional is not { Enabled: true })
+                    blocked.Add("Chưa có dữ liệu nền sản lượng khu vực TP.HCM để ước tính sản lượng.");
                 else
                 {
-                    var key = string.Create(CultureInfo.InvariantCulture, $"{Math.Round(la, 2)}|{Math.Round(lo, 2)}|{Math.Round(t)}|{Math.Round(az)}|{options.SystemLossPercent}");
+                    // Keyed by the regional model and dataset too: a new dataset or algorithm never serves a yield of the previous one.
+                    var key = string.Create(CultureInfo.InvariantCulture,
+                        $"{SmartSolar.Modules.SolarSimulation.Constants.AlgorithmVersions.RegionalBaseline}|{regional.Dataset!.ManifestSha256[..16]}|{Math.Round(t)}|{Math.Round(az)}|{options.SystemLossPercent}");
                     var now = time.GetUtcNow();
                     if (cache.TryGet(key, now, out var hit))
                     {
@@ -257,30 +277,43 @@ public sealed class SolarAdvisorService(ISolarAdvisorDataSource data, IPvEnergyE
                         var watch = Stopwatch.StartNew();
                         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                         timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(options.ProviderTimeoutSeconds, 2, 30)));
-                        PvEnergyResult result;
+                        RegionalPvResult result;
                         try
                         {
-                            result = await pvgis.EstimateAsync(new PvEnergyRequest(la, lo, 1m, options.SystemLossPercent, t, az, PvgisMountingPlaces.Building), timeout.Token);
+                            // The same 1° rounding as the cache key, so a cached yield is exactly the one computed for its key.
+                            result = await regional.GetPvBaselineAsync(new RegionalPvRequest(options.SystemLossPercent, Math.Round(t), Math.Round(az), PvgisMountingPlaces.Building),
+                                timeout.Token);
                         }
                         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                         {
-                            result = PvEnergyResult.Fail(ProviderFailureCodes.Timeout, "PVGIS did not answer in time.");
+                            result = new RegionalPvResult(null, new ProviderFailure(ProviderFailureCodes.Timeout, "The regional baseline was not ready in time."), null);
                         }
                         providerMs = watch.ElapsedMilliseconds;
-                        if (result.Estimate is { AnnualEnergyKwh: > 0 } estimate)
+                        if (result.Baseline is { AnnualSpecificYieldKwhPerKwp: > 0 } baseline)
                         {
-                            yield = Math.Round(estimate.AnnualEnergyKwh, 1);
-                            var p = estimate.Provider;
-                            var detail = $"PVGIS {p.ProviderVersion} ({p.RadiationDatabase ?? "?"}, {p.YearMin}-{p.YearMax}), 1 kWp, nghiêng {Fmt(t)}°, hướng {Fmt(az)}°, tổn hao {Fmt(options.SystemLossPercent)}%, lắp sát mái";
-                            cache.Set(key, yield.Value, detail, now.AddMinutes(Math.Max(1, options.YieldCacheMinutes)));
-                            sources.Add(new("PVGIS", key, detail));
+                            yield = Math.Round(baseline.AnnualSpecificYieldKwhPerKwp, 1);
+                            var p = baseline.ReferenceRequest;
+                            var detail = $"{EstimateBases.LabelVi}: PVGIS {p.ProviderVersion} ({string.Join(", ", baseline.RadiationDatabases)}, {baseline.ProviderYearMin}-{baseline.ProviderYearMax}), "
+                                         + $"trung bình có trọng số diện tích của {baseline.Coverage.SucceededSampleCount}/{baseline.Coverage.SampleCount} điểm mẫu ({regional.Dataset!.DatasetKey}), "
+                                         + $"1 kWp, nghiêng {Fmt(t)}°, hướng {Fmt(az)}°, tổn hao {Fmt(options.SystemLossPercent)}%, lắp sát mái";
+                            // A DEGRADED (partially covered) baseline is used for this answer but never kept.
+                            if (baseline.Coverage.Quality == RegionalQualities.Complete)
+                                cache.Set(key, yield.Value, detail, now.AddMinutes(Math.Max(1, options.YieldCacheMinutes)));
+                            else
+                                limitations.Add($"Ước tính khu vực chỉ dùng {baseline.Coverage.SucceededSampleCount}/{baseline.Coverage.SampleCount} điểm mẫu (thiếu dữ liệu nhà cung cấp).");
+                            sources.Add(new("PVGIS_HCMC_REGIONAL", key, detail));
                         }
                         else
                         {
-                            limitations.Add($"Không ước tính được sản lượng: PVGIS {result.Failure?.Code ?? "không trả kết quả"}. Bạn có thể thử lại sau hoặc chạy mô phỏng cho địa điểm.");
+                            limitations.Add($"Không ước tính được sản lượng khu vực: {result.Failure?.Code ?? "không có kết quả"}. Bạn có thể thử lại sau ít phút hoặc chạy mô phỏng cho địa điểm.");
                         }
                     }
-                    if (yield is not null) { yieldSource = "PVGIS"; assumptions.Add("Sản lượng ước tính theo PVGIS (năm khí tượng điển hình) với cách lắp sát mái — ước tính thận trọng; chưa tính bóng che cục bộ."); }
+                    if (yield is not null)
+                    {
+                        yieldSource = "PVGIS_HCMC_REGIONAL";
+                        assumptions.Add($"Sản lượng riêng theo {EstimateBases.LabelVi} (năm khí tượng điển hình, PVGIS) với cách lắp sát mái — ước tính thận trọng; "
+                                        + "không phải dự báo chính xác tại mái nhà; chưa tính bóng che cục bộ.");
+                    }
                 }
             }
         }

@@ -11,6 +11,7 @@ using SmartSolar.Modules.SolarSimulation.Energy;
 using SmartSolar.Modules.SolarSimulation.GetSimulation;
 using SmartSolar.Modules.SolarSimulation.Installation;
 using SmartSolar.Modules.SolarSimulation.Models;
+using SmartSolar.Modules.SolarSimulation.Regional;
 using SmartSolar.Modules.SolarSimulation.SelectSimulation;
 using SmartSolar.Tests.TestSupport;
 
@@ -20,6 +21,7 @@ namespace SmartSolar.Tests.Unit.SolarSimulation;
 /// Provider results in these tests come from SYNTHETIC fakes, never live services. Results are
 /// cached (in-memory fake distributed cache), never written to PostgreSQL, and never auto-selected.
 /// </summary>
+[Collection(WallClockSensitiveCollection.Name)]
 public sealed class CreateSimulationHandlerTests
 {
     private static async Task<IReadOnlyList<Guid>> CachedIdsAsync(PreSurveyTestContext ctx, Guid preSurveyId)
@@ -59,8 +61,21 @@ public sealed class CreateSimulationHandlerTests
         Assert.Equal(2, detail.Energy.Scenarios.Count);
         Assert.Equal(EnergyScenarioRoles.PrimaryConservativeReference, detail.Energy.Scenarios[0].Role);
         Assert.Equal(EnergyScenarioRoles.Comparison, detail.Energy.Scenarios[1].Role);
-        // The PVGIS typical-year baseline is unchanged; the headline energy is after the water tank's shading estimate.
-        Assert.Equal(Math.Round(1400m * detail.Layout.InstalledCapacityKwp, 2), detail.Energy.AnnualEnergyBeforeShadingKwh);
+        // The regional typical-year baseline (1 kWp, scaled to the installed kWp) is unchanged; the headline energy is after the water tank's
+        // shading estimate (a local loss fraction on the regional baseline).
+        Assert.Equal(RegionalTestSupport.SyntheticSiteAnnual(1400m, detail.Layout.InstalledCapacityKwp), detail.Energy.AnnualEnergyBeforeShadingKwh);
+        Assert.Equal(ShadingCorrectionBases.LocalLossFractionOnRegionalBaseline, detail.Shading!.CorrectionBasis);
+        Assert.Equal(EstimateBases.HcmcRegionalAreaWeighted, detail.EstimateBasis);
+        Assert.Equal(EstimateBases.HcmcRegionalAreaWeighted, detail.Energy.EstimateBasis);
+        var regional = detail.Energy.Regional!;
+        Assert.Equal(("79", RegionalTestSupport.SampleCount, RegionalTestSupport.SampleCount, RegionalQualities.Complete, 1m),
+            (regional.RegionCode, regional.SampleCount, regional.SucceededSampleCount, regional.Quality, regional.CoveredWeightFraction));
+        Assert.True(regional.ReferencePoint.DisplayOnly);
+        Assert.NotEqual((detail.Surface.Latitude, detail.Surface.Longitude), (regional.ReferencePoint.Latitude, regional.ReferencePoint.Longitude));
+        Assert.Equal(EstimateBases.LabelVi, regional.Label);
+        Assert.Contains(detail.Warnings, w => w.Code == SimulationWarningCodes.RegionalEstimate);
+        Assert.NotNull(detail.Climate.Regional);
+        Assert.Null(detail.Climate.Context!.Metadata.RequestedLatitude);   // an aggregate is never labelled with one point
         var shading = detail.Shading!;
         Assert.Equal((ComponentStatusCodes.Succeeded, ShadingMethods.RayCast3dPvgisHourlyLinear), (shading.Status, shading.Method));
         Assert.Equal(detail.Energy.AnnualEnergyAfterShadingKwh, detail.Energy.AnnualEnergyKwh);
@@ -77,15 +92,18 @@ public sealed class CreateSimulationHandlerTests
 
         Assert.Equal(ComponentStatusCodes.Succeeded, detail.Climate.Status);
 
-        // One PVGIS call per scenario with the actual panel orientation and installed capacity.
-        Assert.Equal(2, ctx.PvEnergy.Requests.Count);
+        // One PVGIS call per regional sample and scenario (1 kWp reference with the actual panel orientation and losses); none at the site.
+        Assert.Equal(2 * RegionalTestSupport.SampleCount, ctx.PvEnergy.Requests.Count);
+        var samples = RegionalTestSupport.Dataset.Samples.Select(s => (s.Latitude, s.Longitude)).ToHashSet();
         Assert.All(ctx.PvEnergy.Requests, r =>
         {
             Assert.Equal(15m, r.TiltDegree);
             Assert.Equal(180m, r.CompassAzimuthDegree);
-            Assert.Equal(detail.Layout.InstalledCapacityKwp, r.PeakPowerKwp);
+            Assert.Equal(1m, r.PeakPowerKwp);
             Assert.Equal(14m, r.SystemLossPercent);
+            Assert.Contains((r.Latitude, r.Longitude), samples);
         });
+        Assert.Equal(RegionalTestSupport.SampleCount, ctx.PvEnergy.Requests.Count(r => r.MountingPlace == PvgisMountingPlaces.Building));
 
         // Cached only: no PostgreSQL row and no automatic selection.
         var cached = (await ctx.SimulationCache.GetAsync(detail.SimulationId, CancellationToken.None))!;
@@ -109,10 +127,13 @@ public sealed class CreateSimulationHandlerTests
         var result = await ctx.CreateSimulationHandler().HandleAsync(Rack(user.Id, draft.Id, product.Id, tilt: 12m, azimuth: 135m), CancellationToken.None);
 
         var detail = result.Simulation!;
-        var request = Assert.Single(ctx.PvEnergy.Requests);
-        Assert.Equal(PvgisMountingPlaces.Free, request.MountingPlace);
-        Assert.Equal(12m, request.TiltDegree);
-        Assert.Equal(135m, request.CompassAzimuthDegree);
+        Assert.Equal(RegionalTestSupport.SampleCount, ctx.PvEnergy.Requests.Count);
+        Assert.All(ctx.PvEnergy.Requests, request =>
+        {
+            Assert.Equal(PvgisMountingPlaces.Free, request.MountingPlace);
+            Assert.Equal(12m, request.TiltDegree);
+            Assert.Equal(135m, request.CompassAzimuthDegree);
+        });
         Assert.Equal(EnergyScenarioRoles.Primary, Assert.Single(detail.Energy.Scenarios).Role);
         Assert.Equal(InstallationSources.ComputedShadeEstimate, detail.Installation.RowGapMm.Source);
         Assert.Equal(-45m, detail.Mounting.PvgisAspectDegree);
@@ -177,8 +198,10 @@ public sealed class CreateSimulationHandlerTests
 
         Assert.Equal(SimulationStatusCodes.PartiallyCompleted, failed.Simulation!.Status);
         Assert.Equal(ComponentStatusCodes.Failed, failed.Simulation.Energy.Status);
-        Assert.Equal(ProviderFailureCodes.Unavailable, failed.Simulation.Energy.Reason);
+        // Every regional sample failed: the coverage threshold is not met, so there is no energy (never a zero).
+        Assert.Equal(RegionalFailureCodes.CoverageInsufficient, failed.Simulation.Energy.Reason);
         Assert.Null(failed.Simulation.Energy.AnnualEnergyKwh);
+        Assert.Null(failed.Simulation.Energy.Regional);
         Assert.Equal(ComponentStatusCodes.Succeeded, failed.Simulation.Climate.Status);
 
         ctx.PvEnergy.Handler = null;
@@ -298,8 +321,8 @@ public sealed class CreateSimulationHandlerTests
         Assert.Equal(CreateSimulationOutcome.Created, first.Outcome);
         Assert.Equal(CreateSimulationOutcome.Reused, second.Outcome);
         Assert.Equal(first.Simulation!.SimulationId, second.Simulation!.SimulationId);
-        Assert.Equal(2, ctx.PvEnergy.Requests.Count);
-        Assert.Equal(1, ctx.Climate.Calls);
+        Assert.Equal(2 * RegionalTestSupport.SampleCount, ctx.PvEnergy.Requests.Count);
+        Assert.Equal(RegionalTestSupport.SampleCount, ctx.Climate.Calls);
         Assert.Equal(first.Simulation.ExpiresAt, second.Simulation.ExpiresAt);
         Assert.Single(await CachedIdsAsync(ctx, draft.Id));
     }
@@ -363,7 +386,7 @@ public sealed class CreateSimulationHandlerTests
         Assert.Single(results, r => r.Outcome == CreateSimulationOutcome.Created);
         Assert.Single(results, r => r.Outcome == CreateSimulationOutcome.Reused);
         Assert.Equal(results[0].Simulation!.SimulationId, results[1].Simulation!.SimulationId);
-        Assert.Equal(2, ctx.PvEnergy.Requests.Count);
+        Assert.Equal(2 * RegionalTestSupport.SampleCount, ctx.PvEnergy.Requests.Count);
         Assert.Single(await CachedIdsAsync(ctx, draft.Id));
     }
 
@@ -713,7 +736,7 @@ public sealed class CreateSimulationHandlerTests
 
         Assert.Equal((ComponentStatusCodes.Unavailable, ShadingReasons.ObstacleHeightMissing), (detail.Shading!.Status, detail.Shading.Reason));
         Assert.Null(detail.Shading.AnnualLossPercent);   // never a fabricated zero
-        Assert.Equal(Math.Round(1400m * detail.Layout.InstalledCapacityKwp, 2), detail.Energy.AnnualEnergyKwh);
+        Assert.Equal(RegionalTestSupport.SyntheticSiteAnnual(1400m, detail.Layout.InstalledCapacityKwp), detail.Energy.AnnualEnergyKwh);
         Assert.Contains(detail.Warnings, w => w.Code == SimulationWarningCodes.ShadingNotApplied);
         Assert.Contains(detail.Warnings, w => w.Code == SimulationWarningCodes.ObstacleShadingNotModeled);
         Assert.Empty(ctx.PvEnergy.HourlyRequests);

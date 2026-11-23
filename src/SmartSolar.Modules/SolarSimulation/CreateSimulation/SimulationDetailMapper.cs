@@ -5,6 +5,7 @@ using SmartSolar.Modules.SolarSimulation.Contracts.Storage;
 using SmartSolar.Modules.SolarSimulation.Entities;
 using SmartSolar.Modules.SolarSimulation.Geometry;
 using SmartSolar.Modules.SolarSimulation.Models;
+using SmartSolar.Modules.SolarSimulation.Regional;
 
 namespace SmartSolar.Modules.SolarSimulation.CreateSimulation;
 
@@ -47,11 +48,16 @@ public static class SimulationDetailMapper
             computed.Climate,
             computed.Warnings,
             SimulationLimitations.For(computed.Installation.ShadingWindow),
-            Shading: computed.Shading);
+            Shading: computed.Shading,
+            EstimateBasis: EstimateBases.HcmcRegionalAreaWeighted);
+
+    /// <summary>A stored detail with its estimate basis made explicit (results stored before the regional model carry none: legacy site point).</summary>
+    public static SimulationDetail WithBasis(SimulationDetail detail)
+        => detail.EstimateBasis is not null ? detail : detail with { EstimateBasis = EstimateBases.ForAlgorithm(detail.AlgorithmVersion) };
 
     /// <summary>A cached result as one viewer sees it: staleness and selection against the current pre-survey.</summary>
     public static SimulationDetail ForViewer(CachedSimulation cached, SimulationSource source)
-        => cached.Detail with
+        => WithBasis(cached.Detail) with
         {
             IsStale = cached.GeometryVersion != source.GeometryVersion,
             IsSelected = source.SelectedSimulationId == cached.SimulationId,
@@ -67,7 +73,8 @@ public static class SimulationDetailMapper
             cached.GeometryVersion != source.GeometryVersion,
             source.SelectedSimulationId == cached.SimulationId,
             cached.GeometryVersion, d.Mounting.Type, d.Product.Id, d.Product.Sku, d.Product.Name,
-            d.Layout.PanelCount, d.Layout.InstalledCapacityKwp, d.Energy.AnnualEnergyKwh, cached.CreatedAt, cached.ExpiresAt);
+            d.Layout.PanelCount, d.Layout.InstalledCapacityKwp, d.Energy.AnnualEnergyKwh, cached.CreatedAt, cached.ExpiresAt,
+            d.EstimateBasis ?? EstimateBases.ForAlgorithm(d.AlgorithmVersion));
     }
 
     /// <summary>The compact PostgreSQL row for a selection: summary columns only, never the full payload.</summary>
@@ -110,5 +117,6 @@ public static class SimulationDetailMapper
             s.PanelCount, s.InstalledCapacityKwp, s.AnnualEnergyKwh, s.SpecificYieldKwhPerKwpYear,
             s.PanelTiltDegree, s.PanelAzimuthDegree, s.CreatedAt, s.SelectedAt,
             s.SnapshotObjectKey is not null,
-            snapshotStatus ?? (s.SnapshotObjectKey is null ? SnapshotStatuses.None : SnapshotStatuses.Stored));
+            snapshotStatus ?? (s.SnapshotObjectKey is null ? SnapshotStatuses.None : SnapshotStatuses.Stored),
+            EstimateBasis: EstimateBases.ForAlgorithm(s.AlgorithmVersion));
 }

@@ -4974,7 +4974,7 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
 
                     b.ToTable("chat_message", null, t =>
                         {
-                            t.HasCheckConstraint("ck_chat_message_retrieval_audience", "retrieval_audience IS NULL OR retrieval_audience IN ('INTERNAL', 'CUSTOMER')");
+                            t.HasCheckConstraint("ck_chat_message_retrieval_audience", "retrieval_audience IS NULL OR retrieval_audience IN ('INTERNAL', 'CUSTOMER', 'ALL_SIGNED_IN_ROLES')");
 
                             t.HasCheckConstraint("ck_chat_message_role", "role IN ('USER', 'ASSISTANT')");
 
@@ -5241,6 +5241,14 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("revision");
 
+                    b.Property<DateTimeOffset?>("SharedScopeApprovedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("shared_scope_approved_at");
+
+                    b.Property<Guid?>("SharedScopeApprovedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("shared_scope_approved_by_user_id");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(30)
@@ -5262,6 +5270,8 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("ux_knowledge_document_version_file");
 
+                    b.HasIndex("SharedScopeApprovedByUserId");
+
                     b.HasIndex("DocumentId", "Status")
                         .IsUnique()
                         .HasDatabaseName("ux_knowledge_document_version_one_published")
@@ -5278,6 +5288,8 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                             t.HasCheckConstraint("ck_knowledge_document_version_indexed_config", "indexed_config_version IS NULL OR indexed_config_version >= 0");
 
                             t.HasCheckConstraint("ck_knowledge_document_version_number", "version_number >= 1");
+
+                            t.HasCheckConstraint("ck_knowledge_document_version_shared_scope", "shared_scope_approved_by_user_id IS NULL OR shared_scope_approved_at IS NOT NULL");
 
                             t.HasCheckConstraint("ck_knowledge_document_version_status", "status IN ('REGISTERED', 'VERIFYING', 'PROCESSING', 'READY_FOR_REVIEW', 'PUBLISHED', 'SUPERSEDED', 'FAILED', 'OCR_REQUIRED', 'UNSUPPORTED_CONTENT', 'WITHDRAWN')");
                         });
@@ -5379,6 +5391,65 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                             t.HasCheckConstraint("ck_knowledge_ingestion_job_kind", "kind IN ('INGEST', 'DELETE_VECTORS')");
 
                             t.HasCheckConstraint("ck_knowledge_ingestion_job_status", "status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'RETRY_WAITING')");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.KnowledgeBase.KnowledgePublicationApproval", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("action");
+
+                    b.Property<Guid?>("ActorUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("DocumentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("document_id");
+
+                    b.Property<string>("LegacyAudience")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("legacy_audience");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("note");
+
+                    b.Property<Guid>("VersionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("version_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ActorUserId");
+
+                    b.HasIndex("VersionId");
+
+                    b.HasIndex("DocumentId", "CreatedAt")
+                        .HasDatabaseName("ix_knowledge_publication_approval_document_created_at");
+
+                    b.ToTable("knowledge_publication_approval", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_knowledge_publication_approval_action", "action IN ('APPROVED_ALL_SIGNED_IN_ROLES', 'MIGRATED_FROM_CUSTOMER_AUDIENCE')");
+
+                            t.HasCheckConstraint("ck_knowledge_publication_approval_actor", "actor_user_id IS NOT NULL OR action = 'MIGRATED_FROM_CUSTOMER_AUDIENCE'");
+
+                            t.HasCheckConstraint("ck_knowledge_publication_approval_legacy_audience", "legacy_audience IN ('INTERNAL', 'CUSTOMER')");
                         });
                 });
 
@@ -9704,10 +9775,35 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasForeignKey("FileId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("SharedScopeApprovedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.KnowledgeBase.KnowledgeIngestionJob", b =>
                 {
+                    b.HasOne("SmartSolar.Modules.KnowledgeBase.KnowledgeDocumentVersion", null)
+                        .WithMany()
+                        .HasForeignKey("VersionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.KnowledgeBase.KnowledgePublicationApproval", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("ActorUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("SmartSolar.Modules.KnowledgeBase.KnowledgeDocument", null)
+                        .WithMany()
+                        .HasForeignKey("DocumentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("SmartSolar.Modules.KnowledgeBase.KnowledgeDocumentVersion", null)
                         .WithMany()
                         .HasForeignKey("VersionId")

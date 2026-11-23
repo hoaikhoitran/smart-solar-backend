@@ -80,6 +80,10 @@ public sealed record RagHistoryTurn(string Role, string Content);
 
 public sealed record RagAllowedVersion(Guid VersionId, Guid DocumentId, string Title, int VersionNumber);
 
+/// <summary>One published document awaiting the shared-scope review (no content, only metadata).</summary>
+public sealed record SharedScopeReviewItem(Guid DocumentId, string Title, string Category, string Status, string LegacyAudience, Guid PublishedVersionId,
+    int VersionNumber, int? ChunkCount, DateTimeOffset? PublishedAt, int Revision);
+
 /// <summary>
 /// One question. Generation values come from the effective configuration; null model / token parameter / min score / prompt
 /// version mean "service default". With a model named (an ACTIVE admin configuration), a null <paramref name="Temperature"/> is
@@ -100,7 +104,8 @@ public sealed record RagCitation(Guid DocumentId, Guid VersionId, string ChunkId
 public sealed record RagAnswerResult(bool Reached, string? Error, string? Answer, bool Grounded, IReadOnlyList<RagCitation> Citations,
     int PromptTokens, int CompletionTokens, string? Model, int RetrievalMs, int GenerationMs, int? ConfigVersion = null,
     long EmbeddingTokens = 0, string? EmbeddingModel = null, string? EmbeddingProvider = null, string? GenerationProvider = null,
-    int CachedPromptTokens = 0, int ReasoningTokens = 0, bool UsageReported = true, string Billing = "none", int ContextMs = 0);
+    int CachedPromptTokens = 0, int ReasoningTokens = 0, bool UsageReported = true, string Billing = "none", int ContextMs = 0,
+    string? InsufficientReason = null, int? RetrievedChunks = null, int? UsableChunks = null);
 
 /// <summary>Internal client of the FastAPI RAG service (HMAC-signed requests over the private network).</summary>
 public interface IRagServiceClient
@@ -144,16 +149,23 @@ public interface IKnowledgeUnitOfWork : ITransactionalUnitOfWork
     Task<bool> TryReleaseLeaseAsync(Guid jobId, DateTimeOffset leaseUntil, DateTimeOffset now, CancellationToken cancellationToken);
     Task<IReadOnlyList<Guid>> ListDueJobsAsync(DateTimeOffset now, int limit, CancellationToken cancellationToken);
 
-    /// <summary>Exactly the versions the chatbot may read right now: published version of each published document.</summary>
+    /// <summary>
+    /// Exactly the versions the chatbot may read right now, for EVERY signed-in role alike (shared publication scope): the published version
+    /// of each PUBLISHED document (<c>knowledge_document.published_version_id</c> = the version, version status PUBLISHED) that an Admin
+    /// approved for all signed-in roles (<c>shared_scope_approved_at</c> set). There is no role-specific filter.
+    /// </summary>
     Task<IReadOnlyList<RagAllowedVersion>> GetRetrievableVersionsAsync(CancellationToken cancellationToken);
 
     /// <summary>
-    /// The retrievable versions a Customer may read: published documents an Admin classified as customer-visible (tag
-    /// <c>knowledge_document.audience = CUSTOMER</c>). Every other document is internal.
+    /// Read-only legacy-content inventory: PUBLISHED documents whose published version has NOT been approved for all signed-in roles (for
+    /// example INTERNAL documents published under the former audience policy). None of them is retrievable until an Admin re-confirms or
+    /// unpublishes it.
     /// </summary>
-    Task<IReadOnlyList<RagAllowedVersion>> GetCustomerRetrievableVersionsAsync(CancellationToken cancellationToken);
+    Task<IReadOnlyList<SharedScopeReviewItem>> GetSharedScopeReviewAsync(CancellationToken cancellationToken);
 
     Task<IReadOnlyList<KnowledgeDocumentAudienceChange>> GetAudienceChangesAsync(Guid documentId, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<KnowledgePublicationApproval>> GetPublicationApprovalsAsync(Guid documentId, CancellationToken cancellationToken);
 
     Task<ChatSession?> FindSessionAsync(Guid sessionId, CancellationToken cancellationToken);
     Task<IReadOnlyList<ChatSession>> ListSessionsAsync(Guid userId, CancellationToken cancellationToken);

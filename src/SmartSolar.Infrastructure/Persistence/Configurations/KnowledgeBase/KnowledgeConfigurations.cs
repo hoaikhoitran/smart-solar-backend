@@ -57,6 +57,8 @@ public sealed class KnowledgeDocumentVersionConfiguration : IEntityTypeConfigura
                 "(indexed_chunk_characters IS NULL) = (indexed_chunk_overlap IS NULL) AND (indexed_chunk_characters IS NULL OR "
                 + "(indexed_chunk_characters > 0 AND indexed_chunk_overlap >= 0 AND indexed_chunk_overlap < indexed_chunk_characters))");
             t.HasCheckConstraint("ck_knowledge_document_version_indexed_config", "indexed_config_version IS NULL OR indexed_config_version >= 0");
+            t.HasCheckConstraint("ck_knowledge_document_version_shared_scope",
+                "shared_scope_approved_by_user_id IS NULL OR shared_scope_approved_at IS NOT NULL");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -79,8 +81,11 @@ public sealed class KnowledgeDocumentVersionConfiguration : IEntityTypeConfigura
         builder.Property(x => x.IndexedChunkOverlap).HasColumnName("indexed_chunk_overlap");
         builder.Property(x => x.LastIngestStatus).HasColumnName("last_ingest_status").HasMaxLength(30);
         builder.Property(x => x.LastIngestError).HasColumnName("last_ingest_error").HasMaxLength(300);
+        builder.Property(x => x.SharedScopeApprovedAt).HasColumnName("shared_scope_approved_at");
+        builder.Property(x => x.SharedScopeApprovedByUserId).HasColumnName("shared_scope_approved_by_user_id");
         builder.Property(x => x.Revision).HasColumnName("revision").IsConcurrencyToken().IsRequired();
         builder.HasIndex(x => new { x.DocumentId, x.VersionNumber }).IsUnique().HasDatabaseName("ux_knowledge_document_version_number");
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.SharedScopeApprovedByUserId).OnDelete(DeleteBehavior.Restrict);
         builder.HasIndex(x => x.FileId).IsUnique().HasDatabaseName("ux_knowledge_document_version_file");
         // Target of the document's latest/published composite foreign keys.
         builder.HasAlternateKey(x => new { x.Id, x.DocumentId }).HasName("ak_knowledge_document_version_id_document");
@@ -155,7 +160,7 @@ public sealed class ChatMessageConfiguration : IEntityTypeConfiguration<ChatMess
             t.HasCheckConstraint("ck_chat_message_status",
                 $"status IN ('{ChatMessageStatuses.Completed}', '{ChatMessageStatuses.InsufficientContext}', '{ChatMessageStatuses.Failed}')");
             t.HasCheckConstraint("ck_chat_message_retrieval_audience",
-                $"retrieval_audience IS NULL OR retrieval_audience IN ({string.Join(", ", KnowledgeAudiences.All.Select(a => $"'{a}'"))})");
+                $"retrieval_audience IS NULL OR retrieval_audience IN ({string.Join(", ", KnowledgeAudiences.RetrievalScopes.Select(a => $"'{a}'"))})");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -368,6 +373,36 @@ public sealed class KnowledgeDocumentAudienceChangeConfiguration : IEntityTypeCo
         builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.HasIndex(x => new { x.DocumentId, x.CreatedAt }).HasDatabaseName("ix_knowledge_document_audience_change_document_created_at");
         builder.HasOne<KnowledgeDocument>().WithMany().HasForeignKey(x => x.DocumentId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.ActorUserId).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+/// <summary>Append-only audit of shared publication approvals (all signed-in roles).</summary>
+public sealed class KnowledgePublicationApprovalConfiguration : IEntityTypeConfiguration<KnowledgePublicationApproval>
+{
+    public void Configure(EntityTypeBuilder<KnowledgePublicationApproval> builder)
+    {
+        builder.ToTable("knowledge_publication_approval", t =>
+        {
+            t.HasCheckConstraint("ck_knowledge_publication_approval_action",
+                $"action IN ({string.Join(", ", KnowledgePublicationActions.All.Select(a => $"'{a}'"))})");
+            t.HasCheckConstraint("ck_knowledge_publication_approval_legacy_audience",
+                $"legacy_audience IN ({string.Join(", ", KnowledgeAudiences.All.Select(a => $"'{a}'"))})");
+            t.HasCheckConstraint("ck_knowledge_publication_approval_actor",
+                $"actor_user_id IS NOT NULL OR action = '{KnowledgePublicationActions.MigratedFromCustomerAudience}'");
+        });
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.DocumentId).HasColumnName("document_id").IsRequired();
+        builder.Property(x => x.VersionId).HasColumnName("version_id").IsRequired();
+        builder.Property(x => x.Action).HasColumnName("action").HasMaxLength(40).IsRequired();
+        builder.Property(x => x.LegacyAudience).HasColumnName("legacy_audience").HasMaxLength(20).IsRequired();
+        builder.Property(x => x.ActorUserId).HasColumnName("actor_user_id");
+        builder.Property(x => x.Note).HasColumnName("note").HasMaxLength(1000);
+        builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+        builder.HasIndex(x => new { x.DocumentId, x.CreatedAt }).HasDatabaseName("ix_knowledge_publication_approval_document_created_at");
+        builder.HasOne<KnowledgeDocument>().WithMany().HasForeignKey(x => x.DocumentId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<KnowledgeDocumentVersion>().WithMany().HasForeignKey(x => x.VersionId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.ActorUserId).OnDelete(DeleteBehavior.Restrict);
     }
 }
