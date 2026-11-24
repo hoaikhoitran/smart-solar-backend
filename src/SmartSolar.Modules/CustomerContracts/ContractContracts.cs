@@ -6,7 +6,12 @@ namespace SmartSolar.Modules.CustomerContracts;
 public sealed record AcceptedQuotationSource(
     Guid QuotationId, int QuotationVersion, string QuoteNumber, string Status, Guid SurveyRequestId, Guid CustomerUserId,
     Guid? AssignedSaleId, string Currency, decimal TotalAmount, string PricingSnapshotJson, string? CustomerSnapshotJson, string? Terms,
-    int QuotationSurveyVersion = 0, int CurrentSurveyVersion = 0, DateTimeOffset? ValidUntil = null);
+    int QuotationSurveyVersion = 0, int CurrentSurveyVersion = 0, DateTimeOffset? ValidUntil = null, decimal? InstallationTotal = null,
+    IReadOnlyList<Quotations.QuotationServicePackage>? ServicePackages = null)
+{
+    /// <summary>True when the quotation bundles per-panel service packages: <see cref="TotalAmount"/> is then the grand total (installation + packages).</summary>
+    public bool HasServicePackages => ServicePackages is { Count: > 0 };
+}
 
 /// <summary>The verified payment that paid a contract before it existed (technician-led flow): attempt, when, how much.</summary>
 public sealed record ContractPrepayment(Guid PaymentAttemptId, DateTimeOffset PaidAt, decimal Amount, string Method);
@@ -40,7 +45,20 @@ public interface IContractUnitOfWork : ITransactionalUnitOfWork, IInAppNotificat
     /// <summary>True when a verified payment of the installation quotation was settled (the only way a contract may be created since 2026-11-18).</summary>
     Task<bool> HasSettledQuotationPaymentAsync(Guid quotationId, CancellationToken cancellationToken);
 
+    /// <summary>The bundled package commitments of a contract (empty for contracts without packages).</summary>
+    Task<IReadOnlyList<ContractServicePackage>> GetServicePackagesAsync(Guid contractId, bool track, CancellationToken cancellationToken);
+    void AddServicePackage(ContractServicePackage servicePackage);
+
     void AddContract(CustomerContract contract);
     void AddSubmission(ContractSignatureSubmission submission);
     void AddEvent(ContractEvent contractEvent);
+}
+
+/// <summary>
+/// Provisions the per-panel packages bundled into a contract (implemented by the after-sales module). Called inside the payment confirmation transaction
+/// right after the balance made the contract PAID, and by staff to retry a reconciliation. Idempotent: a commitment is provisioned at most once.
+/// </summary>
+public interface IBundledPackageProvisioner
+{
+    Task ContractFullyPaidAsync(Guid contractId, DateTimeOffset paidAt, DateTimeOffset now, CancellationToken cancellationToken);
 }

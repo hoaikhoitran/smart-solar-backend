@@ -18,7 +18,10 @@ namespace SmartSolar.Modules.CustomerContracts;
 /// <item>The overdue sweep opens one collection case per overdue installment (people follow up; nothing automatic happens to money or assets).</item>
 /// </list>
 /// </summary>
-public sealed class PaymentPlanLedger(IContractUnitOfWork unitOfWork, PaymentPlanOptions options, TimeProvider time, ILogger<PaymentPlanLedger>? logger = null)
+/// <param name="packageProvisioner">Provisions the bundled per-panel packages once the contract is fully paid (after-sales module); null in unit tests of
+/// flows without packages.</param>
+public sealed class PaymentPlanLedger(IContractUnitOfWork unitOfWork, PaymentPlanOptions options, TimeProvider time, ILogger<PaymentPlanLedger>? logger = null,
+    IBundledPackageProvisioner? packageProvisioner = null)
     : Quotations.IAgreedQuotationContracts, Installations.IInstallationAcceptanceHook
 {
     // ================================================================== Agreement (inside the quotation decision transaction)
@@ -44,13 +47,42 @@ public sealed class PaymentPlanLedger(IContractUnitOfWork unitOfWork, PaymentPla
         contract.PaymentPlan = PaymentPlans.Deposit30Balance70;
         contract.TermsVersion = Truncate(options.TermsVersion, 60);
         var clauses = PaymentPlanCalculator.Clauses(split, options);
+        // Bundled per-panel packages: ONE contract total (installation + packages) split 30/70; the packages are commitments of this contract, paid
+        // inside the two installments (no separate package invoice) and provisioned only after full payment, handover and panel reconciliation.
+        var commitments = new List<ContractServicePackage>();
+        if (source.HasServicePackages)
+        {
+            var packagesTotal = source.ServicePackages!.Sum(p => p.TotalAmount);
+            if (source.InstallationTotal is not { } installationTotal || installationTotal + packagesTotal != source.TotalAmount
+                || PaymentPlanCalculator.Allocate(split, source.ServicePackages!.Select(p => (p.Kind, p.TotalAmount)).ToList()) is null)
+                return new(null, PaymentPlanErrorCodes.AmountNotSupported, "The quotation's installation and service package amounts do not add up to its grand total.");
+            contract.InstallationTotal = installationTotal;
+            contract.ServicePackagesTotal = packagesTotal;
+            foreach (var p in source.ServicePackages!)
+            {
+                var deposit = PaymentPlanCalculator.DepositShare(p.TotalAmount);
+                commitments.Add(new ContractServicePackage
+                {
+                    Id = Guid.NewGuid(), ContractId = contract.Id, QuotationId = source.QuotationId, QuotationServicePackageId = p.Id, Kind = p.Kind, PackageId = p.PackageId,
+                    PackageName = p.PackageName, Description = p.Description, ImageUrl = p.ImageUrl, PricingUnit = p.PricingUnit, UnitPrice = p.UnitPrice,
+                    Quantity = p.Quantity, TotalAmount = p.TotalAmount, DurationMonths = p.DurationMonths, VisitMonths = p.VisitMonths,
+                    CoveredDisasterTypes = p.CoveredDisasterTypes, CoveragePercent = p.CoveragePercent, PerIncidentLimit = p.PerIncidentLimit, TermLimit = p.TermLimit,
+                    CatalogRevision = p.CatalogRevision, SnapshotAt = p.SnapshotAt, DepositAllocation = deposit, BalanceAllocation = p.TotalAmount - deposit,
+                    Status = ContractServicePackageStatuses.Committed, StatusChangedAt = now, CreatedAt = now, UpdatedAt = now,
+                });
+            }
+            clauses = $"{clauses.TrimEnd()}\n{PaymentPlanCalculator.PackageClauses(installationTotal, commitments, split)}";
+        }
         contract.Terms = Truncate(string.IsNullOrWhiteSpace(source.Terms) ? clauses : $"{source.Terms!.Trim()}\n\n{clauses}", 8000);
         // Frozen content: the hash the customer previews is the content of the paper they sign (issuedAt is not part of it yet).
         contract.CanonicalHash = ContractHandlers.CanonicalHash(contract);
         unitOfWork.AddContract(contract);
         foreach (var installment in PaymentPlanCalculator.CreateInstallments(contract.Id, split, now)) unitOfWork.AddInstallment(installment);
+        foreach (var commitment in commitments) unitOfWork.AddServicePackage(commitment);
         AddEvent(contract.Id, "CREATED", null, ContractStatuses.Draft, technicianUserId,
-            $"at the on-site agreement of quotation {source.QuoteNumber} v{source.QuotationVersion}; plan {contract.PaymentPlan}: deposit {split.Deposit:0} + balance {split.Balance:0} VND",
+            $"at the on-site agreement of quotation {source.QuoteNumber} v{source.QuotationVersion}; plan {contract.PaymentPlan}: deposit {split.Deposit:0} + balance {split.Balance:0} VND"
+            + (commitments.Count == 0 ? "" : $"; total = installation {contract.InstallationTotal:0} + service packages {contract.ServicePackagesTotal:0} "
+                + $"({string.Join(", ", commitments.Select(c => $"{c.Kind} {c.UnitPrice:0}×{c.Quantity}"))})"),
             now);
         unitOfWork.AddNotification(source.CustomerUserId, CustomerNotificationTypes.ContractReadyForPreview,
             $"Hợp đồng {contract.ContractNumber} đã được lập theo báo giá {source.QuoteNumber}. Bạn có thể xem toàn bộ nội dung trước khi thanh toán đợt 1 ({split.Deposit:N0} VND).",
@@ -85,6 +117,15 @@ public sealed class PaymentPlanLedger(IContractUnitOfWork unitOfWork, PaymentPla
             i.Status = InstallmentStatuses.Cancelled;
             i.UpdatedAt = now;
             i.Revision++;
+        }
+        // Not-yet-funded package commitments end with the contract (nothing was paid for them).
+        foreach (var commitment in await unitOfWork.GetServicePackagesAsync(contract.Id, true, cancellationToken))
+        {
+            commitment.Status = ContractServicePackageStatuses.Discarded;
+            commitment.StatusReason = "The contract was discarded before the deposit (customer withdrew the on-site agreement).";
+            commitment.StatusChangedAt = now;
+            commitment.UpdatedAt = now;
+            commitment.Revision++;
         }
         contract.DiscardedAt = now;
         contract.DiscardedByUserId = technicianUserId;
@@ -156,6 +197,8 @@ public sealed class PaymentPlanLedger(IContractUnitOfWork unitOfWork, PaymentPla
                 contract.Status = ContractStatuses.Paid;
                 unitOfWork.AddNotification(contract.CustomerUserId, CustomerNotificationTypes.ContractFullyPaid,
                     $"Hợp đồng {contract.ContractNumber} đã được thanh toán đủ. Cảm ơn bạn đã sử dụng dịch vụ SmartSolar.", now);
+                // Bundled packages become eligible now (same transaction): provisioned against the real installed panels, or flagged for review.
+                if (packageProvisioner is not null) await packageProvisioner.ContractFullyPaidAsync(contract.Id, paidAt, now, cancellationToken);
             }
             if (await unitOfWork.FindOpenCollectionCaseAsync(installment.Id, true, cancellationToken) is { } open)
             {

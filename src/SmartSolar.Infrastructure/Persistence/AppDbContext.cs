@@ -95,6 +95,8 @@ public sealed class AppDbContext : DbContext
 
     public DbSet<SmartSolar.Modules.Quotations.QuotationEvent> QuotationEvents => Set<SmartSolar.Modules.Quotations.QuotationEvent>();
 
+    public DbSet<SmartSolar.Modules.Quotations.QuotationServicePackage> QuotationServicePackages => Set<SmartSolar.Modules.Quotations.QuotationServicePackage>();
+
     public DbSet<SmartSolar.Modules.CustomerContracts.CustomerContract> CustomerContracts => Set<SmartSolar.Modules.CustomerContracts.CustomerContract>();
 
     public DbSet<SmartSolar.Modules.CustomerContracts.ContractSignatureSubmission> ContractSignatureSubmissions => Set<SmartSolar.Modules.CustomerContracts.ContractSignatureSubmission>();
@@ -112,6 +114,8 @@ public sealed class AppDbContext : DbContext
     public DbSet<SmartSolar.Modules.CustomerContracts.ContractCollectionActivity> ContractCollectionActivities => Set<SmartSolar.Modules.CustomerContracts.ContractCollectionActivity>();
 
     public DbSet<SmartSolar.Modules.CustomerContracts.ContractAccessAudit> ContractAccessAudits => Set<SmartSolar.Modules.CustomerContracts.ContractAccessAudit>();
+
+    public DbSet<SmartSolar.Modules.CustomerContracts.ContractServicePackage> ContractServicePackages => Set<SmartSolar.Modules.CustomerContracts.ContractServicePackage>();
 
     public DbSet<SmartSolar.Modules.Payments.PaymentAttempt> PaymentAttempts => Set<SmartSolar.Modules.Payments.PaymentAttempt>();
 
@@ -165,6 +169,8 @@ public sealed class AppDbContext : DbContext
     public DbSet<SmartSolar.Modules.AfterSales.ServicePackage> ServicePackages => Set<SmartSolar.Modules.AfterSales.ServicePackage>();
 
     public DbSet<SmartSolar.Modules.AfterSales.ServiceSubscription> ServiceSubscriptions => Set<SmartSolar.Modules.AfterSales.ServiceSubscription>();
+
+    public DbSet<SmartSolar.Modules.AfterSales.ServiceCoverageAllocation> ServiceCoverageAllocations => Set<SmartSolar.Modules.AfterSales.ServiceCoverageAllocation>();
 
     public DbSet<SmartSolar.Modules.AfterSales.MaintenanceEntitlement> MaintenanceEntitlements => Set<SmartSolar.Modules.AfterSales.MaintenanceEntitlement>();
 

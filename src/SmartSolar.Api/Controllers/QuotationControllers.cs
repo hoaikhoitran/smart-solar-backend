@@ -73,6 +73,32 @@ public sealed class TechnicianQuotationsController(QuotationHandlers handlers) :
     }
 
     /// <summary>
+    /// Chooses or atomically replaces the bundled per-panel service package of <paramref name="kind"/> (MAINTENANCE | DISASTER_PROTECTION) on the DRAFT.
+    /// The server derives the quantity (whole SOLAR_PANEL units of the lines) and the price (Admin catalog, PER_PANEL, active).
+    /// </summary>
+    [HttpPut("quotations/{quotationId:guid}/service-packages/{kind}")]
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
+    public async Task<IActionResult> SetServicePackage(Guid quotationId, string kind, [FromBody] CartServicePackageRequest request, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (request.PackageId is not { } packageId || packageId == Guid.Empty) return Invalid("packageId", "'packageId' is required.");
+        if (request.Revision is not { } revision) return Invalid("revision", "'revision' is required.");
+        return Respond(await handlers.SetCartServicePackageAsync(user, quotationId, kind.Trim().ToUpperInvariant(), packageId, revision, cancellationToken));
+    }
+
+    /// <summary>Removes the bundled package of <paramref name="kind"/> from the DRAFT.</summary>
+    [HttpDelete("quotations/{quotationId:guid}/service-packages/{kind}")]
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<QuotationView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
+    public async Task<IActionResult> RemoveServicePackage(Guid quotationId, string kind, [FromQuery] int? revision, CancellationToken cancellationToken)
+    {
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (revision is not { } expected) return Invalid("revision", "'revision' is required.");
+        return Respond(await handlers.RemoveCartServicePackageAsync(user, quotationId, kind.Trim().ToUpperInvariant(), expected, cancellationToken));
+    }
+
+    /// <summary>
     /// Finalizes the cart: re-prices every line from the catalog (snapshot), computes the totals and freezes them for presentation on the
     /// technician's device. Nothing is sent to the customer's app.
     /// </summary>
@@ -127,6 +153,23 @@ public sealed class TechnicianQuotationsController(QuotationHandlers handlers) :
     [EnableRateLimiting(RateLimitingExtensions.PaymentCreatePolicy)]
     public async Task<IActionResult> CancelPayment(Guid quotationId, [FromServices] OnSiteQuotationPaymentHandlers payments, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await payments.CancelAsync(user, quotationId, cancellationToken)) : UnauthorizedFailure();
+}
+
+/// <summary>
+/// Technician (on-site sale): read-only catalog of the service packages that can be bundled with an installation quotation — active, PER_PANEL.
+/// Catalog edits stay Admin-only (<c>/api/admin/after-sales/packages</c>).
+/// </summary>
+[ApiController]
+[Route("api/technician/service-packages")]
+[Authorize(Roles = RoleCodes.Technician)]
+[RequireFeature(FeatureOptions.InstallationWorkflow)]
+public sealed class TechnicianServicePackagesController(SmartSolar.Modules.AfterSales.ServicePackageHandlers packages) : OperationResultControllerBase
+{
+    [HttpGet]
+    [ProducesResponseType(typeof(SmartSolar.Api.Contracts.ApiResponse<IReadOnlyList<SmartSolar.Modules.AfterSales.PackageView>>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.QuotationReadPolicy)]
+    public async Task<IActionResult> List([FromQuery] string? kind, CancellationToken cancellationToken)
+        => Respond(await packages.ListSellablePerPanelAsync(kind, cancellationToken));
 }
 
 /// <summary>

@@ -87,6 +87,22 @@ public sealed class AfterSalesPaymentSettlement(IAfterSalesUnitOfWork data, Subs
         // customer withdraws it), so a cash receipt confirmed after the online checkout window is still on time.
         if (attempt.Provider != PaymentProviders.Cash && providerPaidAt > (subscription.CheckoutExpiresAt ?? attempt.ExpiresAt))
             return "The payment was made after the checkout expired.";
+        // Per-panel coverage: the units must still be free (an expired reservation may have been taken by another purchase meanwhile).
+        if (subscription.CoverageScope == CoverageScopes.Panel)
+        {
+            await data.LockContractAsync(subscription.ContractId, token);
+            var from = subscription.RenewsSubscriptionId is { } renewedId && await data.FindSubscriptionAsync(renewedId, false, token) is { EndsAt: { } end } && end > now
+                ? end : now;
+            if (await PanelCoverageRules.ConflictAsync(data, subscription, await data.ListCoverageAllocationsAsync([subscription.Id], token), from, now, token) is { } conflict)
+                return $"The panel coverage can no longer be granted: {conflict}";
+        }
+        else
+        {
+            // Installation-wide term: never granted over per-panel coverage of the same kind bought meanwhile (no double coverage of a panel).
+            await data.LockContractAsync(subscription.ContractId, token);
+            if (await PanelCoverageRules.AnyPanelHoldingAsync(data, subscription.ContractId, subscription.Kind, now, token))
+                return $"Per-panel {subscription.Kind} coverage of this installation is in force or pending; the installation-wide term would overlap it.";
+        }
         subscription.Status = SubscriptionStatuses.Paid;
         subscription.PaidAt = providerPaidAt;
         subscription.UpdatedAt = now;

@@ -34,6 +34,16 @@ public sealed class QuotationUnitOfWork(AppDbContext db) : TransactionalUnitOfWo
                 p.Status == ProductStatus.Active && p.DeletedAt == null, p.ProductType, p.RatedPowerW))
             .FirstOrDefaultAsync(cancellationToken);
 
+    public async Task<CatalogServicePackageSnapshot?> GetServicePackageAsync(Guid packageId, CancellationToken cancellationToken)
+        => await Db.ServicePackages.AsNoTracking().Where(p => p.Id == packageId)
+            .Select(p => new CatalogServicePackageSnapshot(p.Id, p.Kind, p.Name, p.Description, p.ImageUrl, p.PricingUnit, p.Price, p.DurationMonths,
+                p.VisitMonths, p.CoveredDisasterTypes, p.CoveragePercent, p.PerIncidentLimit, p.TermLimit, p.IsActive, p.Revision))
+            .FirstOrDefaultAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<QuotationServicePackage>> GetServicePackagesAsync(Guid quotationId, bool track, CancellationToken cancellationToken)
+        => (await (track ? Db.QuotationServicePackages : Db.QuotationServicePackages.AsNoTracking()).Where(p => p.QuotationId == quotationId)
+            .ToListAsync(cancellationToken)).OrderBy(p => p.Kind, StringComparer.Ordinal).ToList();
+
     public async Task<QuotationSurveyBasis?> GetSurveyBasisAsync(Guid surveyRequestId, CancellationToken cancellationToken)
     {
         var report = await Db.OnSiteSurveyReports.AsNoTracking().Where(r => r.SurveyRequestId == surveyRequestId)
@@ -200,5 +210,7 @@ public sealed class QuotationUnitOfWork(AppDbContext db) : TransactionalUnitOfWo
     public void AddQuotation(Quotation quotation) => Db.Quotations.Add(quotation);
     public void AddLine(QuotationLine line) => Db.QuotationLines.Add(line);
     public void RemoveLine(QuotationLine line) => Db.QuotationLines.Remove(line);
+    public void AddServicePackage(QuotationServicePackage servicePackage) => Db.QuotationServicePackages.Add(servicePackage);
+    public void RemoveServicePackage(QuotationServicePackage servicePackage) => Db.QuotationServicePackages.Remove(servicePackage);
     public void AddEvent(QuotationEvent quotationEvent) => Db.QuotationEvents.Add(quotationEvent);
 }

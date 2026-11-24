@@ -56,6 +56,7 @@ public sealed class ServicePackageConfiguration : IEntityTypeConfiguration<Servi
                 + "AND per_incident_limit >= 0 AND term_limit >= per_incident_limit)");
             // Same rule as product_image.url: a cover is an https picture address.
             t.HasCheckConstraint("ck_service_package_image_url_https", "image_url IS NULL OR image_url LIKE 'https://%'");
+            t.HasCheckConstraint("ck_service_package_pricing_unit", $"pricing_unit IN ({AfterSalesSql.In(PackagePricingUnits.All)})");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -71,6 +72,8 @@ public sealed class ServicePackageConfiguration : IEntityTypeConfiguration<Servi
         builder.Property(x => x.TermLimit).HasColumnName("term_limit").HasPrecision(18, 2);
         builder.Property(x => x.ImageUrl).HasColumnName("image_url").HasMaxLength(SmartSolar.Modules.Catalog.ProductImages.ProductImageRules.MaxUrlLength);
         builder.Property(x => x.IsActive).HasColumnName("is_active").IsRequired();
+        // Existing rows (and rows an older API build inserts) keep their historical meaning: one installation-wide term.
+        builder.Property(x => x.PricingUnit).HasColumnName("pricing_unit").HasMaxLength(30).HasDefaultValue(PackagePricingUnits.PerInstallationLegacy).IsRequired();
         builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
         builder.Property(x => x.Revision).HasColumnName("revision").IsConcurrencyToken().IsRequired();
@@ -92,6 +95,9 @@ public sealed class ServiceSubscriptionConfiguration : IEntityTypeConfiguration<
                 $"status <> '{SubscriptionStatuses.Active}' OR (starts_at IS NOT NULL AND paid_at IS NOT NULL AND project_id IS NOT NULL)");
             t.HasCheckConstraint("ck_service_subscription_support",
                 "support_reserved >= 0 AND support_consumed >= 0 AND (term_limit IS NULL OR support_reserved + support_consumed <= term_limit)");
+            t.HasCheckConstraint("ck_service_subscription_coverage_scope", $"coverage_scope IN ({AfterSalesSql.In(CoverageScopes.All)})");
+            t.HasCheckConstraint("ck_service_subscription_panel_units",
+                $"coverage_scope <> '{CoverageScopes.Panel}' OR (unit_price > 0 AND covered_units > 0 AND price = unit_price * covered_units)");
         });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
@@ -127,6 +133,15 @@ public sealed class ServiceSubscriptionConfiguration : IEntityTypeConfiguration<
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
         builder.Property(x => x.Revision).HasColumnName("revision").IsConcurrencyToken().IsRequired();
         builder.Ignore(x => x.SupportAvailable);
+        builder.Property(x => x.CoverageScope).HasColumnName("coverage_scope").HasMaxLength(20).HasDefaultValue(CoverageScopes.Installation).IsRequired();
+        builder.Property(x => x.UnitPrice).HasColumnName("unit_price").HasPrecision(18, 2);
+        builder.Property(x => x.CoveredUnits).HasColumnName("covered_units");
+        builder.Property(x => x.ContractServicePackageId).HasColumnName("contract_service_package_id");
+        // One subscription per bundled commitment, ever: a repeated webhook / retry can never provision twice.
+        builder.HasIndex(x => x.ContractServicePackageId).IsUnique().HasFilter("contract_service_package_id IS NOT NULL")
+            .HasDatabaseName("ux_service_subscription_contract_service_package");
+        builder.HasOne<ContractServicePackage>().WithMany().HasForeignKey(x => x.ContractServicePackageId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_service_subscription_contract_service_package");
         builder.HasIndex(x => new { x.ContractId, x.Kind, x.Status }).HasDatabaseName("ix_service_subscription_contract_kind_status");
         builder.HasIndex(x => new { x.CustomerUserId, x.CreatedAt }).HasDatabaseName("ix_service_subscription_customer_created_at");
         builder.HasIndex(x => new { x.Status, x.StartsAt }).HasDatabaseName("ix_service_subscription_status_starts_at");
@@ -143,6 +158,36 @@ public sealed class ServiceSubscriptionConfiguration : IEntityTypeConfiguration<
         // The checkout is saved in the same transaction that sets this reference, so it always exists.
         builder.HasOne<PaymentAttempt>().WithMany().HasForeignKey(x => x.CurrentPaymentAttemptId).OnDelete(DeleteBehavior.Restrict)
             .HasConstraintName("fk_service_subscription_current_payment_attempt");
+    }
+}
+
+/// <summary>Panel units protected by a PANEL-scope term; one row per (term, installed asset).</summary>
+public sealed class ServiceCoverageAllocationConfiguration : IEntityTypeConfiguration<ServiceCoverageAllocation>
+{
+    public void Configure(EntityTypeBuilder<ServiceCoverageAllocation> builder)
+    {
+        builder.ToTable("service_coverage_allocation", t =>
+        {
+            t.HasCheckConstraint("ck_service_coverage_allocation_kind", $"kind IN ({AfterSalesSql.In(ServicePackageKinds.All)})");
+            t.HasCheckConstraint("ck_service_coverage_allocation_units", "unit_count > 0");
+        });
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.SubscriptionId).HasColumnName("subscription_id").IsRequired();
+        builder.Property(x => x.ContractId).HasColumnName("contract_id").IsRequired();
+        builder.Property(x => x.InstalledAssetId).HasColumnName("installed_asset_id").IsRequired();
+        builder.Property(x => x.Kind).HasColumnName("kind").HasMaxLength(30).IsRequired();
+        builder.Property(x => x.UnitCount).HasColumnName("unit_count").IsRequired();
+        builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+        builder.HasIndex(x => new { x.SubscriptionId, x.InstalledAssetId }).IsUnique().HasDatabaseName("ux_service_coverage_allocation_subscription_asset");
+        builder.HasIndex(x => new { x.InstalledAssetId, x.Kind }).HasDatabaseName("ix_service_coverage_allocation_asset_kind");
+        builder.HasIndex(x => new { x.ContractId, x.Kind }).HasDatabaseName("ix_service_coverage_allocation_contract_kind");
+        builder.HasOne<ServiceSubscription>().WithMany().HasForeignKey(x => x.SubscriptionId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_service_coverage_allocation_subscription");
+        builder.HasOne<CustomerContract>().WithMany().HasForeignKey(x => x.ContractId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_service_coverage_allocation_contract");
+        builder.HasOne<InstalledAsset>().WithMany().HasForeignKey(x => x.InstalledAssetId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_service_coverage_allocation_asset");
     }
 }
 
@@ -441,6 +486,9 @@ public sealed class DisasterClaimConfiguration : IEntityTypeConfiguration<Disast
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.RequestId).HasColumnName("request_id").IsRequired();
         builder.Property(x => x.SubscriptionId).HasColumnName("subscription_id");
+        builder.Property(x => x.CoverageAllocationId).HasColumnName("coverage_allocation_id");
+        builder.HasOne<ServiceCoverageAllocation>().WithMany().HasForeignKey(x => x.CoverageAllocationId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_disaster_claim_coverage_allocation");
         builder.Property(x => x.DisasterType).HasColumnName("disaster_type").HasMaxLength(20).IsRequired();
         builder.Property(x => x.IncidentOccurredAt).HasColumnName("incident_occurred_at").IsRequired();
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(30).IsRequired();

@@ -16,6 +16,9 @@ public sealed class CustomerContractConfiguration : IEntityTypeConfiguration<Cus
         {
             t.HasCheckConstraint("ck_customer_contract_status", $"status IN ({string.Join(", ", ContractStatuses.All.Select(s => $"'{s}'"))})");
             t.HasCheckConstraint("ck_customer_contract_amount", "total_amount > 0 AND currency = 'VND'");
+            t.HasCheckConstraint("ck_customer_contract_package_breakdown",
+                "(installation_total IS NULL) = (service_packages_total IS NULL) AND (installation_total IS NULL OR "
+                + "(installation_total > 0 AND service_packages_total > 0 AND installation_total + service_packages_total = total_amount))");
             t.HasCheckConstraint("ck_customer_contract_version", "version >= 1");
             // A discarded contract was a never-issued draft: it has no hash, document, signature or payment.
             t.HasCheckConstraint("ck_customer_contract_issued_hash",
@@ -49,6 +52,8 @@ public sealed class CustomerContractConfiguration : IEntityTypeConfiguration<Cus
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(30).IsRequired();
         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
         builder.Property(x => x.TotalAmount).HasColumnName("total_amount").HasPrecision(18, 2).IsRequired();
+        builder.Property(x => x.InstallationTotal).HasColumnName("installation_total").HasPrecision(18, 2);
+        builder.Property(x => x.ServicePackagesTotal).HasColumnName("service_packages_total").HasPrecision(18, 2);
         builder.Property(x => x.PricingSnapshot).HasColumnName("pricing_snapshot").HasColumnType("jsonb").IsRequired();
         builder.Property(x => x.CustomerSnapshot).HasColumnName("customer_snapshot").HasColumnType("jsonb").IsRequired();
         builder.Property(x => x.Terms).HasColumnName("terms").HasMaxLength(8000);
@@ -147,5 +152,64 @@ public sealed class ContractEventConfiguration : IEntityTypeConfiguration<Contra
         builder.HasIndex(x => new { x.ContractId, x.CreatedAt }).HasDatabaseName("ix_contract_event_contract_created_at");
         builder.HasOne<CustomerContract>().WithMany().HasForeignKey(x => x.ContractId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.ActorUserId).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+/// <summary>
+/// Package commitment of a 30/70 contract: one per kind; deposit + balance shares = amount = unit price × panels; at most one subscription is ever
+/// provisioned from it (unique index on service_subscription.contract_service_package_id).
+/// </summary>
+public sealed class ContractServicePackageConfiguration : IEntityTypeConfiguration<ContractServicePackage>
+{
+    public void Configure(EntityTypeBuilder<ContractServicePackage> builder)
+    {
+        builder.ToTable("contract_service_package", t =>
+        {
+            t.HasCheckConstraint("ck_contract_service_package_kind", "kind IN ('MAINTENANCE', 'DISASTER_PROTECTION')");
+            t.HasCheckConstraint("ck_contract_service_package_status",
+                $"status IN ({string.Join(", ", ContractServicePackageStatuses.All.Select(s => $"'{s}'"))})");
+            t.HasCheckConstraint("ck_contract_service_package_amount",
+                "unit_price > 0 AND quantity > 0 AND total_amount = unit_price * quantity AND deposit_allocation >= 0 AND balance_allocation >= 0 "
+                + "AND deposit_allocation + balance_allocation = total_amount AND duration_months BETWEEN 1 AND 120");
+            t.HasCheckConstraint("ck_contract_service_package_provisioned",
+                $"(status = '{ContractServicePackageStatuses.Provisioned}') = (subscription_id IS NOT NULL)");
+        });
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.ContractId).HasColumnName("contract_id").IsRequired();
+        builder.Property(x => x.QuotationId).HasColumnName("quotation_id").IsRequired();
+        builder.Property(x => x.QuotationServicePackageId).HasColumnName("quotation_service_package_id").IsRequired();
+        builder.Property(x => x.Kind).HasColumnName("kind").HasMaxLength(30).IsRequired();
+        builder.Property(x => x.PackageId).HasColumnName("package_id").IsRequired();
+        builder.Property(x => x.PackageName).HasColumnName("package_name").HasMaxLength(150).IsRequired();
+        builder.Property(x => x.Description).HasColumnName("description").HasMaxLength(2000);
+        builder.Property(x => x.ImageUrl).HasColumnName("image_url").HasMaxLength(SmartSolar.Modules.Catalog.ProductImages.ProductImageRules.MaxUrlLength);
+        builder.Property(x => x.PricingUnit).HasColumnName("pricing_unit").HasMaxLength(30).IsRequired();
+        builder.Property(x => x.UnitPrice).HasColumnName("unit_price").HasPrecision(18, 2).IsRequired();
+        builder.Property(x => x.Quantity).HasColumnName("quantity").IsRequired();
+        builder.Property(x => x.TotalAmount).HasColumnName("total_amount").HasPrecision(18, 2).IsRequired();
+        builder.Property(x => x.DurationMonths).HasColumnName("duration_months").IsRequired();
+        builder.Property(x => x.VisitMonths).HasColumnName("visit_months").HasMaxLength(200);
+        builder.Property(x => x.CoveredDisasterTypes).HasColumnName("covered_disaster_types").HasMaxLength(200);
+        builder.Property(x => x.CoveragePercent).HasColumnName("coverage_percent").HasPrecision(5, 2);
+        builder.Property(x => x.PerIncidentLimit).HasColumnName("per_incident_limit").HasPrecision(18, 2);
+        builder.Property(x => x.TermLimit).HasColumnName("term_limit").HasPrecision(18, 2);
+        builder.Property(x => x.CatalogRevision).HasColumnName("catalog_revision").IsRequired();
+        builder.Property(x => x.SnapshotAt).HasColumnName("snapshot_at").IsRequired();
+        builder.Property(x => x.DepositAllocation).HasColumnName("deposit_allocation").HasPrecision(18, 2).IsRequired();
+        builder.Property(x => x.BalanceAllocation).HasColumnName("balance_allocation").HasPrecision(18, 2).IsRequired();
+        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(30).IsRequired();
+        builder.Property(x => x.SubscriptionId).HasColumnName("subscription_id");
+        builder.Property(x => x.StatusReason).HasColumnName("status_reason").HasMaxLength(1000);
+        builder.Property(x => x.StatusChangedAt).HasColumnName("status_changed_at");
+        builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
+        builder.Property(x => x.Revision).HasColumnName("revision").IsConcurrencyToken().IsRequired();
+        builder.HasIndex(x => new { x.ContractId, x.Kind }).IsUnique().HasDatabaseName("ux_contract_service_package_kind");
+        builder.HasIndex(x => x.Status).HasDatabaseName("ix_contract_service_package_status");
+        builder.HasOne<CustomerContract>().WithMany().HasForeignKey(x => x.ContractId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_contract_service_package_contract");
+        builder.HasOne<QuotationServicePackage>().WithMany().HasForeignKey(x => x.QuotationServicePackageId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_contract_service_package_quotation_package");
     }
 }

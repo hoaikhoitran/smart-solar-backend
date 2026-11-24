@@ -153,6 +153,8 @@ public sealed partial class QuotationHandlers
             Recalculate(q, lines);
             if (q.TotalAmount <= 0 || q.TotalAmount > QuotationPricing.MaxAmount)
                 return OperationResult<bool>.Fail(QuotationErrorCodes.InvalidLine, "The total amount must be positive and within the supported range.");
+            // Packages are frozen in the same step as the lines: no issue with device lines frozen and package data stale.
+            if (await RepricePackagesAtIssueAsync(q, lines, now, token) is { } packageError) return packageError;
 
             var current = await unitOfWork.GetSurveyBasisAsync(q.SurveyRequestId, token);
             if (current?.InstallationFeasibility == "NOT_FEASIBLE")
@@ -181,7 +183,9 @@ public sealed partial class QuotationHandlers
             q.Terms ??= options.AutomaticTerms;
             q.CustomerSnapshot = snapshot;
             // Finalized for presentation on the technician's device: nothing is sent to the customer's app (no approval request).
-            AddEvent(q.Id, QuotationEventTypes.Issued, technicianUserId, $"technician cart finalized for on-site presentation; total={q.TotalAmount} {q.Currency}", now);
+            AddEvent(q.Id, QuotationEventTypes.Issued, technicianUserId, q.ServicePackagesTotal > 0
+                ? $"technician cart finalized for on-site presentation; installation={q.TotalAmount} + service packages={q.ServicePackagesTotal} = grand total {q.GrandTotal} {q.Currency}"
+                : $"technician cart finalized for on-site presentation; total={q.TotalAmount} {q.Currency}", now);
             return OperationResult<bool>.Ok(true);
         }, cancellationToken, lockSurveyRequestId: quotation.SurveyRequestId);
     }
@@ -216,7 +220,17 @@ public sealed partial class QuotationHandlers
                 Unit = l.Unit, Quantity = l.Quantity, UnitPrice = l.CatalogUnitPrice ?? l.UnitPrice, CatalogUnitPrice = l.CatalogUnitPrice ?? l.UnitPrice,
                 LineTotal = QuotationPricing.LineTotal(l.Quantity, l.CatalogUnitPrice ?? l.UnitPrice), Description = l.Description,
             }).ToList();
-        return await PersistNewAsync(copy, lines, technicianUserId, QuotationEventTypes.RevisionCreated, $"technician cart from version {original.Version}", cancellationToken);
+        // Bundled packages are carried with their snapshot; the issue of the revision re-validates and re-prices them from the catalog.
+        var packages = (await unitOfWork.GetServicePackagesAsync(original.Id, false, cancellationToken))
+            .Select(p => new QuotationServicePackage
+            {
+                Id = Guid.NewGuid(), QuotationId = copy.Id, Kind = p.Kind, PackageId = p.PackageId, PackageName = p.PackageName, Description = p.Description,
+                ImageUrl = p.ImageUrl, PricingUnit = p.PricingUnit, UnitPrice = p.UnitPrice, Quantity = p.Quantity, TotalAmount = p.TotalAmount,
+                DurationMonths = p.DurationMonths, VisitMonths = p.VisitMonths, CoveredDisasterTypes = p.CoveredDisasterTypes, CoveragePercent = p.CoveragePercent,
+                PerIncidentLimit = p.PerIncidentLimit, TermLimit = p.TermLimit, CatalogRevision = p.CatalogRevision, SnapshotAt = p.SnapshotAt, CreatedAt = now, UpdatedAt = now,
+            }).ToList();
+        return await PersistNewAsync(copy, lines, technicianUserId, QuotationEventTypes.RevisionCreated, $"technician cart from version {original.Version}", cancellationToken,
+            packages: packages);
     }
 
     public async Task<OperationResult<QuotationView>> GetForTechnicianAsync(Guid technicianUserId, Guid quotationId, CancellationToken cancellationToken)
@@ -275,15 +289,19 @@ public sealed partial class QuotationHandlers
             || (await unitOfWork.GetSurveyBasisAsync(quotation.SurveyRequestId, cancellationToken))?.TechnicianUserId != technicianUserId)
             return NotFound();
 
-        return await RunAsync(quotationId, (q, lines, now, _) =>
+        return await RunAsync(quotationId, async (q, lines, now, token) =>
         {
             if (q.Status != QuotationStatuses.Draft)
-                return Task.FromResult(OperationResult<bool>.Fail(QuotationErrorCodes.NotDraft, "Issued, accepted or closed quotations cannot be edited; create a revision."));
-            if (q.Revision != revision) return Task.FromResult(Stale(q));
-            if (change(q, lines) is { } error) return Task.FromResult(OperationResult<bool>.Fail(QuotationErrorCodes.InvalidLine, error));
+                return OperationResult<bool>.Fail(QuotationErrorCodes.NotDraft, "Issued, accepted or closed quotations cannot be edited; create a revision.");
+            if (q.Revision != revision) return Stale(q);
+            if (change(q, lines) is { } error) return OperationResult<bool>.Fail(QuotationErrorCodes.InvalidLine, error);
             Recalculate(q, lines);
-            AddEvent(q.Id, QuotationEventTypes.Updated, technicianUserId, null, now);
-            return Task.FromResult(OperationResult<bool>.Ok(true));
+            // Bundled per-panel packages follow the panel count in the same transaction and revision (refused when no whole panel count remains).
+            var packages = await unitOfWork.GetServicePackagesAsync(q.Id, true, token);
+            if (ApplyPackageTotals(q, lines, packages) is { } packageError) return OperationResult<bool>.Fail(packageError.Code, packageError.Message);
+            AddEvent(q.Id, QuotationEventTypes.Updated, technicianUserId,
+                packages.Count == 0 ? null : $"service packages follow {q.PanelQuantity} panels: {string.Join(", ", packages.Select(p => $"{p.Kind} {p.TotalAmount:0} VND"))}", now);
+            return OperationResult<bool>.Ok(true);
         }, cancellationToken);
     }
 

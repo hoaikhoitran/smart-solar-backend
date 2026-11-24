@@ -67,7 +67,9 @@ public sealed class PostgresSharedPublicationCutoverTests
         await using (var db = database.NewContext())
         {
             await db.Database.MigrateAsync();
-            Assert.Equal(Migration, (await db.Database.GetAppliedMigrationsAsync()).Last());
+            // Applied (later additive migrations, e.g. 20261124173442_PerPanelServicePackages, follow it).
+            Assert.Contains(Migration, await db.Database.GetAppliedMigrationsAsync());
+            Assert.Empty(await db.Database.GetPendingMigrationsAsync());
         }
         await using (var db = database.NewContext())
         {

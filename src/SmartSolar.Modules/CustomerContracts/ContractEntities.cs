@@ -26,6 +26,14 @@ public sealed class CustomerContract
     public string Status { get; set; } = null!;
     public string Currency { get; set; } = null!;
     public decimal TotalAmount { get; set; }
+
+    /// <summary>
+    /// Contracts created from a quotation with bundled per-panel packages (2026-11-25): <see cref="TotalAmount"/> = installation total + packages total.
+    /// Both null for every other contract (their total is the installation alone, unchanged).
+    /// </summary>
+    public decimal? InstallationTotal { get; set; }
+    public decimal? ServicePackagesTotal { get; set; }
+
     /// <summary>Quotation lines and totals (JSON) copied when the contract was created.</summary>
     public string PricingSnapshot { get; set; } = null!;
     public string CustomerSnapshot { get; set; } = null!;
@@ -68,6 +76,64 @@ public sealed class CustomerContract
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
     public int Revision { get; set; }
+}
+
+/// <summary>
+/// A per-panel service package bundled into a 30/70 contract: the issue-time quotation snapshot (immutable), its share of each installment
+/// (financial allocation only — the customer pays the installment amounts, never a separate package amount) and its provisioning state. It is a
+/// contractual commitment, not a subscription: a subscription is provisioned only after the contract is fully paid, the installation handed over
+/// and the panels reconciled with the real installed assets.
+/// </summary>
+public sealed class ContractServicePackage
+{
+    public Guid Id { get; set; }
+    public Guid ContractId { get; set; }
+    public Guid QuotationId { get; set; }
+    public Guid QuotationServicePackageId { get; set; }
+    public string Kind { get; set; } = null!;
+    public Guid PackageId { get; set; }
+    public string PackageName { get; set; } = null!;
+    public string? Description { get; set; }
+    public string? ImageUrl { get; set; }
+    public string PricingUnit { get; set; } = null!;
+    public decimal UnitPrice { get; set; }
+    public int Quantity { get; set; }
+    public decimal TotalAmount { get; set; }
+    public int DurationMonths { get; set; }
+    public string? VisitMonths { get; set; }
+    public string? CoveredDisasterTypes { get; set; }
+    public decimal? CoveragePercent { get; set; }
+    public decimal? PerIncidentLimit { get; set; }
+    public decimal? TermLimit { get; set; }
+    public int CatalogRevision { get; set; }
+    public DateTimeOffset SnapshotAt { get; set; }
+
+    /// <summary>Share of installment 1 (Round(total × 30 %, away from zero)) and of installment 2 (the rest): Σ = <see cref="TotalAmount"/>.</summary>
+    public decimal DepositAllocation { get; set; }
+    public decimal BalanceAllocation { get; set; }
+
+    public string Status { get; set; } = ContractServicePackageStatuses.Committed;
+    /// <summary>The subscription provisioned for it (PROVISIONED only).</summary>
+    public Guid? SubscriptionId { get; set; }
+    /// <summary>Why it waits for review (RECONCILIATION_REQUIRED), or why it was discarded.</summary>
+    public string? StatusReason { get; set; }
+    public DateTimeOffset? StatusChangedAt { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
+    public int Revision { get; set; }
+}
+
+public static class ContractServicePackageStatuses
+{
+    /// <summary>Part of the contract; not yet fully funded / handed over / reconciled. Grants nothing.</summary>
+    public const string Committed = "COMMITTED";
+    /// <summary>The contract was discarded before the deposit (customer withdrew): nothing was paid, nothing is owed.</summary>
+    public const string Discarded = "DISCARDED";
+    /// <summary>The contract is fully paid but the installed panels do not match the contracted quantity: staff review; no coverage, no money change.</summary>
+    public const string ReconciliationRequired = "RECONCILIATION_REQUIRED";
+    /// <summary>The subscription and its panel allocations exist (its own status says whether the term started / is active).</summary>
+    public const string Provisioned = "PROVISIONED";
+    public static readonly IReadOnlyList<string> All = [Committed, Discarded, ReconciliationRequired, Provisioned];
 }
 
 /// <summary>Every signed scan the customer submitted and how it was reviewed (rejected scans are kept).</summary>

@@ -13,6 +13,11 @@ public sealed record QuotationSource(
 public sealed record CatalogProductSnapshot(Guid ProductId, string Sku, string Name, string Brand, string? Model, string Unit, decimal UnitPrice, string Currency, bool IsActive,
     string ProductType = "", decimal? RatedPowerW = null);
 
+/// <summary>A service package of the Admin catalog as the quotation cart sees it (read-only; the after-sales module owns the catalog).</summary>
+public sealed record CatalogServicePackageSnapshot(Guid PackageId, string Kind, string Name, string? Description, string? ImageUrl, string PricingUnit,
+    decimal Price, int DurationMonths, string? VisitMonths, string? CoveredDisasterTypes, decimal? CoveragePercent, decimal? PerIncidentLimit,
+    decimal? TermLimit, bool IsActive, int Revision);
+
 /// <summary>The completed on-site survey facts the automatic quotation is based on.</summary>
 public sealed record QuotationSurveyBasis(Guid ReportId, string Status, int Version, string? InstallationFeasibility, string? BillOfMaterialsJson,
     Guid TechnicianUserId, Guid? SelectedSimulationId);
@@ -44,6 +49,8 @@ public interface IQuotationUnitOfWork : ITransactionalUnitOfWork, IInAppNotifica
 
     Task<QuotationSource?> GetSourceAsync(Guid surveyRequestId, CancellationToken cancellationToken);
     Task<CatalogProductSnapshot?> GetProductAsync(Guid productId, CancellationToken cancellationToken);
+    Task<CatalogServicePackageSnapshot?> GetServicePackageAsync(Guid packageId, CancellationToken cancellationToken);
+    Task<IReadOnlyList<QuotationServicePackage>> GetServicePackagesAsync(Guid quotationId, bool track, CancellationToken cancellationToken);
     Task<QuotationSurveyBasis?> GetSurveyBasisAsync(Guid surveyRequestId, CancellationToken cancellationToken);
 
     /// <summary>AUTOMATIC drafts waiting for Sales (pricing exceptions), of requests owned by <paramref name="salesUserId"/> (null = all).</summary>
@@ -90,6 +97,8 @@ public interface IQuotationUnitOfWork : ITransactionalUnitOfWork, IInAppNotifica
     void AddQuotation(Quotation quotation);
     void AddLine(QuotationLine line);
     void RemoveLine(QuotationLine line);
+    void AddServicePackage(QuotationServicePackage servicePackage);
+    void RemoveServicePackage(QuotationServicePackage servicePackage);
     void AddEvent(QuotationEvent quotationEvent);
 }
 

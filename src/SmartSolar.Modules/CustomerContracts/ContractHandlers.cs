@@ -22,7 +22,8 @@ public sealed record ContractView(
     DateTimeOffset? PublishedAt, DateTimeOffset? SignedAt, DateTimeOffset? PaidAt, int Revision,
     IReadOnlyList<SignatureSubmissionView>? Submissions, IReadOnlyList<ContractEventView>? Events, int? WarrantyMonths = null,
     ContractDiscardView? Discard = null, bool PaymentCompleted = false, Guid? PaymentAttemptId = null, DateTimeOffset? PaymentConfirmedAt = null,
-    ContractPaymentPlanView? PaymentPlan = null);
+    ContractPaymentPlanView? PaymentPlan = null, decimal? InstallationTotal = null, decimal? ServicePackagesTotal = null,
+    IReadOnlyList<ContractServicePackageView>? ServicePackages = null);
 
 /// <summary>Staff-only record of a discarded draft (customers never see drafts, discarded or not).</summary>
 public sealed record ContractDiscardView(DateTimeOffset DiscardedAt, Guid DiscardedByUserId, string Reason);
@@ -62,6 +63,8 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
         if (await unitOfWork.IsSurveyRequestClosedAsync(quotation.SurveyRequestId, cancellationToken)) return "The survey request was withdrawn or closed.";
         quotation = (await unitOfWork.GetQuotationAsync(quotationId, cancellationToken))!;
         if (quotation.Status != "ACCEPTED") return $"The quotation is {quotation.Status}; only a quotation agreed on site can be paid.";
+        // Bundled per-panel packages are contracted only through the 30/70 agreement (they need their commitments); never through this legacy path.
+        if (quotation.HasServicePackages) return "The quotation bundles service packages; it is contracted only through the on-site 30/70 agreement.";
         if (quotation.QuotationSurveyVersion != quotation.CurrentSurveyVersion) return "The on-site survey was amended after this quotation was agreed.";
         if (quotation.CustomerUserId != attempt.CustomerUserId) return "The payment was made for another customer.";
         if (quotation.TotalAmount != amount) return $"The paid amount {amount:0} does not equal the quotation total {quotation.TotalAmount:0}.";
@@ -111,6 +114,9 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
             return OperationResult<ContractView>.Fail(ContractErrorCodes.NotFound, "Quotation was not found.");
         if (quotation.Status != "ACCEPTED")
             return OperationResult<ContractView>.Fail(ContractErrorCodes.QuotationNotAccepted, "Contracts are created only from a quotation the customer accepted.");
+        if (quotation.HasServicePackages)
+            return OperationResult<ContractView>.Fail(PaymentPlanErrorCodes.NotApplicable,
+                "The quotation bundles service packages; its contract is created only by the on-site 30/70 agreement.");
         if (quotation.QuotationSurveyVersion != quotation.CurrentSurveyVersion)
             return OperationResult<ContractView>.Fail(ContractErrorCodes.SurveyChanged,
                 $"The on-site survey was amended (version {quotation.QuotationSurveyVersion} → {quotation.CurrentSurveyVersion}) after this quotation was made; issue a revised quotation first.",
@@ -586,10 +592,11 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
         var prepayment = await unitOfWork.GetPrepaymentAsync(c.Id, cancellationToken);
         var events = staff ? (await unitOfWork.GetEventsAsync(c.Id, cancellationToken))
             .Select(e => new ContractEventView(e.EventType, e.FromStatus, e.ToStatus, e.ActorUserId, e.Detail, e.CreatedAt)).ToList() : null;
+        var packages = await unitOfWork.GetServicePackagesAsync(c.Id, false, cancellationToken);
         var plan = c.PaymentPlan is null ? null
             : PaymentPlanViews.Build(c, await unitOfWork.GetInstallmentsAsync(c.Id, false, cancellationToken),
                 await unitOfWork.GetSignatureSetsAsync(c.Id, false, cancellationToken), await unitOfWork.GetSignedPagesAsync(c.Id, false, cancellationToken),
-                staff ? await unitOfWork.GetCollectionCasesAsync(c.Id, cancellationToken) : null, time.GetUtcNow());
+                staff ? await unitOfWork.GetCollectionCasesAsync(c.Id, cancellationToken) : null, time.GetUtcNow(), packages);
         return new ContractView(c.Id, c.ContractNumber, c.Version, c.PreviousContractId, c.QuotationId, c.QuotationVersion, c.SurveyRequestId, c.Status,
             c.Currency, c.TotalAmount, JsonDocument.Parse(c.PricingSnapshot).RootElement.Clone(), JsonDocument.Parse(c.CustomerSnapshot).RootElement.Clone(),
             c.Terms, c.CanonicalHash,
@@ -599,7 +606,9 @@ public sealed class ContractHandlers(IContractUnitOfWork unitOfWork, FileService
             staff && c.DiscardedAt is { } discardedAt ? new ContractDiscardView(discardedAt, c.DiscardedByUserId!.Value, c.DiscardReason!) : null,
             // Payment completion is separate from the contract status: a contract created from a paid quotation is DRAFT … SIGNED and already paid.
             // A 30/70 contract is completed by its installments: PaymentCompleted = fully paid (both installments), never the deposit alone.
-            prepayment is not null || c.Status == ContractStatuses.Paid, prepayment?.PaymentAttemptId, prepayment?.PaidAt ?? c.PaidAt, plan);
+            prepayment is not null || c.Status == ContractStatuses.Paid, prepayment?.PaymentAttemptId, prepayment?.PaidAt ?? c.PaidAt, plan,
+            // Contracts with bundled packages: totalAmount = installationTotal + servicePackagesTotal (the 30/70 base). Null for other contracts.
+            c.InstallationTotal, c.ServicePackagesTotal, packages.Select(PaymentPlanViews.Package).ToList());
     }
 
     private static readonly JsonSerializerOptions CanonicalJson = new() { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull };

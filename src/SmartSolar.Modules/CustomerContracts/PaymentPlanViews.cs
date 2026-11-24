@@ -29,8 +29,18 @@ public static class PaymentPlanStages
     public const string Discarded = "DISCARDED";
 }
 
+/// <param name="Allocation">Contracts with bundled packages: how the installment amount divides between the installation and the packages (accounting
+/// breakdown only; the amount payable is <see cref="Amount"/>). Null for other contracts.</param>
 public sealed record InstallmentView(Guid InstallmentId, int Sequence, string Kind, decimal Percent, decimal Amount, string Status, DateTimeOffset? OpenedAt,
-    DateTimeOffset? DueAt, bool Overdue, DateTimeOffset? PaidAt, decimal? PaidAmount, bool PaidLate, Guid? SettledPaymentAttemptId);
+    DateTimeOffset? DueAt, bool Overdue, DateTimeOffset? PaidAt, decimal? PaidAmount, bool PaidLate, Guid? SettledPaymentAttemptId,
+    InstallmentAllocation? Allocation = null);
+
+/// <summary>A bundled per-panel package of a contract: immutable snapshot, installment shares and provisioning state.</summary>
+public sealed record ContractServicePackageView(Guid CommitmentId, string Kind, Guid PackageId, string PackageName, string? Description, string? ImageUrl,
+    string PricingUnit, decimal UnitPrice, int Quantity, decimal TotalAmount, int DurationMonths, IReadOnlyList<int> VisitMonths,
+    IReadOnlyList<string> CoveredDisasterTypes, decimal? CoveragePercent, decimal? PerIncidentLimit, decimal? TermLimit, int CatalogRevision,
+    DateTimeOffset SnapshotAt, decimal DepositAllocation, decimal BalanceAllocation, string Status, string? StatusReason, Guid? SubscriptionId,
+    DateTimeOffset? StatusChangedAt);
 
 public sealed record CollectionCaseSummaryView(Guid CaseId, Guid InstallmentId, string Status, DateTimeOffset OpenedAt, DateTimeOffset DueAt, decimal AmountDue,
     DateOnly? PromisedPaymentDate, DateTimeOffset? ResolvedAt, string? Resolution);
@@ -45,7 +55,8 @@ public sealed record ContractPaymentPlanView(string Plan, string? TermsVersion, 
 public static class PaymentPlanViews
 {
     public static ContractPaymentPlanView? Build(CustomerContract c, IReadOnlyList<ContractInstallment> installments, IReadOnlyList<ContractSignatureSet> sets,
-        IReadOnlyList<ContractSignedPage> pages, IReadOnlyList<ContractCollectionCase>? cases, DateTimeOffset now)
+        IReadOnlyList<ContractSignedPage> pages, IReadOnlyList<ContractCollectionCase>? cases, DateTimeOffset now,
+        IReadOnlyList<ContractServicePackage>? packages = null)
     {
         if (c.PaymentPlan is null) return null;
         var summary = PaymentPlanCalculator.Summarize(c.TotalAmount, installments, now);
@@ -65,12 +76,28 @@ public static class PaymentPlanViews
             ContractStatuses.IsReadyForInstallation(c.Status, c.PaymentPlan), summary.FullyPaid, summary.Overdue, summary.NextDueAt, ownership,
             c.TermsVersion?.Contains("PENDING_LEGAL_REVIEW", StringComparison.Ordinal) ?? false,
             cases?.Any(x => x.Status == CollectionCaseStatuses.LegalReviewRequired) ?? false,
-            installments.OrderBy(i => i.Sequence).Select(i => View(i, now)).ToList(),
+            installments.OrderBy(i => i.Sequence).Select(i => View(i, now, packages)).ToList(),
             current is null ? null : PaperSignatureHandlers.View(current, pages),
             cases?.Select(x => new CollectionCaseSummaryView(x.Id, x.InstallmentId, x.Status, x.OpenedAt, x.DueAt, x.AmountDue, x.PromisedPaymentDate, x.ResolvedAt,
                 x.Resolution)).ToList());
     }
 
-    public static InstallmentView View(ContractInstallment i, DateTimeOffset now) => new(i.Id, i.Sequence, i.Kind, i.Percent, i.Amount, i.Status, i.OpenedAt, i.DueAt,
-        PaymentPlanCalculator.IsOverdue(i, now), i.PaidAt, i.PaidAmount, i.PaidLate, i.SettledPaymentAttemptId);
+    public static InstallmentView View(ContractInstallment i, DateTimeOffset now, IReadOnlyList<ContractServicePackage>? packages = null)
+        => new(i.Id, i.Sequence, i.Kind, i.Percent, i.Amount, i.Status, i.OpenedAt, i.DueAt,
+            PaymentPlanCalculator.IsOverdue(i, now), i.PaidAt, i.PaidAmount, i.PaidLate, i.SettledPaymentAttemptId, Allocation(i, packages));
+
+    /// <summary>Installation / package shares of one installment from the frozen commitment shares (installation = the remainder).</summary>
+    public static InstallmentAllocation? Allocation(ContractInstallment i, IReadOnlyList<ContractServicePackage>? packages)
+    {
+        if (packages is not { Count: > 0 }) return null;
+        decimal Of(string kind) => packages.Where(p => p.Kind == kind).Sum(p => i.Kind == InstallmentKinds.Deposit ? p.DepositAllocation : p.BalanceAllocation);
+        var maintenance = Of(ServicePackageKindNames.Maintenance);
+        var disaster = Of(ServicePackageKindNames.DisasterProtection);
+        return new InstallmentAllocation(i.Sequence, i.Amount, i.Amount - maintenance - disaster, maintenance, disaster);
+    }
+
+    public static ContractServicePackageView Package(ContractServicePackage p) => new(p.Id, p.Kind, p.PackageId, p.PackageName, p.Description, p.ImageUrl,
+        p.PricingUnit, p.UnitPrice, p.Quantity, p.TotalAmount, p.DurationMonths, Quotations.QuotationPackageRules.Months(p.VisitMonths),
+        Quotations.QuotationPackageRules.List(p.CoveredDisasterTypes), p.CoveragePercent, p.PerIncidentLimit, p.TermLimit, p.CatalogRevision, p.SnapshotAt,
+        p.DepositAllocation, p.BalanceAllocation, p.Status, p.StatusReason, p.SubscriptionId, p.StatusChangedAt);
 }

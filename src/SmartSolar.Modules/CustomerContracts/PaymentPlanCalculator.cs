@@ -23,6 +23,16 @@ public sealed class PaymentPlanOptions
     public int EffectiveBalanceDueHours => Math.Clamp(BalanceDueHours, 1, PaymentPlanCalculator.MaxBalanceDueHours);
 }
 
+/// <summary>Package kind names as the contract module records them (same strings as the after-sales catalog).</summary>
+public static class ServicePackageKindNames
+{
+    public const string Maintenance = "MAINTENANCE";
+    public const string DisasterProtection = "DISASTER_PROTECTION";
+}
+
+/// <summary>How much of one installment pays the installation and each kind of bundled package (Σ = <see cref="Amount"/>).</summary>
+public sealed record InstallmentAllocation(int Sequence, decimal Amount, decimal Installation, decimal MaintenancePackages, decimal DisasterPackages);
+
 /// <summary>The two amounts of a payment-plan contract.</summary>
 public sealed record InstallmentSplit(decimal Total, decimal DepositPercent, decimal Deposit, decimal Balance);
 
@@ -52,6 +62,31 @@ public static class PaymentPlanCalculator
         var balance = total - deposit;
         if (deposit <= 0 || balance <= 0) return null;
         return new InstallmentSplit(total, DepositPercent, deposit, balance);
+    }
+
+    /// <summary>The 30 % share of one component (whole VND, midpoint away from zero) — the same rounding as <see cref="Split"/>.</summary>
+    public static decimal DepositShare(decimal componentTotal) => Math.Round(componentTotal * DepositPercent / 100m, 0, MidpointRounding.AwayFromZero);
+
+    /// <summary>
+    /// Internal allocation of each installment to the installation and to the bundled packages (accounting only; the customer pays the installment
+    /// amounts). Each package gets <see cref="DepositShare"/> of its amount in installment 1 and the rest in installment 2; the installation gets the
+    /// remainder of each installment, so every rounding difference is absorbed once and Σ allocations = installment amounts = contract total exactly.
+    /// Null when the installation share of an installment would be negative (cannot happen for real totals; refused rather than misallocated).
+    /// </summary>
+    public static IReadOnlyList<InstallmentAllocation>? Allocate(InstallmentSplit split, IReadOnlyCollection<(string Kind, decimal Total)> packages)
+    {
+        var shares = packages.Select(p => (p.Kind, Deposit: DepositShare(p.Total), Balance: p.Total - DepositShare(p.Total))).ToList();
+        decimal Of(string kind, bool deposit) => shares.Where(s => s.Kind == kind).Sum(s => deposit ? s.Deposit : s.Balance);
+        var result = new List<InstallmentAllocation>();
+        foreach (var (sequence, amount, deposit) in new[] { (1, split.Deposit, true), (2, split.Balance, false) })
+        {
+            var maintenance = Of(ServicePackageKindNames.Maintenance, deposit);
+            var disaster = Of(ServicePackageKindNames.DisasterProtection, deposit);
+            var installation = amount - maintenance - disaster;
+            if (installation < 0) return null;
+            result.Add(new InstallmentAllocation(sequence, amount, installation, maintenance, disaster));
+        }
+        return result;
     }
 
     public static DateTimeOffset BalanceDueAt(DateTimeOffset acceptedAt, PaymentPlanOptions options)
@@ -103,4 +138,17 @@ public static class PaymentPlanCalculator
         BẢO LƯU QUYỀN SỞ HỮU
         6. Thiết bị thuộc quyền sở hữu của SmartSolar cho đến khi khách hàng thanh toán đủ hai đợt (bảo lưu quyền sở hữu theo Điều 331–332 BLDS 2015 — nội dung chờ pháp chế phê duyệt). Việc chậm thanh toán được xử lý theo thỏa thuận và quy định pháp luật; hệ thống không tự động thu hồi tài sản hay khấu trừ khoản đã thanh toán.
         """;
+
+    /// <summary>Breakdown clauses of a contract with bundled per-panel service packages (every amount is inside the 30/70 total above).</summary>
+    public static string PackageClauses(decimal installationTotal, IReadOnlyCollection<ContractServicePackage> packages, InstallmentSplit split)
+    {
+        var items = string.Join("\n", packages.Select((p, i) =>
+            $"7.{i + 1}. {(p.Kind == ServicePackageKindNames.Maintenance ? "Gói bảo trì" : "Gói bảo vệ thiên tai")} \"{p.PackageName}\": {p.UnitPrice:N0} VND/tấm pin × {p.Quantity} tấm = {p.TotalAmount:N0} VND, thời hạn {p.DurationMonths} tháng."));
+        return "GÓI DỊCH VỤ KÈM THEO (TÍNH THEO TẤM PIN)\n"
+               + $"7. Tổng giá trị hợp đồng {split.Total:N0} VND gồm giá trị lắp đặt {installationTotal:N0} VND và gói dịch vụ {packages.Sum(p => p.TotalAmount):N0} VND:\n"
+               + items + "\n"
+               + "8. Gói dịch vụ được thanh toán trong chính hai đợt nêu tại mục 2–3 (không có khoản thu riêng). Gói chỉ có hiệu lực sau khi hợp đồng được thanh toán đủ, "
+               + "công trình đã bàn giao và số tấm pin thực tế lắp đặt đã được đối chiếu; thời hạn bắt đầu không sớm hơn thời điểm muộn hơn giữa ngày thanh toán đủ và ngày bàn giao; "
+               + "gói bảo vệ thiên tai áp dụng thời gian chờ theo quy định. Giá gói là giá bán cuối cùng theo danh mục; việc áp dụng thuế đối với gói dịch vụ chờ bộ phận tài chính/pháp chế xác nhận.";
+    }
 }

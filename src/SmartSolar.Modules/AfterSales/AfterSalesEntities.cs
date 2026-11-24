@@ -63,9 +63,52 @@ public sealed class ServicePackage
     public string? ImageUrl { get; set; }
 
     public bool IsActive { get; set; }
+
+    /// <summary>
+    /// What <see cref="Price"/> buys (<see cref="PackagePricingUnits"/>): one installation-wide term (PER_INSTALLATION_LEGACY, every package that
+    /// existed before 2026-11-25) or one panel unit of a per-panel term (PER_PANEL). Fixed at creation: an existing package is never reinterpreted.
+    /// </summary>
+    public string PricingUnit { get; set; } = PackagePricingUnits.PerInstallationLegacy;
+
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
     public int Revision { get; set; }
+}
+
+/// <summary>How a package price is applied (2026-11-25, per-panel packages).</summary>
+public static class PackagePricingUnits
+{
+    /// <summary>Unit price × number of covered solar panels (bundled with the installation quotation, or retail after handover).</summary>
+    public const string PerPanel = "PER_PANEL";
+    /// <summary>The historical meaning: one price for one installation-wide term.</summary>
+    public const string PerInstallationLegacy = "PER_INSTALLATION_LEGACY";
+    public static readonly IReadOnlyList<string> All = [PerPanel, PerInstallationLegacy];
+}
+
+/// <summary>What a purchased term protects.</summary>
+public static class CoverageScopes
+{
+    /// <summary>The whole installation (legacy per-installation packages): one term of a kind at any instant per contract.</summary>
+    public const string Installation = "INSTALLATION";
+    /// <summary>Only the panel units allocated to the term (<see cref="ServiceCoverageAllocation"/>).</summary>
+    public const string Panel = "PANEL";
+    public static readonly IReadOnlyList<string> All = [Installation, Panel];
+}
+
+/// <summary>
+/// Units of one real installed panel row (a serialised panel: 1; a lot confirmed by count: up to its quantity) protected by a PANEL-scope term.
+/// Never created for a missing, replaced or unverified panel and never moved to another asset: a replacement panel needs a new purchase or an
+/// approved decision. The units of one asset held by overlapping terms of one kind never exceed the asset's quantity (checked under the contract lock).
+/// </summary>
+public sealed class ServiceCoverageAllocation
+{
+    public Guid Id { get; set; }
+    public Guid SubscriptionId { get; set; }
+    public Guid ContractId { get; set; }
+    public Guid InstalledAssetId { get; set; }
+    public string Kind { get; set; } = null!;
+    public int UnitCount { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
 }
 
 public static class ServicePackageKinds
@@ -113,6 +156,16 @@ public sealed class ServiceSubscription
     public decimal? CoveragePercent { get; set; }
     public decimal? PerIncidentLimit { get; set; }
     public decimal? TermLimit { get; set; }
+
+    /// <summary>INSTALLATION (legacy, default) or PANEL (only the allocated panel units are protected).</summary>
+    public string CoverageScope { get; set; } = CoverageScopes.Installation;
+
+    /// <summary>PER_PANEL terms: the price of one panel unit and the number of units; <see cref="Price"/> = unit price × units. Null for legacy terms.</summary>
+    public decimal? UnitPrice { get; set; }
+    public int? CoveredUnits { get; set; }
+
+    /// <summary>Set when the term was provisioned from a package bundled into the installation contract (paid through its 30/70 installments).</summary>
+    public Guid? ContractServicePackageId { get; set; }
 
     // ---- term
     public DateTimeOffset? StartsAt { get; set; }
@@ -571,6 +624,10 @@ public sealed class DisasterClaim
     public Guid Id { get; set; }
     public Guid RequestId { get; set; }
     public Guid? SubscriptionId { get; set; }
+
+    /// <summary>PANEL-scope term: the allocation of the damaged panel (the request's suspected asset) that the claim is assessed under.</summary>
+    public Guid? CoverageAllocationId { get; set; }
+
     public string DisasterType { get; set; } = null!;
     public DateTimeOffset IncidentOccurredAt { get; set; }
     public string Status { get; set; } = null!;
@@ -731,6 +788,8 @@ public static class EventSubjects
     public const string Refund = "REFUND";
     public const string Asset = "ASSET";
     public const string Claim = "CLAIM";
+    /// <summary>A per-panel package bundled into an installation contract (contract_service_package).</summary>
+    public const string BundledPackage = "BUNDLED_PACKAGE";
 }
 
 /// <summary>An in-app notification (customer or staff). Delivery channels other than the app are out of scope.</summary>
@@ -762,6 +821,7 @@ public static class AfterSalesErrorCodes
     public const string EvidenceNotFound = "SERVICE_EVIDENCE_NOT_FOUND";
     public const string QuotationNotFound = "SERVICE_QUOTATION_NOT_FOUND";
     public const string PackageNotFound = "SERVICE_PACKAGE_NOT_FOUND";
+    public const string BundledPackageNotFound = "BUNDLED_PACKAGE_NOT_FOUND";
     public const string SubscriptionNotFound = "SERVICE_SUBSCRIPTION_NOT_FOUND";
     public const string EntitlementNotFound = "MAINTENANCE_ENTITLEMENT_NOT_FOUND";
     public const string TaskNotFound = "SALES_TASK_NOT_FOUND";
@@ -790,6 +850,10 @@ public static class AfterSalesErrorCodes
     public const string OutsidePeriod = "MAINTENANCE_OUTSIDE_PERIOD";
     public const string ChangeTooLate = "AFTER_SALES_CHANGE_TOO_LATE";
     public const string TermOverlap = "SERVICE_SUBSCRIPTION_OVERLAP";
+    /// <summary>A per-panel purchase names panels that are not active installed panels of the installation, or more units than a row has (400).</summary>
+    public const string PanelSelectionInvalid = "SERVICE_PANEL_SELECTION_VALIDATION_FAILED";
+    /// <summary>The package's pricing unit does not fit the request (per-panel fields for a legacy package, or a per-panel package without panels) (400).</summary>
+    public const string PricingUnitMismatch = "SERVICE_PACKAGE_PRICING_UNIT_VALIDATION_FAILED";
     public const string PackageInactive = "SERVICE_PACKAGE_INACTIVE";
     public const string SupportLimitReached = "DISASTER_SUPPORT_LIMIT_REACHED";
     public const string ClaimNotApproved = "DISASTER_CLAIM_NOT_APPROVED";

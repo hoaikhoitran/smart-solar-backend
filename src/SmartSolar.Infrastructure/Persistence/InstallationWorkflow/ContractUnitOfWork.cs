@@ -14,15 +14,34 @@ public sealed partial class ContractUnitOfWork(AppDbContext db) : TransactionalU
         if (q is null) return null;
         var sale = await Db.SurveyRequests.AsNoTracking().Where(s => s.Id == q.SurveyRequestId).Select(s => s.AssignedSaleId).FirstOrDefaultAsync(cancellationToken);
         var lines = await Db.QuotationLines.AsNoTracking().Where(l => l.QuotationId == quotationId).OrderBy(l => l.LineNumber).ToListAsync(cancellationToken);
-        var pricing = JsonSerializer.Serialize(new
-        {
-            quoteNumber = q.QuoteNumber, quotationVersion = q.Version, currency = q.Currency,
-            lines = lines.Select(l => new { l.LineNumber, l.Sku, l.Name, l.Brand, l.Model, l.Unit, l.Quantity, l.UnitPrice, l.LineTotal, l.Description }),
-            q.EquipmentSubtotal, q.LaborCost, q.TransportCost, q.OtherServiceCost, q.Subtotal, q.DiscountAmount, q.TaxRatePercent, q.TaxAmount, q.TotalAmount,
-        }, Json);
+        var packages = (await Db.QuotationServicePackages.AsNoTracking().Where(p => p.QuotationId == quotationId).ToListAsync(cancellationToken))
+            .OrderBy(p => p.Kind, StringComparer.Ordinal).ToList();
+        // Quotations without packages keep exactly the snapshot shape (and therefore the canonical hash input) they always had.
+        var pricing = packages.Count == 0
+            ? JsonSerializer.Serialize(new
+            {
+                quoteNumber = q.QuoteNumber, quotationVersion = q.Version, currency = q.Currency,
+                lines = lines.Select(l => new { l.LineNumber, l.Sku, l.Name, l.Brand, l.Model, l.Unit, l.Quantity, l.UnitPrice, l.LineTotal, l.Description }),
+                q.EquipmentSubtotal, q.LaborCost, q.TransportCost, q.OtherServiceCost, q.Subtotal, q.DiscountAmount, q.TaxRatePercent, q.TaxAmount, q.TotalAmount,
+            }, Json)
+            : JsonSerializer.Serialize(new
+            {
+                quoteNumber = q.QuoteNumber, quotationVersion = q.Version, currency = q.Currency,
+                lines = lines.Select(l => new { l.LineNumber, l.Sku, l.Name, l.Brand, l.Model, l.Unit, l.Quantity, l.UnitPrice, l.LineTotal, l.Description }),
+                q.EquipmentSubtotal, q.LaborCost, q.TransportCost, q.OtherServiceCost, q.Subtotal, q.DiscountAmount, q.TaxRatePercent, q.TaxAmount, q.TotalAmount,
+                installationTotal = q.TotalAmount, panelQuantity = q.PanelQuantity,
+                servicePackages = packages.Select(p => new
+                {
+                    p.Kind, p.PackageId, p.PackageName, p.PricingUnit, p.UnitPrice, p.Quantity, p.TotalAmount, p.DurationMonths, p.VisitMonths, p.CoveredDisasterTypes,
+                    p.CoveragePercent, p.PerIncidentLimit, p.TermLimit, p.CatalogRevision, p.SnapshotAt,
+                }),
+                servicePackagesTotal = q.ServicePackagesTotal, grandTotal = q.GrandTotal,
+                packageTaxTreatment = "CATALOG_FINAL_PRICE_NO_QUOTATION_TAX",
+            }, Json);
         var surveyVersion = await Db.OnSiteSurveyReports.AsNoTracking().Where(r => r.SurveyRequestId == q.SurveyRequestId).Select(r => r.Version).FirstOrDefaultAsync(cancellationToken);
-        return new AcceptedQuotationSource(q.Id, q.Version, q.QuoteNumber, q.Status, q.SurveyRequestId, q.CustomerUserId, sale, q.Currency, q.TotalAmount,
-            pricing, q.CustomerSnapshot, q.Terms, q.OnSiteSurveyVersion, surveyVersion, q.ValidUntil);
+        return new AcceptedQuotationSource(q.Id, q.Version, q.QuoteNumber, q.Status, q.SurveyRequestId, q.CustomerUserId, sale, q.Currency,
+            packages.Count == 0 ? q.TotalAmount : q.GrandTotal, pricing, q.CustomerSnapshot, q.Terms, q.OnSiteSurveyVersion, surveyVersion, q.ValidUntil,
+            packages.Count == 0 ? null : q.TotalAmount, packages.Count == 0 ? null : packages);
     }
 
     /// <summary>
@@ -44,6 +63,12 @@ public sealed partial class ContractUnitOfWork(AppDbContext db) : TransactionalU
 
     public Task<Guid?> GetAssignedSaleAsync(Guid surveyRequestId, CancellationToken cancellationToken)
         => Db.SurveyRequests.AsNoTracking().Where(s => s.Id == surveyRequestId).Select(s => s.AssignedSaleId).FirstOrDefaultAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<ContractServicePackage>> GetServicePackagesAsync(Guid contractId, bool track, CancellationToken cancellationToken)
+        => (await (track ? Db.ContractServicePackages : Db.ContractServicePackages.AsNoTracking()).Where(p => p.ContractId == contractId).ToListAsync(cancellationToken))
+            .OrderBy(p => p.Kind, StringComparer.Ordinal).ToList();
+
+    public void AddServicePackage(ContractServicePackage servicePackage) => Db.ContractServicePackages.Add(servicePackage);
 
     public Task<CustomerContract?> FindAsync(Guid contractId, bool track, CancellationToken cancellationToken)
         => (track ? Db.CustomerContracts : Db.CustomerContracts.AsNoTracking()).FirstOrDefaultAsync(c => c.Id == contractId, cancellationToken);

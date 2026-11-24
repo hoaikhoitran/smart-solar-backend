@@ -16,7 +16,7 @@ public sealed record ServiceQuotationView(Guid QuotationId, int Version, bool Is
 
 public sealed record DisasterClaimView(Guid ClaimId, string DisasterType, DateTimeOffset IncidentOccurredAt, string Status, string? DecisionReason,
     DateTimeOffset? ReconsiderationRequestedAt, bool CanRequestReconsideration, Guid? SubscriptionId, decimal CoveragePercent, decimal PerIncidentLimit,
-    decimal SupportReserved, decimal SupportConsumed);
+    decimal SupportReserved, decimal SupportConsumed, Guid? CoverageAllocationId = null);
 
 public sealed record ServiceEvidenceView(Guid EvidenceId, Guid? VisitId, Guid FileId, string? Caption, DateTimeOffset AddedAt);
 
@@ -65,11 +65,14 @@ public sealed record SubscriptionView(Guid SubscriptionId, Guid ContractId, Guid
     int DurationMonths, IReadOnlyList<int> VisitMonths, IReadOnlyList<string> CoveredDisasterTypes, decimal? CoveragePercent, decimal? PerIncidentLimit,
     decimal? TermLimit, DateTimeOffset? StartsAt, DateTimeOffset? EndsAt, DateTimeOffset? CoverageStartsAt, decimal SupportReserved, decimal SupportConsumed,
     decimal? SupportAvailable, int? RemainingVisits, DateTimeOffset? CheckoutExpiresAt, Guid? CurrentPaymentAttemptId, DateTimeOffset? PaidAt,
-    DateTimeOffset? CancellationRequestedAt, IReadOnlyList<EntitlementView> Entitlements);
+    DateTimeOffset? CancellationRequestedAt, IReadOnlyList<EntitlementView> Entitlements, string CoverageScope = CoverageScopes.Installation,
+    decimal? UnitPrice = null, int? CoveredUnits = null, IReadOnlyList<CoverageAllocationView>? CoveredPanels = null, Guid? ContractServicePackageId = null,
+    Guid? RenewsSubscriptionId = null);
 
 /// <param name="ImageUrl">Cover picture (absolute https URL), or null when the package has none.</param>
 public sealed record PackageView(Guid PackageId, string Kind, string Name, string? Description, decimal Price, int DurationMonths, IReadOnlyList<int> VisitMonths,
-    IReadOnlyList<string> CoveredDisasterTypes, decimal? CoveragePercent, decimal? PerIncidentLimit, decimal? TermLimit, bool IsActive, int Revision, string? ImageUrl = null);
+    IReadOnlyList<string> CoveredDisasterTypes, decimal? CoveragePercent, decimal? PerIncidentLimit, decimal? TermLimit, bool IsActive, int Revision, string? ImageUrl = null,
+    string PricingUnit = PackagePricingUnits.PerInstallationLegacy);
 
 public sealed record WarrantyOptionView(Guid OptionId, string Kind, int Months, bool IsDefault, bool IsActive);
 
@@ -131,7 +134,7 @@ public sealed class AfterSalesViews(IAfterSalesUnitOfWork data, Scheduling.Domai
     public DisasterClaimView Claim(DisasterClaim c)
         => new(c.Id, c.DisasterType, L(c.IncidentOccurredAt), c.Status, c.DecisionReason, L(c.ReconsiderationRequestedAt),
             c.Status == ClaimStatuses.Rejected && c.ReconsiderationRequestedAt is null, c.SubscriptionId, c.CoveragePercent, c.PerIncidentLimit, c.SupportReserved,
-            c.SupportConsumed);
+            c.SupportConsumed, c.CoverageAllocationId);
 
     public static AssetView Asset(InstalledAsset a)
         => new(a.Id, a.AssetType, a.Manufacturer, a.Model, a.SerialNumber, a.PositionCode, a.Status, a.ReplacesAssetId, a.ServiceRequestId, a.Specifications,
@@ -148,12 +151,24 @@ public sealed class AfterSalesViews(IAfterSalesUnitOfWork data, Scheduling.Domai
             s.SupportReserved, s.SupportConsumed, s.TermLimit is null ? null : s.SupportAvailable, remaining, L(s.CheckoutExpiresAt), s.CurrentPaymentAttemptId, L(s.PaidAt),
             L(s.CancellationRequestedAt),
             entitlements.Select(e => new EntitlementView(e.Id, e.PlanMonth, L(e.PeriodStartsAt), L(e.PeriodEndsAt), e.Status, e.CurrentRequestId, L(e.ExtendedUntil),
-                L(e.ConsumedAt))).ToList());
+                L(e.ConsumedAt))).ToList(),
+            s.CoverageScope, s.UnitPrice, s.CoveredUnits, s.CoverageScope == CoverageScopes.Panel ? await CoveredPanelsAsync(s, token) : null,
+            s.ContractServicePackageId, s.RenewsSubscriptionId);
+    }
+
+    /// <summary>The real panel rows a PANEL-scope term protects (a replaced panel keeps its row as history, with its status).</summary>
+    private async Task<IReadOnlyList<CoverageAllocationView>> CoveredPanelsAsync(ServiceSubscription s, CancellationToken token)
+    {
+        var allocations = await data.ListCoverageAllocationsAsync([s.Id], token);
+        var assets = s.ProjectId is { } projectId ? (await data.ListAssetsAsync(projectId, false, token)).ToDictionary(a => a.Id) : [];
+        return allocations.Select(a => assets.TryGetValue(a.InstalledAssetId, out var asset)
+            ? new CoverageAllocationView(a.Id, a.InstalledAssetId, a.UnitCount, asset.Manufacturer, asset.Model, asset.SerialNumber, asset.SerialNumber is null, asset.Status)
+            : new CoverageAllocationView(a.Id, a.InstalledAssetId, a.UnitCount, "", "", null, false, "UNKNOWN")).ToList();
     }
 
     public static PackageView Package(ServicePackage p)
         => new(p.Id, p.Kind, p.Name, p.Description, p.Price, p.DurationMonths, AfterSalesRules.ParseMonths(p.VisitMonths), AfterSalesRules.ParseList(p.CoveredDisasterTypes),
-            p.CoveragePercent, p.PerIncidentLimit, p.TermLimit, p.IsActive, p.Revision, p.ImageUrl);
+            p.CoveragePercent, p.PerIncidentLimit, p.TermLimit, p.IsActive, p.Revision, p.ImageUrl, p.PricingUnit);
 
     public static WarrantyOptionView Option(WarrantyOption o) => new(o.Id, o.Kind, o.Months, o.IsDefault, o.IsActive);
 

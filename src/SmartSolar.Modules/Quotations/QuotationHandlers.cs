@@ -25,7 +25,8 @@ public sealed record QuotationView(
     DateTimeOffset? IssuedAt, DateTimeOffset? AcceptedAt, string? RevisionReason, int Revision, IReadOnlyList<QuotationEventView>? Events,
     string Origin = QuotationOrigins.Sales, PricingBasis? PricingBasis = null, int? CurrentSurveyVersion = null, bool SurveyChanged = false,
     PricingReview? PricingReview = null, PricingApprovalView? PricingApproval = null, DateTimeOffset? ClosedAt = null, string? CloseReason = null,
-    Guid? ContractId = null);
+    Guid? ContractId = null, decimal? InstallationTotal = null, int? PanelQuantity = null, IReadOnlyList<QuotationServicePackageView>? ServicePackages = null,
+    decimal MaintenancePackagesTotal = 0, decimal DisasterPackagesTotal = 0, decimal ServicePackagesTotal = 0, decimal? GrandTotal = null);
 
 /// <summary>
 /// Staff-only state of an AUTOMATIC draft's pricing issues, recomputed from the current lines and costs: <see cref="Outstanding"/> are the
@@ -476,11 +477,13 @@ public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, F
 
     /// <param name="beforeAdd">Runs inside the transaction after the request lock and before the insert; a failure aborts without writing anything.</param>
     private async Task<OperationResult<QuotationView>> PersistNewAsync(Quotation quotation, List<QuotationLine> lines, Guid actor, string eventType, string? detail, CancellationToken cancellationToken,
-        Func<CancellationToken, Task<OperationResult<bool>>>? beforeAdd = null)
+        Func<CancellationToken, Task<OperationResult<bool>>>? beforeAdd = null, IReadOnlyList<QuotationServicePackage>? packages = null)
     {
         Recalculate(quotation, lines);
         if (quotation.DiscountAmount > quotation.Subtotal)
             return OperationResult<QuotationView>.Fail(QuotationErrorCodes.InvalidLine, "The discount cannot exceed the subtotal.");
+        packages ??= [];
+        if (ApplyPackageTotals(quotation, lines, packages) is { } packageError) return OperationResult<QuotationView>.Fail(packageError.Code, packageError.Message);
         try
         {
             var outcome = await unitOfWork.ExecuteInTransactionAsync<OperationResult<bool>>(async token =>
@@ -490,6 +493,7 @@ public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, F
                 if (beforeAdd is not null && await beforeAdd(token) is { Succeeded: false } refused) return (refused, false);
                 unitOfWork.AddQuotation(quotation);
                 foreach (var line in lines) unitOfWork.AddLine(line);
+                foreach (var package in packages) unitOfWork.AddServicePackage(package);
                 AddEvent(quotation.Id, eventType, actor, detail, quotation.CreatedAt);
                 await unitOfWork.SaveChangesAsync(token);
                 return (OperationResult<bool>.Ok(true), true);
@@ -545,6 +549,7 @@ public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, F
     private async Task<QuotationView> ViewAsync(Quotation q, bool includeEvents, CancellationToken cancellationToken, bool forCustomer = false)
     {
         var lines = await unitOfWork.GetLinesAsync(q.Id, false, cancellationToken);
+        var packages = await unitOfWork.GetServicePackagesAsync(q.Id, false, cancellationToken);
         var now = time.GetUtcNow();
         var expired = q.ValidUntil is { } until && until <= now;
         var currentSurveyVersion = await unitOfWork.GetSurveyVersionAsync(q.SurveyRequestId, cancellationToken);
@@ -560,7 +565,12 @@ public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, F
             q.ValidUntil, expired, q.Status == QuotationStatuses.Issued && !expired && !surveyChanged, q.Terms, q.Notes, q.DocumentFileId, q.OnSiteSurveyReportId,
             q.OnSiteSurveyVersion, q.IssuedAt, q.AcceptedAt, q.RevisionReason, q.Revision, events, q.Origin,
             forCustomer ? null : basis, currentSurveyVersion, surveyChanged, forCustomer ? null : await ReviewOfAsync(q, lines, basis, cancellationToken),
-            forCustomer ? null : ApprovalOf(q, lines, allEvents), q.ClosedAt, q.CloseReason);
+            forCustomer ? null : ApprovalOf(q, lines, allEvents), q.ClosedAt, q.CloseReason,
+            // totalAmount keeps its meaning (installation); grandTotal is the amount the customer agrees to and the contract total.
+            InstallationTotal: q.TotalAmount, PanelQuantity: q.PanelQuantity, ServicePackages: packages.Select(QuotationPackageRules.View).ToList(),
+            MaintenancePackagesTotal: packages.Where(p => p.Kind == QuotationPackageRules.Maintenance).Sum(p => p.TotalAmount),
+            DisasterPackagesTotal: packages.Where(p => p.Kind == QuotationPackageRules.DisasterProtection).Sum(p => p.TotalAmount),
+            ServicePackagesTotal: q.ServicePackagesTotal, GrandTotal: q.GrandTotal);
     }
 
     private static PricingBasis? BasisOf(Quotation q) => q.PricingBasisJson is null ? null : JsonSerializer.Deserialize<PricingBasis>(q.PricingBasisJson, Json);

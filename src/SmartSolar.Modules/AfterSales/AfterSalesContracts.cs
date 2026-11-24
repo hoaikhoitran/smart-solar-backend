@@ -15,7 +15,7 @@ public sealed record InstallationFacts(
 /// <summary>A customer contract as seen by package purchases (the project may not exist yet).</summary>
 /// <param name="PaymentPlan">Non-null for a 30/70 contract (paid per installment; never bundled with a package checkout).</param>
 public sealed record ContractFacts(Guid ContractId, Guid CustomerUserId, string Status, Guid? ProjectId, string? ProjectStatus, DateTimeOffset? HandoverAt,
-    string? PaymentPlan = null);
+    string? PaymentPlan = null, DateTimeOffset? PaidAt = null);
 
 public sealed record RequestFilter(Guid? CustomerUserId = null, Guid? ProjectId = null, string? Status = null, string? Kind = null);
 
@@ -75,6 +75,15 @@ public interface IAfterSalesUnitOfWork : ITransactionalUnitOfWork
     Task<IReadOnlyList<ServicePackage>> ListPackagesAsync(string? kind, bool activeOnly, CancellationToken cancellationToken);
     Task<ServicePackage?> FindPackageAsync(Guid packageId, bool track, CancellationToken cancellationToken);
     Task<ServiceSubscription?> FindSubscriptionAsync(Guid subscriptionId, bool track, CancellationToken cancellationToken);
+
+    // ---- per-panel coverage (2026-11-25)
+    Task<IReadOnlyList<ServiceCoverageAllocation>> ListCoverageAllocationsForContractAsync(Guid contractId, CancellationToken cancellationToken);
+    Task<IReadOnlyList<ServiceCoverageAllocation>> ListCoverageAllocationsAsync(IReadOnlyCollection<Guid> subscriptionIds, CancellationToken cancellationToken);
+    Task<IReadOnlyList<CustomerContracts.ContractServicePackage>> ListContractServicePackagesAsync(Guid contractId, bool track, CancellationToken cancellationToken);
+    Task<CustomerContracts.ContractServicePackage?> FindContractServicePackageAsync(Guid commitmentId, bool track, CancellationToken cancellationToken);
+    /// <summary>Bundled package commitments (newest first), optionally of one status, with the total count.</summary>
+    Task<(IReadOnlyList<CustomerContracts.ContractServicePackage> Rows, int Total)> PageContractServicePackagesAsync(string? status, int skip, int take,
+        CancellationToken cancellationToken);
     Task<IReadOnlyList<ServiceSubscription>> ListSubscriptionsForContractAsync(Guid contractId, bool track, CancellationToken cancellationToken);
     Task<IReadOnlyList<ServiceSubscription>> ListSubscriptionsForCustomerAsync(Guid customerUserId, CancellationToken cancellationToken);
     Task<IReadOnlyList<ServiceSubscription>> ListSubscriptionsByStatusAsync(IReadOnlyCollection<string> statuses, CancellationToken cancellationToken);

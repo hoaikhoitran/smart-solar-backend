@@ -18,6 +18,9 @@ public static class AfterSalesModuleExtensions
         services.AddScoped<AdminOverview>();
         services.AddScoped<AfterSalesViews>();
         services.AddScoped<SubscriptionTerms>();
+        // Per-panel coverage (2026-11-25): bundled package provisioning after full payment, eligibility and staff reconciliation.
+        services.AddScoped<PanelCoverageService>();
+        services.AddScoped<SmartSolar.Modules.CustomerContracts.IBundledPackageProvisioner>(sp => sp.GetRequiredService<PanelCoverageService>());
         // Applies the after-sales lines of verified payments inside the payment confirmation transaction (wrapped by the installation-quotation
         // settlement registered as IPaymentItemSettlement in AddInstallationWorkflow).
         services.AddScoped<AfterSalesPaymentSettlement>();

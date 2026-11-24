@@ -488,6 +488,10 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<Guid?>("CoverageAllocationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("coverage_allocation_id");
+
                     b.Property<decimal>("CoveragePercent")
                         .HasPrecision(5, 2)
                         .HasColumnType("numeric(5,2)")
@@ -573,6 +577,8 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnName("updated_at");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("CoverageAllocationId");
 
                     b.HasIndex("DecidedByUserId");
 
@@ -892,6 +898,59 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.ServiceCoverageAllocation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ContractId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("contract_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("InstalledAssetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("installed_asset_id");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("kind");
+
+                    b.Property<Guid>("SubscriptionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("subscription_id");
+
+                    b.Property<int>("UnitCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("unit_count");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ContractId", "Kind")
+                        .HasDatabaseName("ix_service_coverage_allocation_contract_kind");
+
+                    b.HasIndex("InstalledAssetId", "Kind")
+                        .HasDatabaseName("ix_service_coverage_allocation_asset_kind");
+
+                    b.HasIndex("SubscriptionId", "InstalledAssetId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_service_coverage_allocation_subscription_asset");
+
+                    b.ToTable("service_coverage_allocation", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_service_coverage_allocation_kind", "kind IN ('MAINTENANCE', 'DISASTER_PROTECTION')");
+
+                            t.HasCheckConstraint("ck_service_coverage_allocation_units", "unit_count > 0");
+                        });
+                });
+
             modelBuilder.Entity("SmartSolar.Modules.AfterSales.ServiceEvidence", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1116,6 +1175,14 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("numeric(18,2)")
                         .HasColumnName("price");
 
+                    b.Property<string>("PricingUnit")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasDefaultValue("PER_INSTALLATION_LEGACY")
+                        .HasColumnName("pricing_unit");
+
                     b.Property<int>("Revision")
                         .IsConcurrencyToken()
                         .HasColumnType("integer")
@@ -1151,6 +1218,8 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                             t.HasCheckConstraint("ck_service_package_maintenance", "kind <> 'MAINTENANCE' OR visit_months IS NOT NULL");
 
                             t.HasCheckConstraint("ck_service_package_price", "price > 0 AND duration_months BETWEEN 1 AND 120");
+
+                            t.HasCheckConstraint("ck_service_package_pricing_unit", "pricing_unit IN ('PER_PANEL', 'PER_INSTALLATION_LEGACY')");
                         });
                 });
 
@@ -1522,10 +1591,22 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("contract_id");
 
+                    b.Property<Guid?>("ContractServicePackageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("contract_service_package_id");
+
                     b.Property<decimal?>("CoveragePercent")
                         .HasPrecision(5, 2)
                         .HasColumnType("numeric(5,2)")
                         .HasColumnName("coverage_percent");
+
+                    b.Property<string>("CoverageScope")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("INSTALLATION")
+                        .HasColumnName("coverage_scope");
 
                     b.Property<DateTimeOffset?>("CoverageStartsAt")
                         .HasColumnType("timestamp with time zone")
@@ -1535,6 +1616,10 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)")
                         .HasColumnName("covered_disaster_types");
+
+                    b.Property<int?>("CoveredUnits")
+                        .HasColumnType("integer")
+                        .HasColumnName("covered_units");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
@@ -1628,6 +1713,11 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("numeric(18,2)")
                         .HasColumnName("term_limit");
 
+                    b.Property<decimal?>("UnitPrice")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("unit_price");
+
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");
@@ -1638,6 +1728,11 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnName("visit_months");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ContractServicePackageId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_service_subscription_contract_service_package")
+                        .HasFilter("contract_service_package_id IS NOT NULL");
 
                     b.HasIndex("CurrentPaymentAttemptId");
 
@@ -1660,7 +1755,11 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         {
                             t.HasCheckConstraint("ck_service_subscription_active", "status <> 'ACTIVE' OR (starts_at IS NOT NULL AND paid_at IS NOT NULL AND project_id IS NOT NULL)");
 
+                            t.HasCheckConstraint("ck_service_subscription_coverage_scope", "coverage_scope IN ('INSTALLATION', 'PANEL')");
+
                             t.HasCheckConstraint("ck_service_subscription_kind", "kind IN ('MAINTENANCE', 'DISASTER_PROTECTION')");
+
+                            t.HasCheckConstraint("ck_service_subscription_panel_units", "coverage_scope <> 'PANEL' OR (unit_price > 0 AND covered_units > 0 AND price = unit_price * covered_units)");
 
                             t.HasCheckConstraint("ck_service_subscription_price", "price > 0 AND duration_months BETWEEN 1 AND 120");
 
@@ -2359,6 +2458,173 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractServicePackage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("BalanceAllocation")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("balance_allocation");
+
+                    b.Property<int>("CatalogRevision")
+                        .HasColumnType("integer")
+                        .HasColumnName("catalog_revision");
+
+                    b.Property<Guid>("ContractId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("contract_id");
+
+                    b.Property<decimal?>("CoveragePercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("coverage_percent");
+
+                    b.Property<string>("CoveredDisasterTypes")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("covered_disaster_types");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<decimal>("DepositAllocation")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("deposit_allocation");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("description");
+
+                    b.Property<int>("DurationMonths")
+                        .HasColumnType("integer")
+                        .HasColumnName("duration_months");
+
+                    b.Property<string>("ImageUrl")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("image_url");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("kind");
+
+                    b.Property<Guid>("PackageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("package_id");
+
+                    b.Property<string>("PackageName")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)")
+                        .HasColumnName("package_name");
+
+                    b.Property<decimal?>("PerIncidentLimit")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("per_incident_limit");
+
+                    b.Property<string>("PricingUnit")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("pricing_unit");
+
+                    b.Property<int>("Quantity")
+                        .HasColumnType("integer")
+                        .HasColumnName("quantity");
+
+                    b.Property<Guid>("QuotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("quotation_id");
+
+                    b.Property<Guid>("QuotationServicePackageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("quotation_service_package_id");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<DateTimeOffset>("SnapshotAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("snapshot_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset?>("StatusChangedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("status_changed_at");
+
+                    b.Property<string>("StatusReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("status_reason");
+
+                    b.Property<Guid?>("SubscriptionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("subscription_id");
+
+                    b.Property<decimal?>("TermLimit")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("term_limit");
+
+                    b.Property<decimal>("TotalAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("total_amount");
+
+                    b.Property<decimal>("UnitPrice")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("unit_price");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("VisitMonths")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("visit_months");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("QuotationServicePackageId");
+
+                    b.HasIndex("Status")
+                        .HasDatabaseName("ix_contract_service_package_status");
+
+                    b.HasIndex("ContractId", "Kind")
+                        .IsUnique()
+                        .HasDatabaseName("ux_contract_service_package_kind");
+
+                    b.ToTable("contract_service_package", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_contract_service_package_amount", "unit_price > 0 AND quantity > 0 AND total_amount = unit_price * quantity AND deposit_allocation >= 0 AND balance_allocation >= 0 AND deposit_allocation + balance_allocation = total_amount AND duration_months BETWEEN 1 AND 120");
+
+                            t.HasCheckConstraint("ck_contract_service_package_kind", "kind IN ('MAINTENANCE', 'DISASTER_PROTECTION')");
+
+                            t.HasCheckConstraint("ck_contract_service_package_provisioned", "(status = 'PROVISIONED') = (subscription_id IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_contract_service_package_status", "status IN ('COMMITTED', 'DISCARDED', 'RECONCILIATION_REQUIRED', 'PROVISIONED')");
+                        });
+                });
+
             modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractSignatureSet", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2637,6 +2903,11 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("discarded_by_user_id");
 
+                    b.Property<decimal?>("InstallationTotal")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("installation_total");
+
                     b.Property<DateTimeOffset?>("IssuedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("issued_at");
@@ -2709,6 +2980,11 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("SalesUserId")
                         .HasColumnType("uuid")
                         .HasColumnName("sales_user_id");
+
+                    b.Property<decimal?>("ServicePackagesTotal")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("service_packages_total");
 
                     b.Property<DateTimeOffset?>("SignedAt")
                         .HasColumnType("timestamp with time zone")
@@ -2809,6 +3085,8 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                             t.HasCheckConstraint("ck_customer_contract_discarded_never_issued", "status <> 'DISCARDED' OR (issued_at IS NULL AND signed_at IS NULL AND paid_at IS NULL AND previous_contract_id IS NULL)");
 
                             t.HasCheckConstraint("ck_customer_contract_issued_hash", "status IN ('DRAFT', 'DISCARDED') OR (canonical_hash IS NOT NULL AND issued_at IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_customer_contract_package_breakdown", "(installation_total IS NULL) = (service_packages_total IS NULL) AND (installation_total IS NULL OR (installation_total > 0 AND service_packages_total > 0 AND installation_total + service_packages_total = total_amount))");
 
                             t.HasCheckConstraint("ck_customer_contract_payment_plan", "payment_plan IS NULL OR payment_plan IN ('DEPOSIT_30_BALANCE_70')");
 
@@ -6907,6 +7185,10 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("numeric(18,2)")
                         .HasColumnName("other_service_cost");
 
+                    b.Property<int?>("PanelQuantity")
+                        .HasColumnType("integer")
+                        .HasColumnName("panel_quantity");
+
                     b.Property<Guid?>("PreviousQuotationId")
                         .HasColumnType("uuid")
                         .HasColumnName("previous_quotation_id");
@@ -6938,6 +7220,13 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("SalesUserId")
                         .HasColumnType("uuid")
                         .HasColumnName("sales_user_id");
+
+                    b.Property<decimal>("ServicePackagesTotal")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasDefaultValue(0m)
+                        .HasColumnName("service_packages_total");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -7176,6 +7465,127 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                             t.HasCheckConstraint("ck_quotation_line_prices", "unit_price >= 0 AND line_total >= 0");
 
                             t.HasCheckConstraint("ck_quotation_line_quantity", "quantity > 0");
+                        });
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Quotations.QuotationServicePackage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int>("CatalogRevision")
+                        .HasColumnType("integer")
+                        .HasColumnName("catalog_revision");
+
+                    b.Property<decimal?>("CoveragePercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("coverage_percent");
+
+                    b.Property<string>("CoveredDisasterTypes")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("covered_disaster_types");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("description");
+
+                    b.Property<int>("DurationMonths")
+                        .HasColumnType("integer")
+                        .HasColumnName("duration_months");
+
+                    b.Property<string>("ImageUrl")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("image_url");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("kind");
+
+                    b.Property<Guid>("PackageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("package_id");
+
+                    b.Property<string>("PackageName")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)")
+                        .HasColumnName("package_name");
+
+                    b.Property<decimal?>("PerIncidentLimit")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("per_incident_limit");
+
+                    b.Property<string>("PricingUnit")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("pricing_unit");
+
+                    b.Property<int>("Quantity")
+                        .HasColumnType("integer")
+                        .HasColumnName("quantity");
+
+                    b.Property<Guid>("QuotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("quotation_id");
+
+                    b.Property<DateTimeOffset>("SnapshotAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("snapshot_at");
+
+                    b.Property<decimal?>("TermLimit")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("term_limit");
+
+                    b.Property<decimal>("TotalAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("total_amount");
+
+                    b.Property<decimal>("UnitPrice")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("unit_price");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("VisitMonths")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("visit_months");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PackageId")
+                        .HasDatabaseName("ix_quotation_service_package_package");
+
+                    b.HasIndex("QuotationId", "Kind")
+                        .IsUnique()
+                        .HasDatabaseName("ux_quotation_service_package_kind");
+
+                    b.ToTable("quotation_service_package", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_quotation_service_package_amount", "unit_price > 0 AND quantity > 0 AND total_amount = unit_price * quantity AND duration_months BETWEEN 1 AND 120");
+
+                            t.HasCheckConstraint("ck_quotation_service_package_kind", "kind IN ('MAINTENANCE', 'DISASTER_PROTECTION')");
+
+                            t.HasCheckConstraint("ck_quotation_service_package_pricing_unit", "pricing_unit = 'PER_PANEL'");
                         });
                 });
 
@@ -8595,6 +9005,12 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("SmartSolar.Modules.AfterSales.DisasterClaim", b =>
                 {
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceCoverageAllocation", null)
+                        .WithMany()
+                        .HasForeignKey("CoverageAllocationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_disaster_claim_coverage_allocation");
+
                     b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
                         .WithMany()
                         .HasForeignKey("DecidedByUserId")
@@ -8703,6 +9119,30 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasForeignKey("RequestId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .HasConstraintName("fk_sales_task_request");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.AfterSales.ServiceCoverageAllocation", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.CustomerContracts.CustomerContract", null)
+                        .WithMany()
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_coverage_allocation_contract");
+
+                    b.HasOne("SmartSolar.Modules.Installations.InstalledAsset", null)
+                        .WithMany()
+                        .HasForeignKey("InstalledAssetId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_coverage_allocation_asset");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceSubscription", null)
+                        .WithMany()
+                        .HasForeignKey("SubscriptionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_coverage_allocation_subscription");
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.AfterSales.ServiceEvidence", b =>
@@ -8862,6 +9302,12 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasConstraintName("fk_service_subscription_contract");
 
+                    b.HasOne("SmartSolar.Modules.CustomerContracts.ContractServicePackage", null)
+                        .WithMany()
+                        .HasForeignKey("ContractServicePackageId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_service_subscription_contract_service_package");
+
                     b.HasOne("SmartSolar.Modules.Payments.PaymentAttempt", null)
                         .WithMany()
                         .HasForeignKey("CurrentPaymentAttemptId")
@@ -9003,6 +9449,23 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_contract_installment_contract");
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractServicePackage", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.CustomerContracts.CustomerContract", null)
+                        .WithMany()
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_contract_service_package_contract");
+
+                    b.HasOne("SmartSolar.Modules.Quotations.QuotationServicePackage", null)
+                        .WithMany()
+                        .HasForeignKey("QuotationServicePackageId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_contract_service_package_quotation_package");
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.CustomerContracts.ContractSignatureSet", b =>
@@ -10151,6 +10614,23 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasForeignKey("QuotationId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Quotations.QuotationServicePackage", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServicePackage", null)
+                        .WithMany()
+                        .HasForeignKey("PackageId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_quotation_service_package_package");
+
+                    b.HasOne("SmartSolar.Modules.Quotations.Quotation", null)
+                        .WithMany()
+                        .HasForeignKey("QuotationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_quotation_service_package_quotation");
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.Scheduling.Dispatch.CrossZoneAuthorization", b =>
