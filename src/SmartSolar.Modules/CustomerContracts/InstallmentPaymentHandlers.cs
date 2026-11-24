@@ -29,7 +29,8 @@ public enum InstallmentPayer
 /// <param name="Overdue">DUE and past its deadline (derived).</param>
 public sealed record InstallmentPaymentView(Guid ContractId, string ContractNumber, Guid InstallmentId, int Sequence, string Kind, decimal Amount, string Currency,
     string InstallmentStatus, DateTimeOffset? DueAt, bool Overdue, DateTimeOffset? PaidAt, bool PaidLate, string PaymentState, PaymentAttemptView? Current,
-    IReadOnlyList<PaymentAttemptView> Attempts);
+    IReadOnlyList<PaymentAttemptView> Attempts, decimal ContractTotal = 0, decimal? InstallationTotal = null, decimal? ServicePackagesTotal = null,
+    InstallmentAllocation? Allocation = null);
 
 /// <summary>
 /// Opening, reading and cancelling the payment of one installment of a 30/70 contract (2026-11-19):
@@ -173,7 +174,8 @@ public sealed class InstallmentPaymentHandlers(IContractUnitOfWork contracts, Pa
         var current = paid ?? live;
         return new InstallmentPaymentView(c.Id, c.ContractNumber, i.Id, i.Sequence, i.Kind, i.Amount, c.Currency, i.Status, i.DueAt,
             PaymentPlanCalculator.IsOverdue(i, time.GetUtcNow()), i.PaidAt, i.PaidLate, state, current is null ? null : PaymentService.View(current),
-            attempts.Select(a => PaymentService.View(a)).ToList());
+            attempts.Select(a => PaymentService.View(a)).ToList(), c.TotalAmount, c.InstallationTotal, c.ServicePackagesTotal,
+            PaymentPlanViews.Allocation(i, await contracts.GetServicePackagesAsync(c.Id, false, cancellationToken)));
     }
 
     private static OperationResult<InstallmentPaymentView> Fail(string code, string message) => OperationResult<InstallmentPaymentView>.Fail(code, message);

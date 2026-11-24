@@ -79,7 +79,8 @@ public sealed class PostgresAfterSalesMigrationTests
         await using var check = database.NewContext();
         Assert.Contains(AfterSales, await check.Database.GetAppliedMigrationsAsync());
         Assert.Equal(schemaBefore, await SchemaAsync(check));
-        Assert.Equal(SubscriptionStatuses.Active, (await check.ServiceSubscriptions.AsNoTracking().SingleAsync(s => s.Id == term.Id)).Status);
+        // Projection: the schema stands below later additive migrations, whose columns the current model also maps.
+        Assert.Equal(SubscriptionStatuses.Active, await check.ServiceSubscriptions.AsNoTracking().Where(s => s.Id == term.Id).Select(s => s.Status).SingleAsync());
         Assert.Equal(1, await check.PaymentAttempts.CountAsync(a => a.ContractId == null));
         Assert.Equal(1, await check.PaymentAttemptItems.CountAsync(i => i.SubscriptionId == term.Id));
     }

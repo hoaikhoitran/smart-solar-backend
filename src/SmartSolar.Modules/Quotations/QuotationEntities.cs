@@ -58,9 +58,56 @@ public sealed class Quotation
     /// catalog snapshots, and the pricing issues that kept the quotation from being issued automatically. Never changed after issue.
     /// </summary>
     public string? PricingBasisJson { get; set; }
+
+    /// <summary>
+    /// Whole SOLAR_PANEL units of the current lines (null when the lines hold no panel or a fractional panel quantity). Recomputed with the totals;
+    /// it is the quantity of every bundled per-panel package (<see cref="QuotationServicePackage"/>).
+    /// </summary>
+    public int? PanelQuantity { get; set; }
+
+    /// <summary>
+    /// Σ bundled package amounts (catalog final prices, no quotation tax applied). <see cref="TotalAmount"/> keeps its meaning (installation total);
+    /// the amount the customer agrees to is <see cref="GrandTotal"/>. 0 for quotations without packages (all quotations before 2026-11-25).
+    /// </summary>
+    public decimal ServicePackagesTotal { get; set; }
+
+    /// <summary>Installation total + bundled service packages: the contract total of the on-site agreement.</summary>
+    public decimal GrandTotal => TotalAmount + ServicePackagesTotal;
+
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
     public int Revision { get; set; }
+}
+
+/// <summary>
+/// A per-panel service package bundled into a technician quotation (at most one per kind). A catalog snapshot (price per panel, benefits, catalog
+/// revision) refreshed while the quotation is a DRAFT and frozen when it is issued; never read from the mutable catalog afterwards. Quantity is always
+/// the quotation's whole panel count (never typed by the technician).
+/// </summary>
+public sealed class QuotationServicePackage
+{
+    public Guid Id { get; set; }
+    public Guid QuotationId { get; set; }
+    public string Kind { get; set; } = null!;
+    public Guid PackageId { get; set; }
+    public string PackageName { get; set; } = null!;
+    public string? Description { get; set; }
+    public string? ImageUrl { get; set; }
+    public string PricingUnit { get; set; } = null!;
+    public decimal UnitPrice { get; set; }
+    public int Quantity { get; set; }
+    public decimal TotalAmount { get; set; }
+    public int DurationMonths { get; set; }
+    public string? VisitMonths { get; set; }
+    public string? CoveredDisasterTypes { get; set; }
+    public decimal? CoveragePercent { get; set; }
+    public decimal? PerIncidentLimit { get; set; }
+    public decimal? TermLimit { get; set; }
+    /// <summary>Catalog row revision the snapshot was taken from.</summary>
+    public int CatalogRevision { get; set; }
+    public DateTimeOffset SnapshotAt { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
 }
 
 /// <summary>Immutable product snapshot: what was sold, at which price, regardless of later catalog changes.</summary>
@@ -207,6 +254,18 @@ public static class QuotationErrorCodes
     public const string SurveyNotFeasible = "QUOTATION_SURVEY_NOT_FEASIBLE";
     /// <summary>The survey request was withdrawn or closed: no quotation work on it any more (409).</summary>
     public const string RequestClosed = "QUOTATION_REQUEST_CLOSED";
+    /// <summary>The chosen service package does not exist (404).</summary>
+    public const string ServicePackageNotFound = "QUOTATION_SERVICE_PACKAGE_NOT_FOUND";
+    /// <summary>The chosen / bundled service package is no longer sold (409).</summary>
+    public const string ServicePackageInactive = "QUOTATION_SERVICE_PACKAGE_INACTIVE";
+    /// <summary>The package is of another kind, or is not priced PER_PANEL (409).</summary>
+    public const string ServicePackageIncompatible = "QUOTATION_SERVICE_PACKAGE_INCOMPATIBLE";
+    /// <summary>A per-panel package needs at least one SOLAR_PANEL line (409).</summary>
+    public const string NoEligiblePanels = "QUOTATION_NO_ELIGIBLE_PANELS";
+    /// <summary>The panel quantity is not a positive whole number of physical panels (409).</summary>
+    public const string InvalidPanelQuantity = "QUOTATION_INVALID_PANEL_QUANTITY";
+    /// <summary>The installation / package / grand total is outside the supported VND range (409).</summary>
+    public const string TotalOutOfRange = "QUOTATION_TOTAL_OUT_OF_RANGE";
     /// <summary>The survey request has no COMPLETED on-site survey report by this technician (404 for the caller: not their job).</summary>
     public const string NotAssignedTechnician = "QUOTATION_SURVEY_NOT_FOUND";
     /// <summary>A payment of the agreed quotation is in progress or verified: the agreement can no longer be withdrawn (409).</summary>

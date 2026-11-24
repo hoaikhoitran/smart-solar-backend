@@ -28,6 +28,7 @@ public sealed class PostgresIotMonitoringTests
     private const string OnSiteSalesMigration = "20261118102011_TechnicianLedOnSiteSales";
     private const string PaymentPlanMigration = "20261118202100_PaymentPlan3070PaperSignatureCollection";
     private const string SharedKnowledgeMigration = "20261123140208_SharedKnowledgePublicationScope";
+    private const string PerPanelMigration = "20261124173442_PerPanelServicePackages";
 
     /// <summary>Two real handed-over-style journeys (paid contract + project) for two different customers.</summary>
     private static async Task<(Guid ProjectA, Guid CustomerA, Guid ProjectB, Guid CustomerB, Guid Manager)> TwoProjectsAsync(InstallationWorkflowTestContext w)
@@ -122,13 +123,13 @@ public sealed class PostgresIotMonitoringTests
         Assert.False(await TableExistsAsync(database, "iot_device_binding"));
         Assert.False(await TableExistsAsync(database, "iot_telemetry_reading"));
         Assert.False(await TableExistsAsync(database, "password_reset_dispatch"));
-        Assert.Equal([IotMigration, OutboxMigration, CommercialMigration, BookingMigration, CompatibilityMigration, CostMigration, SlotOfferMigration, TechnicianQuotationMigration, OnSiteSalesMigration, PaymentPlanMigration, SharedKnowledgeMigration], await db.Database.GetPendingMigrationsAsync());
+        Assert.Equal([IotMigration, OutboxMigration, CommercialMigration, BookingMigration, CompatibilityMigration, CostMigration, SlotOfferMigration, TechnicianQuotationMigration, OnSiteSalesMigration, PaymentPlanMigration, SharedKnowledgeMigration, PerPanelMigration], await db.Database.GetPendingMigrationsAsync());
 
         await db.Database.MigrateAsync();
         Assert.Empty(await db.Database.GetPendingMigrationsAsync());
         Assert.True(await TableExistsAsync(database, "iot_telemetry_reading"));
         Assert.True(await TableExistsAsync(database, "password_reset_dispatch"));
-        Assert.Equal(SharedKnowledgeMigration, (await db.Database.GetAppliedMigrationsAsync()).Last());
+        Assert.Equal(PerPanelMigration, (await db.Database.GetAppliedMigrationsAsync()).Last());
     }
 
     private static async Task<string?> SqlStateAsync(PostgresTestDatabase database, string sql)

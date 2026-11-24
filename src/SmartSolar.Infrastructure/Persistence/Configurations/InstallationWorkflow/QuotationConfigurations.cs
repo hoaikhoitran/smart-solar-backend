@@ -70,6 +70,10 @@ public sealed class QuotationConfiguration : IEntityTypeConfiguration<Quotation>
         builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
         builder.Property(x => x.Revision).HasColumnName("revision").IsConcurrencyToken().IsRequired();
+        // Per-panel packages (2026-11-25). Defaults keep rows written by an older API build valid: no packages, total unchanged.
+        builder.Property(x => x.PanelQuantity).HasColumnName("panel_quantity");
+        builder.Property(x => x.ServicePackagesTotal).HasColumnName("service_packages_total").HasPrecision(18, 2).HasDefaultValue(0m).IsRequired();
+        builder.Ignore(x => x.GrandTotal);
 
         builder.HasIndex(x => new { x.QuoteNumber, x.Version }).IsUnique().HasDatabaseName("ux_quotation_number_version");
         builder.HasIndex(x => new { x.SurveyRequestId, x.Version }).IsUnique().HasDatabaseName("ux_quotation_survey_request_version");
@@ -134,5 +138,48 @@ public sealed class QuotationEventConfiguration : IEntityTypeConfiguration<Quota
         builder.HasIndex(x => new { x.QuotationId, x.CreatedAt }).HasDatabaseName("ix_quotation_event_quotation_created_at");
         builder.HasOne<Quotation>().WithMany().HasForeignKey(x => x.QuotationId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.ActorUserId).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+/// <summary>Bundled per-panel package snapshot of a quotation: at most one per kind; amount = unit price × whole panels.</summary>
+public sealed class QuotationServicePackageConfiguration : IEntityTypeConfiguration<QuotationServicePackage>
+{
+    public void Configure(EntityTypeBuilder<QuotationServicePackage> builder)
+    {
+        builder.ToTable("quotation_service_package", t =>
+        {
+            t.HasCheckConstraint("ck_quotation_service_package_kind", "kind IN ('MAINTENANCE', 'DISASTER_PROTECTION')");
+            t.HasCheckConstraint("ck_quotation_service_package_pricing_unit", "pricing_unit = 'PER_PANEL'");
+            t.HasCheckConstraint("ck_quotation_service_package_amount",
+                "unit_price > 0 AND quantity > 0 AND total_amount = unit_price * quantity AND duration_months BETWEEN 1 AND 120");
+        });
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.QuotationId).HasColumnName("quotation_id").IsRequired();
+        builder.Property(x => x.Kind).HasColumnName("kind").HasMaxLength(30).IsRequired();
+        builder.Property(x => x.PackageId).HasColumnName("package_id").IsRequired();
+        builder.Property(x => x.PackageName).HasColumnName("package_name").HasMaxLength(150).IsRequired();
+        builder.Property(x => x.Description).HasColumnName("description").HasMaxLength(2000);
+        builder.Property(x => x.ImageUrl).HasColumnName("image_url").HasMaxLength(SmartSolar.Modules.Catalog.ProductImages.ProductImageRules.MaxUrlLength);
+        builder.Property(x => x.PricingUnit).HasColumnName("pricing_unit").HasMaxLength(30).IsRequired();
+        builder.Property(x => x.UnitPrice).HasColumnName("unit_price").HasPrecision(18, 2).IsRequired();
+        builder.Property(x => x.Quantity).HasColumnName("quantity").IsRequired();
+        builder.Property(x => x.TotalAmount).HasColumnName("total_amount").HasPrecision(18, 2).IsRequired();
+        builder.Property(x => x.DurationMonths).HasColumnName("duration_months").IsRequired();
+        builder.Property(x => x.VisitMonths).HasColumnName("visit_months").HasMaxLength(200);
+        builder.Property(x => x.CoveredDisasterTypes).HasColumnName("covered_disaster_types").HasMaxLength(200);
+        builder.Property(x => x.CoveragePercent).HasColumnName("coverage_percent").HasPrecision(5, 2);
+        builder.Property(x => x.PerIncidentLimit).HasColumnName("per_incident_limit").HasPrecision(18, 2);
+        builder.Property(x => x.TermLimit).HasColumnName("term_limit").HasPrecision(18, 2);
+        builder.Property(x => x.CatalogRevision).HasColumnName("catalog_revision").IsRequired();
+        builder.Property(x => x.SnapshotAt).HasColumnName("snapshot_at").IsRequired();
+        builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
+        builder.HasIndex(x => new { x.QuotationId, x.Kind }).IsUnique().HasDatabaseName("ux_quotation_service_package_kind");
+        builder.HasIndex(x => x.PackageId).HasDatabaseName("ix_quotation_service_package_package");
+        builder.HasOne<Quotation>().WithMany().HasForeignKey(x => x.QuotationId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_quotation_service_package_quotation");
+        builder.HasOne<SmartSolar.Modules.AfterSales.ServicePackage>().WithMany().HasForeignKey(x => x.PackageId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_quotation_service_package_package");
     }
 }

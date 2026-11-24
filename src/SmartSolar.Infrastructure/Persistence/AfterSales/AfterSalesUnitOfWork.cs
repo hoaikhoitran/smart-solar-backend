@@ -26,11 +26,12 @@ public sealed class AfterSalesUnitOfWork(AppDbContext db) : TransactionalUnitOfW
     public async Task<ContractFacts?> GetContractAsync(Guid contractId, CancellationToken cancellationToken)
     {
         var contract = await Db.CustomerContracts.AsNoTracking().Where(c => c.Id == contractId)
-            .Select(c => new { c.Id, c.CustomerUserId, c.Status, c.PaymentPlan }).FirstOrDefaultAsync(cancellationToken);
+            .Select(c => new { c.Id, c.CustomerUserId, c.Status, c.PaymentPlan, c.PaidAt }).FirstOrDefaultAsync(cancellationToken);
         if (contract is null) return null;
         var project = await Db.InstallationProjects.AsNoTracking().Where(p => p.ContractId == contractId)
             .Select(p => new { p.Id, p.Status, p.HandoverAt }).FirstOrDefaultAsync(cancellationToken);
-        return new ContractFacts(contract.Id, contract.CustomerUserId, contract.Status, project?.Id, project?.Status, project?.HandoverAt, contract.PaymentPlan);
+        return new ContractFacts(contract.Id, contract.CustomerUserId, contract.Status, project?.Id, project?.Status, project?.HandoverAt, contract.PaymentPlan,
+            contract.PaidAt);
     }
 
     public async Task<string?> GetSiteAddressAsync(Guid propertySiteId, CancellationToken cancellationToken)
@@ -146,6 +147,30 @@ public sealed class AfterSalesUnitOfWork(AppDbContext db) : TransactionalUnitOfW
 
     public Task<ServiceSubscription?> FindSubscriptionAsync(Guid subscriptionId, bool track, CancellationToken cancellationToken)
         => (track ? Db.ServiceSubscriptions : Db.ServiceSubscriptions.AsNoTracking()).FirstOrDefaultAsync(s => s.Id == subscriptionId, cancellationToken);
+
+    public async Task<IReadOnlyList<ServiceCoverageAllocation>> ListCoverageAllocationsForContractAsync(Guid contractId, CancellationToken cancellationToken)
+        => await Db.ServiceCoverageAllocations.AsNoTracking().Where(a => a.ContractId == contractId).OrderBy(a => a.CreatedAt).ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<ServiceCoverageAllocation>> ListCoverageAllocationsAsync(IReadOnlyCollection<Guid> subscriptionIds, CancellationToken cancellationToken)
+        => subscriptionIds.Count == 0 ? []
+            : await Db.ServiceCoverageAllocations.AsNoTracking().Where(a => subscriptionIds.Contains(a.SubscriptionId)).ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<SmartSolar.Modules.CustomerContracts.ContractServicePackage>> ListContractServicePackagesAsync(Guid contractId, bool track,
+        CancellationToken cancellationToken)
+        => (await (track ? Db.ContractServicePackages : Db.ContractServicePackages.AsNoTracking()).Where(p => p.ContractId == contractId).ToListAsync(cancellationToken))
+            .OrderBy(p => p.Kind, StringComparer.Ordinal).ToList();
+
+    public Task<SmartSolar.Modules.CustomerContracts.ContractServicePackage?> FindContractServicePackageAsync(Guid commitmentId, bool track, CancellationToken cancellationToken)
+        => (track ? Db.ContractServicePackages : Db.ContractServicePackages.AsNoTracking()).FirstOrDefaultAsync(p => p.Id == commitmentId, cancellationToken);
+
+    public async Task<(IReadOnlyList<SmartSolar.Modules.CustomerContracts.ContractServicePackage> Rows, int Total)> PageContractServicePackagesAsync(string? status,
+        int skip, int take, CancellationToken cancellationToken)
+    {
+        var query = Db.ContractServicePackages.AsNoTracking().Where(p => status == null || p.Status == status);
+        var total = await query.CountAsync(cancellationToken);
+        var rows = await query.OrderByDescending(p => p.UpdatedAt).ThenBy(p => p.Id).Skip(skip).Take(take).ToListAsync(cancellationToken);
+        return (rows, total);
+    }
 
     public async Task<IReadOnlyList<ServiceSubscription>> ListSubscriptionsForContractAsync(Guid contractId, bool track, CancellationToken cancellationToken)
         => (await (track ? Db.ServiceSubscriptions : Db.ServiceSubscriptions.AsNoTracking()).Where(s => s.ContractId == contractId).ToListAsync(cancellationToken))

@@ -15,6 +15,9 @@ public sealed record MoneyBucket(string Key, int Count, decimal Amount);
 /// <item>Period time of a payment: PayOS provider transaction time, CASH confirmation time.</item>
 /// <item>Outstanding = Σ installments not PAID of live 30/70 contracts (PENDING balance included); due now = DUE installments; overdue = DUE past due_at.</item>
 /// <item>Zone filter: the installation project's operational zone (contracts without a project are excluded when a zone is given).</item>
+/// <item><see cref="CollectedByComponent"/> (period, 2026-11-25): every settled installment line split by the contract's frozen allocation into INSTALLATION,
+/// BUNDLED_MAINTENANCE_PACKAGES and BUNDLED_DISASTER_PROTECTION_PACKAGES (Σ = deposits + balances collected; a contract without packages is all
+/// INSTALLATION), plus retail package lines settled in the period (RETAIL_*; they never touch an installment). Each VND is counted once.</item>
 /// </list>
 /// </summary>
 public sealed record FinanceOverviewView(
@@ -29,7 +32,8 @@ public sealed record FinanceOverviewView(
     IReadOnlyList<MoneyBucket> OpenCollectionCasesByStatus, MoneyBucket Negotiations, MoneyBucket Escalations,
     // ---- period
     MoneyBucket DepositsCollected, MoneyBucket BalancesCollected, IReadOnlyList<MoneyBucket> InstallmentsCollectedByMethod,
-    MoneyBucket LegacyContractPaymentsCollected, MoneyBucket Unapplied, MoneyBucket Refunded);
+    MoneyBucket LegacyContractPaymentsCollected, MoneyBucket Unapplied, MoneyBucket Refunded,
+    IReadOnlyList<MoneyBucket>? CollectedByComponent = null);
 
 public interface IFinanceOverviewQueries
 {

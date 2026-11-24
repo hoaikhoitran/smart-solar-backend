@@ -14,7 +14,13 @@ public sealed record OneTimeMaintenanceRequest(Guid ProjectId, DateTimeOffset Pr
 /// Buys packages for a contract. <c>paymentMethod</c>: <c>ONLINE</c> (default, PayOS checkout) or <c>CASH</c> (only with <c>includeContract: true</c>:
 /// one cash payment for the installation and the packages, confirmed by a Manager/Admin with <c>POST /api/contracts/{id}/payments/cash/confirm</c>).
 /// </summary>
-public sealed record PurchaseRequest(Guid ContractId, Guid? MaintenancePackageId, Guid? DisasterPackageId, bool IncludeContract, string? PaymentMethod = null);
+/// <param name="Quantity">PER_PANEL packages only: panel units (must equal Σ targetAssets units when given).</param>
+/// <param name="TargetAssets">PER_PANEL packages only: installed panel rows and units to protect.</param>
+/// <param name="RenewsSubscriptionId">PER_PANEL renewal of a per-panel term in force (one package).</param>
+public sealed record PurchaseRequest(Guid ContractId, Guid? MaintenancePackageId, Guid? DisasterPackageId, bool IncludeContract, string? PaymentMethod = null,
+    int? Quantity = null, IReadOnlyList<PurchaseTargetAssetRequest>? TargetAssets = null, Guid? RenewsSubscriptionId = null);
+
+public sealed record PurchaseTargetAssetRequest(Guid AssetId, int Units);
 
 // ---- Technician
 public sealed record VisitResponseRequest(bool Accept, string? Reason);
@@ -62,7 +68,7 @@ public sealed record AssignTaskRequest(Guid SalesUserId, string? Reason);
 /// </summary>
 public sealed record PackageRequest(string? Kind, string? Name, string? Description, decimal Price, int DurationMonths, IReadOnlyList<int>? VisitMonths,
     IReadOnlyList<string>? CoveredDisasterTypes, decimal? CoveragePercent, decimal? PerIncidentLimit, decimal? TermLimit, bool IsActive, int Revision = 0,
-    string? ImageUrl = null, Guid? ImageFileId = null);
+    string? ImageUrl = null, Guid? ImageFileId = null, string? PricingUnit = null);
 public sealed record WarrantyOptionRequest(string? Kind, int Months, bool IsActive, bool IsDefault);
 
 /// <summary>Verified manufacturer-warranty activation: ISO 8601 date with offset, a verified PROJECT_DOCUMENT file, and a reason.</summary>

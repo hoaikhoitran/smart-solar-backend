@@ -57,7 +57,15 @@ public sealed class InstallationWorkflowTestContext : IAsyncDisposable
     public SmartSolar.Modules.CustomerContracts.PaymentPlanOptions PaymentPlanOptions { get; } = new();
 
     /// <summary>30/70 ledger (agreement contract, installment settlement, balance opening, overdue sweep) over <paramref name="db"/>.</summary>
-    public SmartSolar.Modules.CustomerContracts.PaymentPlanLedger Ledger(AppDbContext? db = null) => new(new ContractUnitOfWork(db ?? Db), PaymentPlanOptions, Clock);
+    public SmartSolar.Modules.CustomerContracts.PaymentPlanLedger Ledger(AppDbContext? db = null)
+        => new(new ContractUnitOfWork(db ?? Db), PaymentPlanOptions, Clock, null, PanelCoverage(db));
+
+    /// <summary>Production wiring of the bundled per-panel package provisioning (after-sales module) over the same database context.</summary>
+    public SmartSolar.Modules.AfterSales.PanelCoverageService PanelCoverage(AppDbContext? db = null)
+    {
+        var data = new SmartSolar.Infrastructure.Persistence.AfterSales.AfterSalesUnitOfWork(db ?? Db);
+        return new(data, new SmartSolar.Modules.AfterSales.SubscriptionTerms(data, Scheduling.Policies, Scheduling.Calendar), Clock);
+    }
 
     public SmartSolar.Modules.CustomerContracts.InstallmentPaymentHandlers InstallmentPayments(AppDbContext? db = null)
         => new(new ContractUnitOfWork(db ?? Db), PaymentsWithCash(db), PaymentOptions, Clock);

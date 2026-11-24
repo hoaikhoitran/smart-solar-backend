@@ -25,7 +25,8 @@ public sealed class CustomerAfterSalesController(
     ServiceQuotationHandlers quotations,
     ServicePackageHandlers packages,
     PaymentService payments,
-    AfterSalesEvidenceUrlHandlers evidenceUrls) : OperationResultControllerBase
+    AfterSalesEvidenceUrlHandlers evidenceUrls,
+    PanelCoverageService coverage) : OperationResultControllerBase
 {
     [HttpGet("installations/{projectId:guid}/warranty")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
@@ -164,9 +165,19 @@ public sealed class CustomerAfterSalesController(
     [EnableRateLimiting(RateLimitingExtensions.PaymentCreatePolicy)]
     public async Task<IActionResult> Purchase([FromBody] PurchaseRequest body, CancellationToken cancellationToken)
         => CurrentUserId() is { } user
-            ? Respond(await packages.PurchaseAsync(user, new PurchaseInput(body.ContractId, body.MaintenancePackageId, body.DisasterPackageId, body.IncludeContract, body.PaymentMethod),
+            ? Respond(await packages.PurchaseAsync(user, new PurchaseInput(body.ContractId, body.MaintenancePackageId, body.DisasterPackageId, body.IncludeContract, body.PaymentMethod,
+                body.Quantity, body.TargetAssets?.Select(t => new AssetUnitsInput(t.AssetId, t.Units)).ToList(), body.RenewsSubscriptionId),
                 cancellationToken), StatusCodes.Status201Created)
             : UnauthorizedFailure();
+
+    /// <summary>
+    /// Per-panel purchase capacity of an owned installation: active installed panel rows (serialised or lot), units already covered per kind, units that can
+    /// still be bought, renewable per-panel terms and the active PER_PANEL packages. The FE uses it instead of guessing quantities.
+    /// </summary>
+    [HttpGet("contracts/{contractId:guid}/panel-coverage")]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
+    public async Task<IActionResult> PanelCoverage(Guid contractId, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await coverage.EligibilityAsync(user, contractId, cancellationToken)) : UnauthorizedFailure();
 
     [HttpGet("subscriptions")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
@@ -445,8 +456,25 @@ public sealed class SalesAfterSalesController(SalesTaskHandlers tasks, ServiceQu
 [Authorize(Roles = $"{RoleCodes.Manager},{RoleCodes.Admin}")]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
 public sealed class ManagerAfterSalesController(ServiceManagerHandlers requests, ServicePackageHandlers packages, SalesTaskHandlers tasks,
-    AfterSalesEvidenceUrlHandlers evidenceUrls) : OperationResultControllerBase
+    AfterSalesEvidenceUrlHandlers evidenceUrls, PanelCoverageService coverage) : OperationResultControllerBase
 {
+    /// <summary>Per-panel packages bundled into installation contracts and their state (COMMITTED, PROVISIONED, RECONCILIATION_REQUIRED, DISCARDED). Paged.</summary>
+    [HttpGet("bundled-packages")]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
+    public async Task<IActionResult> BundledPackages([FromQuery] string? status, [FromQuery] int? page, [FromQuery] int? pageSize, CancellationToken cancellationToken)
+    {
+        var paging = SmartSolar.Modules.Common.Paging.PageRequest.Parse(page, pageSize);
+        if (!paging.Succeeded) return Respond(paging);
+        var p = paging.Value ?? new SmartSolar.Modules.Common.Paging.PageRequest(1, SmartSolar.Modules.Common.Paging.PageRequest.DefaultPageSize);
+        return Ok(Contracts.ApiResponse<object>.Success(await coverage.PageBundledAsync(status, p, cancellationToken), HttpContext.GetTraceId()));
+    }
+
+    /// <summary>Retries a bundled package waiting for reconciliation after the installed panel record was corrected (nothing financial changes).</summary>
+    [HttpPost("bundled-packages/{commitmentId:guid}/reconcile")]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationWritePolicy)]
+    public async Task<IActionResult> ReconcileBundledPackage(Guid commitmentId, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user ? Respond(await coverage.RetryReconciliationAsync(user, commitmentId, cancellationToken)) : UnauthorizedFailure();
+
     [HttpGet("requests")]
     [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
     public async Task<IActionResult> List([FromQuery] string? status, [FromQuery] string? kind, [FromQuery] int? page, [FromQuery] int? pageSize,
@@ -663,7 +691,7 @@ public sealed class AdminAfterSalesController(ServicePackageHandlers packages, A
             imageUrl = publicUrl.Value;
         }
         return OperationResult<PackageInput>.Ok(new PackageInput(b.Kind, b.Name, b.Description, b.Price, b.DurationMonths, b.VisitMonths, b.CoveredDisasterTypes,
-            b.CoveragePercent, b.PerIncidentLimit, b.TermLimit, b.IsActive, imageUrl));
+            b.CoveragePercent, b.PerIncidentLimit, b.TermLimit, b.IsActive, imageUrl, b.PricingUnit));
     }
 }
 

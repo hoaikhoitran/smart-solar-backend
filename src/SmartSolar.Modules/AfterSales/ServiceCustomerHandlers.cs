@@ -82,7 +82,7 @@ public sealed class ServiceCustomerHandlers(
         {
             if (!DisasterTypes.All.Contains(input.DisasterType)) return Invalid("disasterType", $"Use one of {string.Join(", ", DisasterTypes.All)}.");
             if (input.IncidentOccurredAt is not { } incident || incident > now) return Invalid("incidentOccurredAt", "Give the date the incident happened (not in the future).");
-            claim = await NewClaimAsync(facts.ContractId, input.DisasterType, incident.ToUniversalTime(), now, cancellationToken);
+            claim = await NewClaimAsync(facts.ContractId, input.DisasterType, incident.ToUniversalTime(), now, cancellationToken, input.SuspectedAssetId);
         }
 
         var evidence = await VerifiedEvidenceAsync(customerUserId, input.EvidenceFileIds ?? [], cancellationToken);
@@ -117,16 +117,38 @@ public sealed class ServiceCustomerHandlers(
     }
 
     /// <summary>The term that covered the incident (continues to apply after it expires or is renewed), or a NOT_ELIGIBLE claim with the reason.</summary>
-    private async Task<DisasterClaim> NewClaimAsync(Guid contractId, string disasterType, DateTimeOffset incidentAt, DateTimeOffset now, CancellationToken token)
+    /// <remarks>
+    /// An installation-wide (legacy) term covers every panel. A PANEL-scope term covers only its allocated panel rows: the request must name the damaged
+    /// panel (<c>suspectedAssetId</c>) and that panel must be allocated to the term — a panel never borrows another panel's coverage. Limits are the
+    /// term's own (never multiplied by panels).
+    /// </remarks>
+    private async Task<DisasterClaim> NewClaimAsync(Guid contractId, string disasterType, DateTimeOffset incidentAt, DateTimeOffset now, CancellationToken token,
+        Guid? suspectedAssetId = null)
     {
         var terms = (await data.ListSubscriptionsForContractAsync(contractId, false, token))
             .Where(s => s.Kind == ServicePackageKinds.DisasterProtection && s.StartsAt is not null && s.Status is SubscriptionStatuses.Active or SubscriptionStatuses.Expired)
+            .Where(t => t.StartsAt <= incidentAt && incidentAt < t.EndsAt)
             .ToList();
-        var covering = terms.FirstOrDefault(t => t.StartsAt <= incidentAt && incidentAt < t.EndsAt);
-        var problem = covering is null ? "No disaster-protection term covered the incident date." : AfterSalesRules.DisasterIneligibility(covering, disasterType, incidentAt, now);
+        var covering = terms.FirstOrDefault(t => t.CoverageScope == CoverageScopes.Installation);
+        ServiceCoverageAllocation? allocation = null;
+        string? scopeProblem = null;
+        var panelTerms = terms.Where(t => t.CoverageScope == CoverageScopes.Panel).ToList();
+        if (covering is null && panelTerms.Count > 0)
+        {
+            if (suspectedAssetId is not { } assetId)
+                scopeProblem = "Per-panel protection: identify the damaged panel (suspectedAssetId) so the claim is assessed under the term that covers it.";
+            else
+            {
+                allocation = (await data.ListCoverageAllocationsAsync(panelTerms.Select(t => t.Id).ToList(), token)).FirstOrDefault(a => a.InstalledAssetId == assetId);
+                covering = allocation is null ? null : panelTerms.First(t => t.Id == allocation.SubscriptionId);
+                if (allocation is null) scopeProblem = "The damaged panel is not covered by any per-panel disaster-protection term at the incident date.";
+            }
+        }
+        var problem = scopeProblem ?? (covering is null ? "No disaster-protection term covered the incident date."
+            : AfterSalesRules.DisasterIneligibility(covering, disasterType, incidentAt, now));
         return new DisasterClaim
         {
-            Id = Guid.NewGuid(), SubscriptionId = covering?.Id, DisasterType = disasterType, IncidentOccurredAt = incidentAt,
+            Id = Guid.NewGuid(), SubscriptionId = covering?.Id, CoverageAllocationId = allocation?.Id, DisasterType = disasterType, IncidentOccurredAt = incidentAt,
             Status = problem is null ? ClaimStatuses.Submitted : ClaimStatuses.NotEligible, DecisionReason = problem,
             CoveragePercent = covering?.CoveragePercent ?? 0, PerIncidentLimit = covering?.PerIncidentLimit ?? 0, CreatedAt = now, UpdatedAt = now,
         };

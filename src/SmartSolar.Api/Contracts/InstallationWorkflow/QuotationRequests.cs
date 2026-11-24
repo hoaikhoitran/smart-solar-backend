@@ -35,6 +35,9 @@ public sealed record CartLineRequest(int? Revision, Guid? ProductId, decimal Qua
 
 public sealed record CartLineQuantityRequest(int? Revision, decimal Quantity);
 
+/// <summary>Chooses (or replaces) the bundled per-panel package of a kind; quantity and price come from the server.</summary>
+public sealed record CartServicePackageRequest(Guid? PackageId, int? Revision);
+
 /// <summary>
 /// The technician records what the customer decided on site: decision AGREED, DECLINED or REVISION_NEEDED; <c>revision</c> = the quotation revision
 /// shown to the customer; <c>note</c> is required for DECLINED / REVISION_NEEDED.

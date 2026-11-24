@@ -10,8 +10,11 @@ using SmartSolar.Modules.SystemSettings;
 namespace SmartSolar.Modules.AfterSales;
 
 /// <param name="ImageUrl">Cover picture: absolute https URL (the public address of an uploaded PACKAGE_IMAGE file, or a hosted picture); null removes it.</param>
+/// <param name="PricingUnit">PER_PANEL or PER_INSTALLATION_LEGACY. Create: omitted = PER_INSTALLATION_LEGACY (the historical meaning). Update: omitted = unchanged;
+/// it cannot be changed (create a new package instead), so an existing price is never reinterpreted.</param>
 public sealed record PackageInput(string? Kind, string? Name, string? Description, decimal Price, int DurationMonths, IReadOnlyList<int>? VisitMonths,
-    IReadOnlyList<string>? CoveredDisasterTypes, decimal? CoveragePercent, decimal? PerIncidentLimit, decimal? TermLimit, bool IsActive, string? ImageUrl = null);
+    IReadOnlyList<string>? CoveredDisasterTypes, decimal? CoveragePercent, decimal? PerIncidentLimit, decimal? TermLimit, bool IsActive, string? ImageUrl = null,
+    string? PricingUnit = null);
 
 /// <summary>
 /// Packages to buy for one installation contract. When <see cref="IncludeContract"/> is true the SIGNED contract is paid in the same
@@ -19,7 +22,13 @@ public sealed record PackageInput(string? Kind, string? Name, string? Descriptio
 /// </summary>
 /// <param name="PaymentMethod">ONLINE (PayOS, default) or CASH (a pending cash attempt confirmed by a Manager/Admin): with the SIGNED contract
 /// (one cash payment for the installation and the packages) or, for a PAID contract, the packages alone.</param>
-public sealed record PurchaseInput(Guid ContractId, Guid? MaintenancePackageId, Guid? DisasterPackageId, bool IncludeContract, string? PaymentMethod = null);
+/// <param name="Quantity">PER_PANEL packages: number of panel units (optional; when given it must equal Σ <paramref name="TargetAssets"/> units).</param>
+/// <param name="TargetAssets">PER_PANEL packages: the active installed panel rows and units to protect (from the eligibility endpoint). Not allowed for
+/// PER_INSTALLATION_LEGACY packages.</param>
+/// <param name="RenewsSubscriptionId">PER_PANEL renewal of one of the customer's PANEL-scope terms (one package only): the new term starts when it ends
+/// (continuous renewal, no new waiting period); targets default to its still-active panels.</param>
+public sealed record PurchaseInput(Guid ContractId, Guid? MaintenancePackageId, Guid? DisasterPackageId, bool IncludeContract, string? PaymentMethod = null,
+    int? Quantity = null, IReadOnlyList<AssetUnitsInput>? TargetAssets = null, Guid? RenewsSubscriptionId = null);
 
 public sealed record PurchaseView(PaymentAttemptView Checkout, IReadOnlyList<Guid> SubscriptionIds);
 
@@ -38,10 +47,15 @@ public sealed class SubscriptionTerms(IAfterSalesUnitOfWork data, ISchedulingPol
         if (contract?.ProjectId is not { } projectId || contract.HandoverAt is not { } handoverAt) return;
 
         await data.LockContractAsync(subscription.ContractId, token);
-        var previous = (await data.ListSubscriptionsForContractAsync(subscription.ContractId, true, token))
-            .Where(s => s.Id != subscription.Id && s.Kind == subscription.Kind && s.EndsAt is not null
-                        && (SubscriptionStatuses.HoldsTerm(s.Status) || s.Status == SubscriptionStatuses.Expired))
-            .MaxBy(s => s.EndsAt);
+        // Installation-wide terms renew the previous installation-wide term of the kind; a PANEL-scope term renews only the term named at purchase
+        // (the same panels), never another scope's term.
+        var previous = subscription.CoverageScope == CoverageScopes.Panel
+            ? subscription.RenewsSubscriptionId is { } renewedId && await data.FindSubscriptionAsync(renewedId, false, token) is { EndsAt: not null } renewed
+              && (SubscriptionStatuses.HoldsTerm(renewed.Status) || renewed.Status == SubscriptionStatuses.Expired) ? renewed : null
+            : (await data.ListSubscriptionsForContractAsync(subscription.ContractId, true, token))
+                .Where(s => s.Id != subscription.Id && s.Kind == subscription.Kind && s.CoverageScope == CoverageScopes.Installation && s.EndsAt is not null
+                            && (SubscriptionStatuses.HoldsTerm(s.Status) || s.Status == SubscriptionStatuses.Expired))
+                .MaxBy(s => s.EndsAt);
         var earliest = paidAt > handoverAt ? paidAt : handoverAt;
         var continuous = previous is not null && previous.EndsAt >= earliest;
         var start = continuous ? previous!.EndsAt!.Value : earliest;
@@ -108,11 +122,28 @@ public sealed class ServicePackageHandlers(
     public async Task<IReadOnlyList<PackageView>> ListPackagesAsync(string? kind, bool activeOnly, CancellationToken cancellationToken)
         => (await data.ListPackagesAsync(kind, activeOnly, cancellationToken)).Select(AfterSalesViews.Package).ToList();
 
+    /// <summary>
+    /// Technician (on-site sale): the packages that can be bundled with an installation quotation — active and priced PER_PANEL only (legacy
+    /// per-installation packages are never offered per panel). Read-only; the price is the Admin catalog's.
+    /// </summary>
+    public async Task<OperationResult<IReadOnlyList<PackageView>>> ListSellablePerPanelAsync(string? kind, CancellationToken cancellationToken)
+    {
+        var normalized = string.IsNullOrWhiteSpace(kind) ? null : kind.Trim().ToUpperInvariant();
+        if (normalized is not null && !ServicePackageKinds.All.Contains(normalized))
+            return OperationResult<IReadOnlyList<PackageView>>.Fail(AfterSalesErrorCodes.ValidationFailed, $"kind must be one of {string.Join(", ", ServicePackageKinds.All)}.");
+        return OperationResult<IReadOnlyList<PackageView>>.Ok((await data.ListPackagesAsync(normalized, true, cancellationToken))
+            .Where(p => p.PricingUnit == PackagePricingUnits.PerPanel).Select(AfterSalesViews.Package).ToList());
+    }
+
     public async Task<OperationResult<PackageView>> CreatePackageAsync(Guid adminUserId, PackageInput input, CancellationToken cancellationToken)
     {
         if (ValidatePackage(input, _catalog) is { } error) return OperationResult<PackageView>.Fail(AfterSalesErrorCodes.ValidationFailed, error);
         var now = time.GetUtcNow();
-        var package = new ServicePackage { Id = Guid.NewGuid(), Kind = input.Kind!, CreatedAt = now };
+        var package = new ServicePackage
+        {
+            Id = Guid.NewGuid(), Kind = input.Kind!, CreatedAt = now,
+            PricingUnit = string.IsNullOrWhiteSpace(input.PricingUnit) ? PackagePricingUnits.PerInstallationLegacy : input.PricingUnit.Trim().ToUpperInvariant(),
+        };
         Apply(package, input, now);
         await data.ExecuteInTransactionAsync<bool>(async token =>
         {
@@ -136,6 +167,9 @@ public sealed class ServicePackageHandlers(
                 if (package is null) return (OperationResult<PackageView>.Fail(AfterSalesErrorCodes.PackageNotFound, "Package was not found."), false);
                 if (package.Revision != expectedRevision) return (OperationResult<PackageView>.Fail(AfterSalesErrorCodes.StaleRevision, "The package changed meanwhile."), false);
                 if (package.Kind != input.Kind) return (OperationResult<PackageView>.Fail(AfterSalesErrorCodes.ValidationFailed, "The package kind cannot change."), false);
+                if (!string.IsNullOrWhiteSpace(input.PricingUnit) && input.PricingUnit.Trim().ToUpperInvariant() != package.PricingUnit)
+                    return (OperationResult<PackageView>.Fail(AfterSalesErrorCodes.ValidationFailed,
+                        "The pricing unit of a package cannot change (its price would be reinterpreted); create a new package instead."), false);
                 var now = time.GetUtcNow();
                 var before = Describe(package);
                 Apply(package, input, now);
@@ -155,6 +189,8 @@ public sealed class ServicePackageHandlers(
     private static string? ValidatePackage(PackageInput input, Catalog.ProductImages.CatalogOptions catalog)
     {
         if (!ServicePackageKinds.All.Contains(input.Kind ?? "")) return $"Kind must be one of {string.Join(", ", ServicePackageKinds.All)}.";
+        if (!string.IsNullOrWhiteSpace(input.PricingUnit) && !PackagePricingUnits.All.Contains(input.PricingUnit.Trim().ToUpperInvariant()))
+            return $"pricingUnit must be one of {string.Join(", ", PackagePricingUnits.All)}.";
         if (Text.Trim(input.Name, 150) is null) return "A name is required.";
         if (!string.IsNullOrWhiteSpace(input.ImageUrl) && Catalog.ProductImages.ProductImageRules.UrlError(input.ImageUrl, catalog) is { } imageError)
             return $"Cover image: {imageError}";
@@ -195,7 +231,7 @@ public sealed class ServicePackageHandlers(
     }
 
     private static string Describe(ServicePackage p)
-        => $"{p.Name}; {p.Price:0} VND; {p.DurationMonths} months; visits {p.VisitMonths}; types {p.CoveredDisasterTypes}; {p.CoveragePercent}% ; "
+        => $"{p.Name}; {p.Price:0} VND {p.PricingUnit}; {p.DurationMonths} months; visits {p.VisitMonths}; types {p.CoveredDisasterTypes}; {p.CoveragePercent}% ; "
            + $"per incident {p.PerIncidentLimit:0}; term {p.TermLimit:0}; image {(p.ImageUrl is null ? "none" : "set")}; active {p.IsActive}";
 
     // ================================================================== Admin: warranty durations
@@ -273,9 +309,29 @@ public sealed class ServicePackageHandlers(
         if (packages.Count == 0) return OperationResult<PurchaseView>.Fail(AfterSalesErrorCodes.ValidationFailed, "Choose at least one package.");
 
         var now = time.GetUtcNow();
-        var existing = await data.ListSubscriptionsForContractAsync(input.ContractId, false, cancellationToken);
-        foreach (var package in packages)
+        var perPanel = packages.Where(p => p.PricingUnit == PackagePricingUnits.PerPanel).ToList();
+        var panelPlan = new Dictionary<Guid, (List<ServiceCoverageAllocation> Allocations, int Units, Guid? Renews)>();
+        if (perPanel.Count == 0 && (input.Quantity is not null || input.TargetAssets is not null || input.RenewsSubscriptionId is not null))
+            return OperationResult<PurchaseView>.Fail(AfterSalesErrorCodes.PricingUnitMismatch,
+                "quantity, targetAssets and renewsSubscriptionId apply only to PER_PANEL packages; this package covers the whole installation.");
+        if (perPanel.Count > 0)
         {
+            if (perPanel.Count != packages.Count)
+                return OperationResult<PurchaseView>.Fail(AfterSalesErrorCodes.PricingUnitMismatch,
+                    "Buy per-panel and installation-wide packages in separate purchases.");
+            var plan = await PlanPanelPurchaseAsync(contract, perPanel, input, now, cancellationToken);
+            if (!plan.Succeeded) return plan.As<PurchaseView>();
+            panelPlan = plan.Value!;
+        }
+
+        var existing = await data.ListSubscriptionsForContractAsync(input.ContractId, false, cancellationToken);
+        foreach (var package in packages.Where(p => p.PricingUnit != PackagePricingUnits.PerPanel))
+        {
+            // Installation-wide (legacy) term vs per-panel coverage of the same kind: one would overlap the other on the same panels.
+            if (await PanelCoverageRules.AnyPanelHoldingAsync(data, input.ContractId, package.Kind, now, cancellationToken))
+                return OperationResult<PurchaseView>.Fail(AfterSalesErrorCodes.TermOverlap,
+                    $"Per-panel {package.Kind} coverage of this installation is in force or pending; an installation-wide {package.Kind} package would overlap it.");
+            existing = existing.Where(s => s.CoverageScope == CoverageScopes.Installation).ToList();
             // No mid-term upgrade and no second queued renewal: one future term per kind may wait for its turn.
             if (existing.Any(s => s.Kind == package.Kind && s.Status is SubscriptionStatuses.Paid or SubscriptionStatuses.CancellationRequested
                                    && (s.StartsAt is null || s.StartsAt > now)))
@@ -290,34 +346,150 @@ public sealed class ServicePackageHandlers(
         }
 
         var expiresAt = now.AddMinutes((await policies.GetAsync(cancellationToken)).Get(AfterSalesSettingKeys.CheckoutExpiryMinutes));
-        var subscriptions = packages.Select(p => new ServiceSubscription
+        var subscriptions = packages.Select(p =>
         {
-            Id = Guid.NewGuid(), CustomerUserId = customerUserId, ContractId = input.ContractId, ProjectId = contract.ProjectId, PackageId = p.Id, Kind = p.Kind,
-            Status = SubscriptionStatuses.AwaitingPayment, PackageName = p.Name, Price = p.Price, DurationMonths = p.DurationMonths, VisitMonths = p.VisitMonths,
-            CoveredDisasterTypes = p.CoveredDisasterTypes, CoveragePercent = p.CoveragePercent, PerIncidentLimit = p.PerIncidentLimit, TermLimit = p.TermLimit,
-            CheckoutExpiresAt = expiresAt, CreatedAt = now, UpdatedAt = now,
+            var panel = panelPlan.TryGetValue(p.Id, out var planned);
+            return new ServiceSubscription
+            {
+                Id = Guid.NewGuid(), CustomerUserId = customerUserId, ContractId = input.ContractId, ProjectId = contract.ProjectId, PackageId = p.Id, Kind = p.Kind,
+                Status = SubscriptionStatuses.AwaitingPayment, PackageName = p.Name,
+                // Retail per-panel amount = catalog unit price × panel units (100 % upfront); legacy = the installation-wide price.
+                Price = panel ? p.Price * planned.Units : p.Price, DurationMonths = p.DurationMonths, VisitMonths = p.VisitMonths,
+                CoveredDisasterTypes = p.CoveredDisasterTypes, CoveragePercent = p.CoveragePercent, PerIncidentLimit = p.PerIncidentLimit, TermLimit = p.TermLimit,
+                CoverageScope = panel ? CoverageScopes.Panel : CoverageScopes.Installation, UnitPrice = panel ? p.Price : null, CoveredUnits = panel ? planned.Units : null,
+                RenewsSubscriptionId = panel ? planned.Renews : null, CheckoutExpiresAt = expiresAt, CreatedAt = now, UpdatedAt = now,
+            };
         }).ToList();
+        foreach (var subscription in subscriptions.Where(s => s.CoverageScope == CoverageScopes.Panel))
+            foreach (var allocation in panelPlan[subscription.PackageId].Allocations)
+                allocation.SubscriptionId = subscription.Id;
+        var panelRefused = false;
         var items = subscriptions.Select(s => new CheckoutItem(
             s.Kind == ServicePackageKinds.Maintenance ? PaymentItemTypes.MaintenancePackage : PaymentItemTypes.DisasterPackage, s.Id, null, s.Price)).ToList();
 
-        Func<Guid, CancellationToken, Task<string?>> reserve = (attemptId, _) =>
+        Func<Guid, CancellationToken, Task<string?>> reserve = async (attemptId, token) =>
         {
+            // Per-panel units are re-checked under the contract lock in the checkout transaction: two concurrent purchases cannot both take the
+            // same panel units (the second sees the first one's reservation).
+            if (panelPlan.Count > 0)
+            {
+                await data.LockContractAsync(input.ContractId, token);
+                foreach (var subscription in subscriptions.Where(s => s.CoverageScope == CoverageScopes.Panel))
+                {
+                    var from = await PanelTermStartAsync(subscription, now, token);
+                    if (await PanelCoverageRules.ConflictAsync(data, subscription, panelPlan[subscription.PackageId].Allocations, from, now, token) is { } conflict)
+                    {
+                        panelRefused = true;
+                        return conflict;
+                    }
+                }
+            }
+            else
+            {
+                // Installation-wide terms: the cross-scope check is repeated under the same contract lock the per-panel path takes, so a concurrent
+                // per-panel purchase of the same kind cannot slip between the pre-check and this insert (the database exclusion covers INSTALLATION scope only).
+                await data.LockContractAsync(input.ContractId, token);
+                foreach (var subscription in subscriptions)
+                    if (await PanelCoverageRules.AnyPanelHoldingAsync(data, input.ContractId, subscription.Kind, now, token))
+                    {
+                        panelRefused = true;
+                        return $"Per-panel {subscription.Kind} coverage of this installation is in force or pending; an installation-wide {subscription.Kind} package would overlap it.";
+                    }
+            }
             // Created in the same transaction as the checkout: no unpaid order exists without its payment, and vice versa.
             foreach (var subscription in subscriptions)
             {
                 subscription.CurrentPaymentAttemptId = attemptId;
                 data.Add(subscription);
                 AfterSalesHistory.Record(data, EventSubjects.Subscription, subscription.Id, "PURCHASED", customerUserId,
-                    $"{subscription.PackageName}: {subscription.Price:0} VND, {subscription.DurationMonths} months", now);
+                    subscription.CoverageScope == CoverageScopes.Panel
+                        ? $"{subscription.PackageName}: {subscription.UnitPrice:0} VND × {subscription.CoveredUnits} panels = {subscription.Price:0} VND, {subscription.DurationMonths} months"
+                          + (subscription.RenewsSubscriptionId is { } renews ? $", renews {renews}" : "")
+                        : $"{subscription.PackageName}: {subscription.Price:0} VND, {subscription.DurationMonths} months", now);
+                if (subscription.CoverageScope == CoverageScopes.Panel)
+                    foreach (var allocation in panelPlan[subscription.PackageId].Allocations) data.Add(allocation);
             }
-            return Task.FromResult<string?>(null);
+            return null;
         };
         var checkout = method == PaymentMethods.Cash
             ? await payments.CreateCashCheckoutAsync(customerUserId, input.IncludeContract ? input.ContractId : null, items, reserve, cancellationToken)
             : await payments.CreateCheckoutAsync(customerUserId, input.IncludeContract ? input.ContractId : null, items, expiresAt, reserve, cancellationToken);
+        if (!checkout.Succeeded && panelRefused) return OperationResult<PurchaseView>.Fail(AfterSalesErrorCodes.TermOverlap, checkout.Message!);
         return checkout.Succeeded
             ? OperationResult<PurchaseView>.Ok(new PurchaseView(checkout.Value!, subscriptions.Select(s => s.Id).ToList()))
             : checkout.As<PurchaseView>();
+    }
+
+    /// <summary>The earliest instant a per-panel term bought now can start: the renewed term's end, otherwise now.</summary>
+    private async Task<DateTimeOffset> PanelTermStartAsync(ServiceSubscription subscription, DateTimeOffset now, CancellationToken token)
+        => subscription.RenewsSubscriptionId is { } id && await data.FindSubscriptionAsync(id, false, token) is { EndsAt: { } end } && end > now ? end : now;
+
+    /// <summary>
+    /// Validates a per-panel (retail) purchase and plans its allocations: contract fully paid and handed over, real ACTIVE panel rows of this installation,
+    /// whole units within each row, no bundled package of the kind still pending, and (renewal) a PANEL-scope term of the same kind that is in force.
+    /// The overlap itself is decided again under the contract lock when the checkout is created.
+    /// </summary>
+    private async Task<OperationResult<Dictionary<Guid, (List<ServiceCoverageAllocation> Allocations, int Units, Guid? Renews)>>> PlanPanelPurchaseAsync(
+        ContractFacts contract, IReadOnlyList<ServicePackage> packages, PurchaseInput input, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        OperationResult<Dictionary<Guid, (List<ServiceCoverageAllocation>, int, Guid?)>> Fail(string code, string message, object? details = null)
+            => OperationResult<Dictionary<Guid, (List<ServiceCoverageAllocation>, int, Guid?)>>.Fail(code, message, details);
+        if (input.IncludeContract)
+            return Fail(AfterSalesErrorCodes.PricingUnitMismatch, "Per-panel packages are bought after the installation; they cannot be paid together with the contract.");
+        if (contract.ProjectId is not { } projectId || contract.HandoverAt is null)
+            return Fail(AfterSalesErrorCodes.NotHandedOver, "Per-panel packages are bought for the panels of a handed-over installation.");
+        if (input.RenewsSubscriptionId is not null && packages.Count != 1)
+            return Fail(AfterSalesErrorCodes.ValidationFailed, "A renewal names exactly one package.");
+
+        var commitments = await data.ListContractServicePackagesAsync(contract.ContractId, false, cancellationToken);
+        var panels = PanelCoverageRules.ActivePanels(await data.ListAssetsAsync(projectId, false, cancellationToken)).ToDictionary(a => a.Id);
+        var plan = new Dictionary<Guid, (List<ServiceCoverageAllocation>, int, Guid?)>();
+        foreach (var package in packages)
+        {
+            if (commitments.Any(c => c.Kind == package.Kind && c.Status is ContractServicePackageStatuses.Committed or ContractServicePackageStatuses.ReconciliationRequired))
+                return Fail(AfterSalesErrorCodes.TermOverlap,
+                    $"The {package.Kind} package included in the installation contract is not provisioned yet (reconciliation pending); it is not sold again.");
+            var targets = input.TargetAssets?.ToList();
+            Guid? renews = null;
+            if (input.RenewsSubscriptionId is { } renewedId)
+            {
+                var renewed = await data.FindSubscriptionAsync(renewedId, false, cancellationToken);
+                if (renewed is null || renewed.ContractId != contract.ContractId || renewed.CustomerUserId != contract.CustomerUserId)
+                    return Fail(AfterSalesErrorCodes.SubscriptionNotFound, "The term to renew was not found.");
+                if (renewed.CoverageScope != CoverageScopes.Panel || renewed.Kind != package.Kind || !SubscriptionStatuses.HoldsTerm(renewed.Status)
+                    || renewed.EndsAt is not { } end || end <= now)
+                    return Fail(AfterSalesErrorCodes.InvalidState, "Only a per-panel term of the same kind that is in force can be renewed; otherwise buy new coverage.");
+                renews = renewed.Id;
+                var renewedAllocations = await data.ListCoverageAllocationsAsync([renewed.Id], cancellationToken);
+                targets ??= renewedAllocations.Where(a => panels.ContainsKey(a.InstalledAssetId)).Select(a => new AssetUnitsInput(a.InstalledAssetId, a.UnitCount)).ToList();
+                foreach (var t in targets)
+                    if (renewedAllocations.Where(a => a.InstalledAssetId == t.AssetId).Sum(a => a.UnitCount) < t.Units)
+                        return Fail(AfterSalesErrorCodes.PanelSelectionInvalid, "A renewal covers only panels of the renewed term.", new { assetId = t.AssetId });
+            }
+            if (targets is not { Count: > 0 })
+                return Fail(AfterSalesErrorCodes.PricingUnitMismatch,
+                    $"{package.Name} is priced per panel: give targetAssets (panel rows and units) from GET /api/customers/me/after-sales/contracts/{{contractId}}/panel-coverage.");
+            if (targets.GroupBy(t => t.AssetId).Any(g => g.Count() > 1))
+                return Fail(AfterSalesErrorCodes.PanelSelectionInvalid, "Name each panel row once.");
+            var allocations = new List<ServiceCoverageAllocation>();
+            foreach (var t in targets)
+            {
+                if (!panels.TryGetValue(t.AssetId, out var asset))
+                    return Fail(AfterSalesErrorCodes.PanelSelectionInvalid, "Only active installed panels of this installation can be protected.", new { assetId = t.AssetId });
+                if (t.Units < 1 || t.Units > asset.Quantity)
+                    return Fail(AfterSalesErrorCodes.PanelSelectionInvalid, $"Units of {PanelCoverageRules.Describe(asset)} must be between 1 and {asset.Quantity}.",
+                        new { assetId = t.AssetId });
+                allocations.Add(new ServiceCoverageAllocation
+                {
+                    Id = Guid.NewGuid(), ContractId = contract.ContractId, InstalledAssetId = asset.Id, Kind = package.Kind, UnitCount = t.Units, CreatedAt = now,
+                });
+            }
+            var units = allocations.Sum(a => a.UnitCount);
+            if (input.Quantity is { } quantity && quantity != units)
+                return Fail(AfterSalesErrorCodes.PanelSelectionInvalid, $"quantity ({quantity}) must equal the units of targetAssets ({units}).");
+            plan[package.Id] = (allocations, units, renews);
+        }
+        return OperationResult<Dictionary<Guid, (List<ServiceCoverageAllocation>, int, Guid?)>>.Ok(plan);
     }
 
     public async Task<IReadOnlyList<SubscriptionView>> ListForCustomerAsync(Guid customerUserId, CancellationToken cancellationToken)

@@ -55,11 +55,19 @@ public sealed class FinanceOverviewQueries(AppDbContext db) : IFinanceOverviewQu
             .Select(a => new { a.Id, a.Status, a.Provider, a.AmountPaid, a.ContractId }).ToListAsync(ct);
         var receivedIds = received.Select(a => a.Id).ToList();
         var lines = await db.PaymentAttemptItems.AsNoTracking().Where(l => receivedIds.Contains(l.PaymentAttemptId))
-            .Select(l => new { l.PaymentAttemptId, l.ItemType, l.Amount, l.Status, l.ContractInstallmentId, l.ContractId }).ToListAsync(ct);
+            .Select(l => new { l.PaymentAttemptId, l.ItemType, l.Amount, l.Status, l.ContractInstallmentId, l.ContractId, l.SubscriptionId }).ToListAsync(ct);
         var linesByAttempt = lines.ToLookup(l => l.PaymentAttemptId);
         var inScope = installments.ToDictionary(i => i.Id);
         var legacyIds = legacy.Select(r => r.Id).ToHashSet();
 
+        // Frozen installment shares of the bundled packages (contracts in scope only).
+        var packagesByContract = (await db.ContractServicePackages.AsNoTracking().Where(p => planIds.Contains(p.ContractId)).ToListAsync(ct))
+            .ToLookup(p => p.ContractId);
+        var components = new Dictionary<string, List<decimal>>
+        {
+            ["INSTALLATION"] = [], ["BUNDLED_MAINTENANCE_PACKAGES"] = [], ["BUNDLED_DISASTER_PROTECTION_PACKAGES"] = [],
+            ["RETAIL_MAINTENANCE_PACKAGES"] = [], ["RETAIL_DISASTER_PROTECTION_PACKAGES"] = [],
+        };
         var depositsCollected = new List<decimal>();
         var balancesCollected = new List<decimal>();
         var byMethod = new Dictionary<string, List<decimal>> { ["ONLINE"] = [], ["CASH"] = [] };
@@ -75,8 +83,16 @@ public sealed class FinanceOverviewQueries(AppDbContext db) : IFinanceOverviewQu
                 var settled = a.Status == PaymentStatuses.Paid ? installmentLines.Where(l => l.Status == PaymentItemStatuses.Settled).ToList() : [];
                 foreach (var l in settled)
                 {
-                    (inScope[l.ContractInstallmentId!.Value].Kind == InstallmentKinds.Deposit ? depositsCollected : balancesCollected).Add(l.Amount);
+                    var installment = inScope[l.ContractInstallmentId!.Value];
+                    (installment.Kind == InstallmentKinds.Deposit ? depositsCollected : balancesCollected).Add(l.Amount);
                     byMethod[a.Provider == PaymentProviders.Cash ? "CASH" : "ONLINE"].Add(l.Amount);
+                    if (PaymentPlanViews.Allocation(installment, packagesByContract[installment.ContractId].ToList()) is { } share && share.Amount == l.Amount)
+                    {
+                        components["INSTALLATION"].Add(share.Installation);
+                        if (share.MaintenancePackages > 0) components["BUNDLED_MAINTENANCE_PACKAGES"].Add(share.MaintenancePackages);
+                        if (share.DisasterPackages > 0) components["BUNDLED_DISASTER_PROTECTION_PACKAGES"].Add(share.DisasterPackages);
+                    }
+                    else components["INSTALLATION"].Add(l.Amount);
                 }
                 var unappliedAmount = installmentLines.Sum(l => l.Amount) - settled.Sum(l => l.Amount);
                 if (a.Status != PaymentStatuses.Paid) unappliedAmount = gross;
@@ -90,6 +106,17 @@ public sealed class FinanceOverviewQueries(AppDbContext db) : IFinanceOverviewQu
             legacyCollected.Add(mine.Count == 0 ? gross
                 : mine.Where(l => l.Status == PaymentItemStatuses.Settled && l.ItemType is PaymentItemTypes.Contract or PaymentItemTypes.InstallationQuotation).Sum(l => l.Amount));
         }
+
+        // Retail package lines settled in the period (paid 100 % upfront; never part of an installment), for contracts in scope.
+        var scopeIds = rows.Select(r => r.Id).ToHashSet();
+        var paidAttemptIds = received.Where(a => a.Status == PaymentStatuses.Paid).Select(a => a.Id).ToHashSet();
+        var packageLines = lines.Where(l => l.SubscriptionId != null && l.Status == PaymentItemStatuses.Settled && paidAttemptIds.Contains(l.PaymentAttemptId)
+                                            && l.ItemType is PaymentItemTypes.MaintenancePackage or PaymentItemTypes.DisasterPackage).ToList();
+        var packageSubscriptionIds = packageLines.Select(l => l.SubscriptionId!.Value).ToList();
+        var subscriptionContracts = await db.ServiceSubscriptions.AsNoTracking().Where(s => packageSubscriptionIds.Contains(s.Id))
+            .Select(s => new { s.Id, s.ContractId }).ToDictionaryAsync(s => s.Id, s => s.ContractId, ct);
+        foreach (var l in packageLines.Where(l => subscriptionContracts.TryGetValue(l.SubscriptionId!.Value, out var c) && scopeIds.Contains(c)))
+            components[l.ItemType == PaymentItemTypes.MaintenancePackage ? "RETAIL_MAINTENANCE_PACKAGES" : "RETAIL_DISASTER_PROTECTION_PACKAGES"].Add(l.Amount);
 
         // Refunds actually returned in the period for attempts of the contracts in scope (manual; there is no refund button).
         var refunds = await db.RefundRecords.AsNoTracking()
@@ -120,6 +147,7 @@ public sealed class FinanceOverviewQueries(AppDbContext db) : IFinanceOverviewQu
             Bucket("ESCALATIONS", cases.Where(c => c.Status is CollectionCaseStatuses.EscalatedToManager or CollectionCaseStatuses.LegalReviewRequired).Select(c => c.AmountDue)),
             Bucket("DEPOSITS_COLLECTED", depositsCollected), Bucket("BALANCES_COLLECTED", balancesCollected),
             byMethod.Select(kv => Bucket(kv.Key, kv.Value)).ToList(),
-            Bucket("LEGACY_CONTRACT_PAYMENTS_COLLECTED", legacyCollected), Bucket("UNAPPLIED", unapplied), Bucket("REFUNDED", refunded));
+            Bucket("LEGACY_CONTRACT_PAYMENTS_COLLECTED", legacyCollected), Bucket("UNAPPLIED", unapplied), Bucket("REFUNDED", refunded),
+            components.Select(kv => Bucket(kv.Key, kv.Value)).ToList());
     }
 }
