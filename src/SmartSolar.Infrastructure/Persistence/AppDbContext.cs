@@ -73,6 +73,8 @@ public sealed class AppDbContext : DbContext
 
     public DbSet<TechnicianAppointmentEvent> TechnicianAppointmentEvents => Set<TechnicianAppointmentEvent>();
 
+    public DbSet<TechnicianScheduleConflict> TechnicianScheduleConflicts => Set<TechnicianScheduleConflict>();
+
     public DbSet<SchedulingNotification> SchedulingNotifications => Set<SchedulingNotification>();
 
     public DbSet<UserAccountAuditEntry> UserAccountAuditEntries => Set<UserAccountAuditEntry>();

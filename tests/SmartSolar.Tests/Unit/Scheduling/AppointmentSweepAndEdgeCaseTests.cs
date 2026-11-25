@@ -48,6 +48,12 @@ public sealed class AppointmentSweepAndEdgeCaseTests
         // Bootstrap defaults (acceptance reminders disabled) unless the test passes the context's settings provider.
         services.AddSingleton(policies ?? new FixedPolicyProvider(SmartSolar.Modules.SystemSettings.SchedulingPolicyDefinitions.Default));
         services.AddScoped<AppointmentEscalationService>();
+        // Production wiring of the same worker tick (2026-11-25): the overtime conflict sweep and its eligibility dependencies.
+        var options = new SchedulingOptions();
+        services.AddSingleton(options);
+        services.AddSingleton(new SmartSolar.Modules.Scheduling.Domain.WorkingCalendar(options));
+        services.AddScoped<TechnicianEligibility>();
+        services.AddScoped<OvertimeConflictService>();
         var provider = services.BuildServiceProvider();
         return new AppointmentEscalationWorker(provider.GetRequiredService<IServiceScopeFactory>(), new SchedulingOptions(),
             provider.GetRequiredService<ILogger<AppointmentEscalationWorker>>());

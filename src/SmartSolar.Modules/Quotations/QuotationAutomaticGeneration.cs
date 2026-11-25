@@ -207,10 +207,7 @@ public sealed partial class QuotationHandlers
         var quotations = (await unitOfWork.ListAutomaticDraftsAsync(owner, cancellationToken))
             .Concat(await unitOfWork.ListSurveyChangedAsync(owner, cancellationToken))
             .DistinctBy(q => q.Id).OrderBy(q => q.CreatedAt);
-        var list = new List<QuotationView>();
-        foreach (var q in quotations)
-            list.Add(await ViewAsync(q, includeEvents: true, cancellationToken));
-        return list;
+        return (await ViewsAsync(quotations, true, cancellationToken)).ToList();
     }
 
     /// <summary>Looks up the catalog price of one item; records an issue (and returns no total) when it cannot be priced.</summary>

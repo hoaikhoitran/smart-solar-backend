@@ -109,6 +109,7 @@ public sealed class InstallationAssignmentConfiguration : IEntityTypeConfigurati
         builder.Property(x => x.RespondedAt).HasColumnName("responded_at");
         builder.Property(x => x.ResponseReason).HasColumnName("response_reason").HasMaxLength(500);
         builder.Property(x => x.ClosedAt).HasColumnName("closed_at");
+        builder.Property(x => x.WorkReportedAt).HasColumnName("work_reported_at");
         // Flow 3: an after-sales visit's technician interval lives here too (same overlap exclusion and locks).
         builder.Property(x => x.ServiceVisitId).HasColumnName("service_visit_id");
         // One current (PENDING or ACCEPTED) installation assignment per project — after-sales visits are counted separately.

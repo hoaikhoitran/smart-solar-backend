@@ -14,7 +14,8 @@ public sealed record AssetView(Guid AssetId, string AssetType, Guid? ProductId, 
 public sealed record ChecklistItemView(Guid ItemId, string Code, string Title, bool IsRequired, string Status, Guid? EvidenceFileId, string? Note, DateTimeOffset? VerifiedAt);
 public sealed record InstallationEventView(string EventType, Guid ActorUserId, string? FromStatus, string? ToStatus, string? Detail, DateTimeOffset CreatedAt);
 public sealed record AssignmentView(Guid AssignmentId, Guid TechnicianUserId, string TechnicianName, DateTimeOffset StartsAt, DateTimeOffset EndsAt, string Status,
-    Guid AssignedByUserId, DateTimeOffset AssignedAt, string? AssignmentReason, DateTimeOffset? RespondedAt, string? ResponseReason, DateTimeOffset? ClosedAt);
+    Guid AssignedByUserId, DateTimeOffset AssignedAt, string? AssignmentReason, DateTimeOffset? RespondedAt, string? ResponseReason, DateTimeOffset? ClosedAt,
+    DateTimeOffset? WorkReportedAt = null, bool HoldsSchedule = false);
 public sealed record ResponsibleTechnicianView(Guid TechnicianUserId, string FullName, string AssignmentStatus, DateTimeOffset? AcceptedAt);
 public sealed record ZoneSummary(Guid ZoneId, string Code, string Name);
 
@@ -29,8 +30,11 @@ public sealed record InstallationStaffView(
     EquipmentComparisonView? Equipment = null);
 
 /// <summary>Row of the Manager project list.</summary>
+/// <param name="CustomerName">Display name of the project's customer (<c>CustomerUserId</c>), batch-resolved per list / page. A soft-deleted account keeps
+/// its stored name (rows stay for history); a missing account gives <c>""</c> — the same fallback as <see cref="InstallationSiteInfo.CustomerName"/>.</param>
 public sealed record InstallationProjectSummary(Guid ProjectId, Guid ContractId, string Status, Guid? ResponsibleTechnicianUserId, string? ResponsibleTechnicianName,
-    bool TechnicianAccepted, DateTimeOffset? ScheduledStartsAt, DateTimeOffset? ScheduledEndsAt, Guid? OperationalZoneId, DateTimeOffset CreatedAt, int Revision);
+    bool TechnicianAccepted, DateTimeOffset? ScheduledStartsAt, DateTimeOffset? ScheduledEndsAt, Guid? OperationalZoneId, DateTimeOffset CreatedAt, int Revision,
+    string CustomerName = "");
 
 /// <summary>
 /// The responsible technician's view. <see cref="CanStart"/>/<see cref="StartBlockedReason"/> replace the staff checklist
@@ -42,7 +46,7 @@ public sealed record InstallationTechnicianView(
     string? ZoneName, InstallationSiteInfo? Site, DateTimeOffset? StartedAt, DateTimeOffset? AcceptanceRequestedAt, DateTimeOffset? CompletedAt,
     int CurrentRound, int Revision, bool CanStart, string? StartBlockedReason,
     IReadOnlyList<EvidenceView> Evidence, IReadOnlyList<AssetView> Assets, IReadOnlyList<AcceptanceView> Acceptances,
-    EquipmentComparisonView? Equipment = null, bool RequiresPanelAndInverterAssets = true);
+    EquipmentComparisonView? Equipment = null, bool RequiresPanelAndInverterAssets = true, DateTimeOffset? WorkReportedAt = null, bool ReworkScheduleRequired = false);
 
 /// <summary>The customer's view: the technician's name only once they accepted the job.</summary>
 public sealed record InstallationCustomerView(

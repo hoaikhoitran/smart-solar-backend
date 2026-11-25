@@ -103,6 +103,7 @@ public sealed class ApprovedInstallationPolicyTests
         // Internally the result is not accepted (the customer insisted on 12 panels on site): the Manager returns it to rework; the approval stays
         // on record, and installing the 12th panel supersedes it (equipment changed) so the comparison matches again.
         Assert.True((await InternalAcceptance.ReworkAsync(ctx, project.ProjectId, "Customer wants the 12 contracted panels", paid.ManagerId)).Succeeded);
+        await InstallationTests.ReworkScheduledAsync(ctx, project.ProjectId, tech, paid.ManagerId);
         Assert.True((await installs.RegisterAssetsAsync(tech, project.ProjectId, [new AssetInput("PANEL", panel, "Jinko", "Tiger Neo", "Q-PNL-12", null, null)], None)).Succeeded);
         var records = await ctx.Db.EquipmentSubstitutions.AsNoTracking().Where(x => x.ProjectId == project.ProjectId).ToListAsync();
         Assert.Equal(EquipmentSubstitutionStatuses.Superseded, Assert.Single(records).Status);

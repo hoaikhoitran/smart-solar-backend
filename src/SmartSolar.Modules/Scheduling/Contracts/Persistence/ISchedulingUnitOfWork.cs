@@ -418,6 +418,20 @@ public interface ISchedulingUnitOfWork : IInAppNotificationWriter
     /// <summary>True when the user is an active, non-deleted account holding one of the roles.</summary>
     Task<bool> IsActiveUserWithRoleAsync(Guid userId, IReadOnlyCollection<string> roleCodes, CancellationToken cancellationToken);
 
+    // ---- overtime protection (2026-11-25)
+
+    /// <summary>
+    /// Technicians who have work in execution past its reserved end (survey report IN_PROGRESS; installation IN_PROGRESS or rework with current-round
+    /// evidence) or an OPEN schedule conflict to re-evaluate, at most <paramref name="limit"/>.
+    /// </summary>
+    Task<IReadOnlyList<Guid>> ListTechniciansToCheckForOvertimeAsync(DateTimeOffset nowUtc, int limit, CancellationToken cancellationToken);
+    Task<IReadOnlyList<TechnicianScheduleConflict>> ListScheduleConflictsAsync(Guid? technicianUserId, string? status, bool track, CancellationToken cancellationToken);
+    void AddScheduleConflict(TechnicianScheduleConflict conflict);
+    /// <summary>Reserved end of an installation assignment (null when unknown or Installation Flow is disabled).</summary>
+    Task<DateTimeOffset?> GetInstallationAssignmentEndAsync(Guid assignmentId, CancellationToken cancellationToken);
+    /// <summary>Active users holding any of <paramref name="roleCodes"/> (dispatch recipients).</summary>
+    Task<IReadOnlyList<Guid>> ListActiveUserIdsWithRolesAsync(IReadOnlyCollection<string> roleCodes, CancellationToken cancellationToken);
+
     /// <summary>Active (not removed) zone memberships of the technician, tracked for update.</summary>
     Task<IReadOnlyList<TechnicianZoneMembership>> FindActiveMembershipsForUpdateAsync(Guid technicianUserId, CancellationToken cancellationToken);
     void AddMembership(TechnicianZoneMembership membership);

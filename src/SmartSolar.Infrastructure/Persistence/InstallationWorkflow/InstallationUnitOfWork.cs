@@ -90,9 +90,15 @@ public sealed class InstallationUnitOfWork(AppDbContext db) : TransactionalUnitO
     public async Task<IReadOnlyList<InstallationScheduleProposal>> ListOverlappingLiveProposalsAsync(Guid technicianUserId, Guid exceptContractId,
         DateTimeOffset startsAt, DateTimeOffset endsAt, CancellationToken cancellationToken)
         => (await Db.InstallationScheduleProposals.AsNoTracking()
+                // PLANNED / RESCHEDULE_REQUIRED plans hold no assignment capacity, so they are checked here. A CONFIRMED plan IS the project's
+                // accepted assignment, whose effective busy interval the planner already checks (released after a reported completion,
+                // gone once the installation is completed): counting the CONFIRMED row again would keep blocking the original interval forever.
+                // A plan of a project that is already COMPLETED or CANCELLED is history, whatever its stored status: it never blocks (rows untouched).
                 .Where(p => p.TechnicianUserId == technicianUserId && p.ContractId != exceptContractId
-                            && (p.Status == InstallationScheduleStatuses.Planned || p.Status == InstallationScheduleStatuses.Confirmed
-                                || p.Status == InstallationScheduleStatuses.RescheduleRequired))
+                            && (p.Status == InstallationScheduleStatuses.Planned || p.Status == InstallationScheduleStatuses.RescheduleRequired)
+                            && !Db.InstallationProjects.Any(pr => pr.ContractId == p.ContractId
+                                && (pr.Status == SmartSolar.Modules.Installations.InstallationStatuses.Completed
+                                    || pr.Status == SmartSolar.Modules.Installations.InstallationStatuses.Cancelled)))
                 .ToListAsync(cancellationToken))
             // Interval overlap evaluated in memory: SQLite (tests) cannot compare DateTimeOffset columns; the candidate set is one technician's live plans.
             .Where(p => p.StartsAt < endsAt && startsAt < p.EndsAt).ToList();

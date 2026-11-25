@@ -22,6 +22,12 @@ public static partial class RateLimitingExtensions
     public const string CatalogWritePolicy = "catalog-write";
     public const string SimulationWritePolicy = "simulation-write";
     public const string SchedulingReadPolicy = "scheduling-read";
+    /// <summary>
+    /// Lightweight dispatch-request reads (detail / list: stored rows, no eligibility computation), separated 2026-11-25 so polling a dispatch request
+    /// never consumes the scheduling-read quota of slot / availability / candidate computations. Same default limit (20 / minute / user) until a
+    /// Product/Security decision; configurable under RateLimiting:DispatchRead.
+    /// </summary>
+    public const string DispatchReadPolicy = "dispatch-read";
     public const string SchedulingWritePolicy = "scheduling-write";
     public const string AdminUsersReadPolicy = "admin-users-read";
     public const string AdminUsersWritePolicy = "admin-users-write";
@@ -116,6 +122,8 @@ public static partial class RateLimitingExtensions
                 context, configuration, "RateLimiting:SchedulingRead", SchedulingReadPolicy, permitLimit: 20, windowMinutes: 1));
             options.AddPolicy(SchedulingWritePolicy, context => FixedWindowByUser(
                 context, configuration, "RateLimiting:SchedulingWrite", SchedulingWritePolicy, permitLimit: 10, windowMinutes: 1));
+            options.AddPolicy(DispatchReadPolicy, context => FixedWindowByUser(
+                context, configuration, "RateLimiting:DispatchRead", DispatchReadPolicy, permitLimit: 20, windowMinutes: 1));
         });
 
         return services;

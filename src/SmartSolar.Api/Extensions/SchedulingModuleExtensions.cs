@@ -27,6 +27,7 @@ public static class SchedulingModuleExtensions
         services.AddScoped<AppointmentReservationService>();
         services.AddScoped<AppointmentAssignmentService>();
         services.AddScoped<AppointmentEscalationService>();
+        services.AddScoped<OvertimeConflictService>();
         services.AddScoped<AppointmentMover>();
         services.AddScoped<TechnicianDayLoader>();
         if (options.EscalationWorkerEnabled)

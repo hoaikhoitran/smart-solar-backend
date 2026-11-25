@@ -89,6 +89,7 @@ public sealed class PaymentPlanE2ETests
             new CustomerAcceptanceInput(CustomerAcceptanceDecisions.RequestRework, "Two panels are cracked", [photo], null), None)).Succeeded);
         // The Manager coordinates the rework; a second report goes back to the customer.
         Assert.Equal(InstallmentStatuses.Pending, (await InstallmentAsync(ctx, flow.ContractId, 2)).Status);
+        await InstallationTests.ReworkScheduledAsync(ctx, projectId, flow.TechnicianId, flow.Manager.Id);
         await InstallationTests.AddCompletionEvidenceAsync(ctx, projectId, flow.TechnicianId);
         Assert.True((await ctx.Installations().ReportCompletionAsync(flow.TechnicianId, projectId, "Panels replaced.", null, None)).Succeeded);
         var acceptedAt = ctx.Clock.GetUtcNow();

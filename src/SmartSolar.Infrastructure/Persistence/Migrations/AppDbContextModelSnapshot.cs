@@ -3895,6 +3895,10 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("technician_user_id");
 
+                    b.Property<DateTimeOffset?>("WorkReportedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("work_reported_at");
+
                     b.HasKey("Id");
 
                     b.HasIndex("AssignedByUserId");
@@ -8380,6 +8384,98 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.TechnicianScheduleConflict", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("AffectedEndsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("affected_ends_at");
+
+                    b.Property<Guid>("AffectedId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("affected_id");
+
+                    b.Property<string>("AffectedKind")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("affected_kind");
+
+                    b.Property<DateTimeOffset>("AffectedStartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("affected_starts_at");
+
+                    b.Property<DateTimeOffset>("DetectedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("detected_at");
+
+                    b.Property<Guid>("OverrunId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("overrun_id");
+
+                    b.Property<string>("OverrunKind")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("overrun_kind");
+
+                    b.Property<DateTimeOffset>("OverrunReservedEndsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("overrun_reserved_ends_at");
+
+                    b.Property<string>("Resolution")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("resolution");
+
+                    b.Property<DateTimeOffset?>("ResolvedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("resolved_at");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TechnicianUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("technician_user_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TechnicianUserId");
+
+                    b.HasIndex("OverrunId", "AffectedId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_technician_schedule_conflict_pair");
+
+                    b.HasIndex("Status", "TechnicianUserId")
+                        .HasDatabaseName("ix_technician_schedule_conflict_status_technician");
+
+                    b.ToTable("technician_schedule_conflict", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_technician_schedule_conflict_distinct", "overrun_id <> affected_id");
+
+                            t.HasCheckConstraint("ck_technician_schedule_conflict_kinds", "overrun_kind IN ('SURVEY_APPOINTMENT', 'INSTALLATION_ASSIGNMENT') AND affected_kind IN ('SURVEY_APPOINTMENT', 'INSTALLATION_ASSIGNMENT')");
+
+                            t.HasCheckConstraint("ck_technician_schedule_conflict_status", "status IN ('OPEN', 'RESOLVED') AND (status = 'OPEN') = (resolved_at IS NULL)");
+                        });
+                });
+
             modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.TechnicianUnavailablePeriod", b =>
                 {
                     b.Property<Guid>("Id")
@@ -10871,6 +10967,16 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasForeignKey("SmartSolar.Modules.Scheduling.Entities.TechnicianProfile", "UserId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.TechnicianScheduleConflict", b =>
+                {
+                    b.HasOne("SmartSolar.Modules.Identity.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("TechnicianUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_technician_schedule_conflict_technician");
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.Scheduling.Entities.TechnicianUnavailablePeriod", b =>

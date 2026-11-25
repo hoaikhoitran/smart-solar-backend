@@ -289,3 +289,40 @@ public sealed class TechnicianZoneMembershipConfiguration : IEntityTypeConfigura
             .HasConstraintName("fk_technician_zone_membership_removed_by");
     }
 }
+
+/// <summary>Overtime schedule conflicts (dispatch queue + history): one row per (overrunning work, affected commitment).</summary>
+public sealed class TechnicianScheduleConflictConfiguration : IEntityTypeConfiguration<TechnicianScheduleConflict>
+{
+    public void Configure(EntityTypeBuilder<TechnicianScheduleConflict> builder)
+    {
+        builder.ToTable("technician_schedule_conflict", t =>
+        {
+            t.HasCheckConstraint("ck_technician_schedule_conflict_kinds",
+                $"overrun_kind IN ({string.Join(", ", ScheduleConflictKinds.All.Select(k => $"'{k}'"))}) AND affected_kind IN ({string.Join(", ", ScheduleConflictKinds.All.Select(k => $"'{k}'"))})");
+            t.HasCheckConstraint("ck_technician_schedule_conflict_status",
+                $"status IN ({string.Join(", ", ScheduleConflictStatuses.All.Select(k => $"'{k}'"))}) AND (status = '{ScheduleConflictStatuses.Open}') = (resolved_at IS NULL)");
+            t.HasCheckConstraint("ck_technician_schedule_conflict_distinct", "overrun_id <> affected_id");
+        });
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.TechnicianUserId).HasColumnName("technician_user_id").IsRequired();
+        builder.Property(x => x.OverrunKind).HasColumnName("overrun_kind").HasMaxLength(30).IsRequired();
+        builder.Property(x => x.OverrunId).HasColumnName("overrun_id").IsRequired();
+        builder.Property(x => x.OverrunReservedEndsAt).HasColumnName("overrun_reserved_ends_at").IsRequired();
+        builder.Property(x => x.AffectedKind).HasColumnName("affected_kind").HasMaxLength(30).IsRequired();
+        builder.Property(x => x.AffectedId).HasColumnName("affected_id").IsRequired();
+        builder.Property(x => x.AffectedStartsAt).HasColumnName("affected_starts_at").IsRequired();
+        builder.Property(x => x.AffectedEndsAt).HasColumnName("affected_ends_at").IsRequired();
+        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(20).IsRequired();
+        builder.Property(x => x.DetectedAt).HasColumnName("detected_at").IsRequired();
+        builder.Property(x => x.ResolvedAt).HasColumnName("resolved_at");
+        builder.Property(x => x.Resolution).HasColumnName("resolution").HasMaxLength(40);
+        builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
+        builder.Property(x => x.Revision).HasColumnName("revision").IsConcurrencyToken().IsRequired();
+        // Duplicate worker runs can never record a pair twice.
+        builder.HasIndex(x => new { x.OverrunId, x.AffectedId }).IsUnique().HasDatabaseName("ux_technician_schedule_conflict_pair");
+        builder.HasIndex(x => new { x.Status, x.TechnicianUserId }).HasDatabaseName("ix_technician_schedule_conflict_status_technician");
+        builder.HasOne<SmartSolar.Modules.Identity.Entities.UserAccount>().WithMany().HasForeignKey(x => x.TechnicianUserId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_technician_schedule_conflict_technician");
+    }
+}

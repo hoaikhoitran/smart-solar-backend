@@ -50,6 +50,20 @@ public sealed class AppointmentEscalationWorker(
         if (escalated > 0) logger.LogInformation("Escalated {Count} survey appointment(s) past their acceptance deadline.", escalated);
         var reminded = await service.SendAcceptanceRemindersAsync(BatchSize, cancellationToken);
         if (reminded > 0) logger.LogInformation("Recorded {Count} acceptance reminder(s).", reminded);
-        return cancelled + escalated + reminded;
+        // Overtime protection: commitments collided by work still in execution past its reserved end go to Manager/Admin dispatch (nothing automatic).
+        // Own scope and own failure handling: a problem there never stops the escalation steps above (they already committed).
+        var conflicts = 0;
+        try
+        {
+            using var overtimeScope = scopes.CreateScope();
+            conflicts = await overtimeScope.ServiceProvider.GetRequiredService<SmartSolar.Modules.Scheduling.Services.OvertimeConflictService>()
+                .SweepAsync(BatchSize, cancellationToken);
+            if (conflicts > 0) logger.LogInformation("Opened or resolved {Count} overtime schedule conflict(s).", conflicts);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning("Overtime conflict sweep failed ({ErrorType}); retrying on the next run.", ex.GetType().Name);
+        }
+        return cancelled + escalated + reminded + conflicts;
     }
 }

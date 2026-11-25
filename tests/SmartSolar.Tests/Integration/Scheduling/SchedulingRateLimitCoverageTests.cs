@@ -39,7 +39,12 @@ public sealed class SchedulingRateLimitCoverageTests
         Assert.NotEmpty(actions);
         Assert.All(actions, a =>
         {
-            var expected = a.Verb.HttpMethods.Single() == "GET" ? RateLimitingExtensions.SchedulingReadPolicy : RateLimitingExtensions.SchedulingWritePolicy;
+            // Lightweight dispatch-request reads (stored rows) have their own bucket (2026-11-25); computing reads (candidates) keep scheduling-read.
+            var lightweightDispatchRead = a.Verb.HttpMethods.Single() == "GET"
+                                          && (controller == typeof(AdminDispatchRequestsController) || controller == typeof(CustomerDispatchRequestsController))
+                                          && a.Action.Name != nameof(AdminDispatchRequestsController.Candidates);
+            var expected = lightweightDispatchRead ? RateLimitingExtensions.DispatchReadPolicy
+                : a.Verb.HttpMethods.Single() == "GET" ? RateLimitingExtensions.SchedulingReadPolicy : RateLimitingExtensions.SchedulingWritePolicy;
             Assert.True(PolicyOf(a.Action) == expected, $"{controller.Name}.{a.Action.Name} ({a.Verb.HttpMethods.Single()}) should use '{expected}' but uses '{PolicyOf(a.Action)}'.");
         });
     }

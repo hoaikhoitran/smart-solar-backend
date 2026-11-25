@@ -163,6 +163,9 @@ public static class AppointmentEventTypes
 
     /// <summary>Reminder to the capacity holder before the acceptance deadline (<c>scheduling.acceptanceReminderLeadMinutes</c>; once per window).</summary>
     public const string AcceptanceReminder = "ACCEPTANCE_REMINDER";
+
+    /// <summary>The technician's previous work overran its reserved interval into this appointment; sent to Manager/Admin dispatch (no automatic change).</summary>
+    public const string OvertimeConflict = "OVERTIME_CONFLICT";
 }
 
 /// <summary>
@@ -184,4 +187,53 @@ public sealed class SchedulingNotification
 public static class SchedulingNotificationStatuses
 {
     public const string NotDelivered = "NOT_DELIVERED";
+}
+
+/// <summary>
+/// A technician's work in execution has run past its reserved end and now collides (buffer included) with another commitment of the same technician
+/// (2026-11-25, overtime protection). Detected by the scheduling worker under the technician row lock; one row per (overrunning work, affected
+/// commitment) pair (unique index). Nothing is cancelled, moved or reassigned automatically: the row is the Manager/Admin dispatch queue entry and its
+/// history. It is RESOLVED when the overrun ends (completion / report) or the commitment no longer collides (moved, reassigned, cancelled, started,
+/// finished) — re-opened if the pair collides again.
+/// </summary>
+public sealed class TechnicianScheduleConflict
+{
+    public Guid Id { get; set; }
+    public Guid TechnicianUserId { get; set; }
+    /// <summary><see cref="ScheduleConflictKinds"/> of the overrunning work.</summary>
+    public string OverrunKind { get; set; } = null!;
+    public Guid OverrunId { get; set; }
+    /// <summary>The overrunning work's reserved end (history; never changed).</summary>
+    public DateTimeOffset OverrunReservedEndsAt { get; set; }
+    public string AffectedKind { get; set; } = null!;
+    public Guid AffectedId { get; set; }
+    public DateTimeOffset AffectedStartsAt { get; set; }
+    public DateTimeOffset AffectedEndsAt { get; set; }
+    public string Status { get; set; } = ScheduleConflictStatuses.Open;
+    public DateTimeOffset DetectedAt { get; set; }
+    public DateTimeOffset? ResolvedAt { get; set; }
+    /// <summary>OVERTIME_ENDED or COMMITMENT_CLEARED.</summary>
+    public string? Resolution { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
+    public int Revision { get; set; }
+}
+
+public static class ScheduleConflictKinds
+{
+    public const string SurveyAppointment = "SURVEY_APPOINTMENT";
+    public const string InstallationAssignment = "INSTALLATION_ASSIGNMENT";
+    public static readonly IReadOnlyList<string> All = [SurveyAppointment, InstallationAssignment];
+}
+
+public static class ScheduleConflictStatuses
+{
+    public const string Open = "OPEN";
+    public const string Resolved = "RESOLVED";
+    public static readonly IReadOnlyList<string> All = [Open, Resolved];
+}
+
+public static class ScheduleConflictResolutions
+{
+    public const string OvertimeEnded = "OVERTIME_ENDED";
+    public const string CommitmentCleared = "COMMITMENT_CLEARED";
 }

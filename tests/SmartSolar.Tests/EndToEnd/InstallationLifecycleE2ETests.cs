@@ -162,6 +162,8 @@ public sealed class InstallationLifecycleE2ETests
             Assert.True((await InternalAcceptance.ReworkAsync(ctx, project.ProjectId, "Cable tray loose on the east side", manager.Id)).Succeeded);
             var rework = (await installs.GetForCustomerAsync(j.CustomerId, project.ProjectId, None)).Value!;
             Assert.Equal((InstallationStatuses.ReworkRequired, 2), (rework.Status, rework.CurrentRound));
+            // The rework is scheduled (Manager) and accepted (technician) before work resumes.
+            await InstallationTests.ReworkScheduledAsync(ctx, project.ProjectId, installer.Id, manager.Id);
             // Round-1 evidence does not count for round 2.
             Assert.Equal(InstallationErrorCodes.EvidenceRequired, (await installs.ReportCompletionAsync(installer.Id, project.ProjectId, "Fixed", null, None)).ErrorCode);
             await InstallationTests.AddCompletionEvidenceAsync(ctx, project.ProjectId, installer.Id);

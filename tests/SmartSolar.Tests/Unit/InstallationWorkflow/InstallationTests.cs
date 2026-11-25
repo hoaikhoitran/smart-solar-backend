@@ -87,6 +87,21 @@ public sealed class InstallationTests
     }
 
     /// <summary>One verified photo for the current round.</summary>
+    /// <summary>
+    /// Rework after a reported completion (2026-11-25): the reported assignment's time was released, so a Manager/Admin schedules the rework
+    /// (08:00–12:00, <paramref name="daysAhead"/> local days from now, reason given) and the technician accepts it before work resumes.
+    /// </summary>
+    internal static async Task ReworkScheduledAsync(InstallationWorkflowTestContext ctx, Guid projectId, Guid technician, Guid managerUserId, int daysAhead = 3)
+    {
+        var date = ctx.Scheduling.Calendar.LocalDateOf(ctx.Clock.GetUtcNow()).AddDays(daysAhead);
+        var revision = (await ctx.Installations().GetForManagerAsync(projectId, None)).Value!.Revision;
+        var assigned = await ctx.Installations().AssignAsync(managerUserId, projectId,
+            new AssignTechnicianInput(technician, At(8, 0, date), At(12, 0, date), "Rework visit", revision), None);
+        Assert.True(assigned.Succeeded, assigned.Message + " " + JsonSerializer.Serialize(assigned.Details));
+        var accepted = await ctx.Installations().AcceptAssignmentAsync(technician, projectId, null, None);
+        Assert.True(accepted.Succeeded, accepted.Message);
+    }
+
     internal static async Task<InstallationTechnicianView> AddCompletionEvidenceAsync(InstallationWorkflowTestContext ctx, Guid projectId, Guid technician)
     {
         var photo = await ctx.VerifiedFileAsync(technician, FilePurposes.InstallationEvidence);
@@ -689,6 +704,8 @@ public sealed class InstallationTests
         Assert.Equal(InstallationErrorCodes.InvalidState, (await InternalAcceptance.ReworkAsync(ctx, project.ProjectId, "again", paid.ManagerId)).ErrorCode);
         Assert.Equal(InstallationErrorCodes.InvalidState, (await InternalAcceptance.AcceptAsync(ctx, project.ProjectId, paid.ManagerId)).ErrorCode);
 
+        // The rework is scheduled (Manager) and accepted (technician) before work resumes.
+        await ReworkScheduledAsync(ctx, project.ProjectId, tech, paid.ManagerId);
         // Round-1 evidence does not count for round 2.
         Assert.Equal(InstallationErrorCodes.EvidenceRequired, (await installs.ReportCompletionAsync(tech, project.ProjectId, "Fixed", null, None)).ErrorCode);
         var fixedView = await AddCompletionEvidenceAsync(ctx, project.ProjectId, tech);
@@ -707,7 +724,9 @@ public sealed class InstallationTests
         Assert.Empty(await ctx.Db.InstallationEvents.Where(e => e.ProjectId == project.ProjectId && e.EventType == InstallationEventTypes.InternallyAccepted).ToListAsync());
         var rounds = await ctx.Db.InstallationAcceptances.AsNoTracking().Where(a => a.ProjectId == project.ProjectId).OrderBy(a => a.Round).ToListAsync();
         Assert.Equal(new[] { ("MANAGER", paid.ManagerId), (AcceptanceDeciders.Customer, paid.CustomerId) }, rounds.Select(r => (r.DecidedByRole!, r.DecidedByUserId!.Value)));
-        Assert.Equal(AssignmentStatuses.Completed, (await ctx.Db.InstallationAssignments.SingleAsync(a => a.TechnicianUserId == tech)).Status);
+        // The round-1 assignment (time released at its report) was replaced by the rework assignment, which the acceptance completed.
+        Assert.Equal(new[] { AssignmentStatuses.Replaced, AssignmentStatuses.Completed },
+            (await ctx.Db.InstallationAssignments.AsNoTracking().Where(a => a.TechnicianUserId == tech).ToListAsync()).OrderBy(a => a.AssignedAt).Select(a => a.Status));
         // The technician still sees the completed job; the interval is no longer a busy commitment.
         Assert.Equal(AssignmentStatuses.Completed, (await installs.GetForTechnicianAsync(tech, project.ProjectId, None)).Value!.MyAssignmentStatus);
         Assert.Empty(await ctx.SchedulingWithInstallations().ListUpcomingInstallationAssignmentsAsync(tech, ctx.Clock.GetUtcNow(), None));
