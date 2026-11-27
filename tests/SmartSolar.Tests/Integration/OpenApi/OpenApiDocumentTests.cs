@@ -45,6 +45,10 @@ public sealed class OpenApiDocumentTests
     [InlineData("/api/manager/payments/cash-receipts/{receiptId}/evidence/url", OperationType.Get, "200", "AttachedFileUrlView")]
     [InlineData("/api/manager/payments/cash-receipts/{receiptId}/accept", OperationType.Post, "200", "PaymentAttemptView")]
     [InlineData("/api/manager/payments/cash-receipts/{receiptId}/reject", OperationType.Post, "200", "CashReceiptView")]
+    // Unified after-sales cash receipts (2026-11-27).
+    [InlineData("/api/technicians/me/after-sales/quotations/{quotationId}/payment/cash-receipt", OperationType.Post, "200", "ServiceQuotationPaymentView")]
+    [InlineData("/api/technicians/me/after-sales/quotations/{quotationId}/payment/cash-receipts/{receiptId}/evidence/url", OperationType.Get, "200", "AttachedFileUrlView")]
+    [InlineData("/api/technicians/me/after-sales/quotations/{quotationId}/payment", OperationType.Get, "200", "ServiceQuotationPaymentView")]
     public void Priority_endpoints_document_their_success_schema(string path, OperationType method, string status, string schemaPart)
     {
         var document = Document();

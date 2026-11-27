@@ -263,8 +263,36 @@ public sealed class TechnicianAfterSalesQuotationsController(ServiceQuotationHan
 [Route("api/technicians/me/after-sales/quotations")]
 [Authorize(Roles = RoleCodes.Technician)]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
-public sealed class TechnicianAfterSalesOnSiteController(ServiceQuotationHandlers quotations) : OperationResultControllerBase
+public sealed class TechnicianAfterSalesOnSiteController(ServiceQuotationHandlers quotations, AfterSalesEvidenceUrlHandlers evidenceUrls) : OperationResultControllerBase
 {
+    /// <summary>
+    /// Sends the photo of the physical receipt for the quotation's open CASH payment (2026-11-27, same rules as the installment receipts). The quotation
+    /// stays ACCEPTED and the payment PENDING (<c>currentCashReceipt.status</c> = SUBMITTED) until a Manager/Admin accepts it in
+    /// <c>/api/manager/payments/cash-receipts</c>; after a rejection send a corrected one (same payment, the customer never pays again).
+    /// </summary>
+    [HttpPost("{quotationId:guid}/payment/cash-receipt")]
+    [ProducesResponseType(typeof(Contracts.ApiResponse<ServiceQuotationPaymentView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.PaymentCreatePolicy)]
+    public async Task<IActionResult> SubmitCashReceipt(Guid quotationId, [FromBody] Contracts.InstallationWorkflow.CashReceiptRequest request, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user
+            ? Respond(await quotations.SubmitCashReceiptOnSiteAsync(user, quotationId, new CashReceiptInput(request.PaymentAttemptId ?? Guid.Empty, request.ReceiptNumber,
+                request.EvidenceFileId ?? Guid.Empty, request.CollectedAt, request.Note), cancellationToken))
+            : UnauthorizedFailure();
+
+    /// <summary>Short-lived URL of the photo of one of this quotation's receipts (<c>disposition</c> inline | attachment); <c>Cache-Control: no-store</c>.</summary>
+    [HttpGet("{quotationId:guid}/payment/cash-receipts/{receiptId:guid}/evidence/url")]
+    [ProducesResponseType(typeof(Contracts.ApiResponse<SmartSolar.Modules.Files.AttachedFileUrlView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.InstallationReadPolicy)]
+    public async Task<IActionResult> CashReceiptEvidenceUrl(Guid quotationId, Guid receiptId, [FromQuery] string? disposition, CancellationToken cancellationToken)
+    {
+        NoStore();
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (ParseDisposition(disposition) is not { } parsed) return Invalid("disposition", "'disposition' must be inline or attachment.");
+        var receipt = await quotations.FindCashReceiptForTechnicianAsync(user, quotationId, receiptId, cancellationToken);
+        if (!receipt.Succeeded) return Respond(receipt);
+        return Respond(await evidenceUrls.CashReceiptAsync(receipt.Value!, parsed, cancellationToken));
+    }
+
     [HttpPost("{quotationId:guid}/on-site-decision")]
     [EnableRateLimiting(RateLimitingExtensions.QuotationWritePolicy)]
     public async Task<IActionResult> Decide(Guid quotationId, [FromBody] ServiceOnSiteDecisionRequest body, CancellationToken cancellationToken)
@@ -276,6 +304,7 @@ public sealed class TechnicianAfterSalesOnSiteController(ServiceQuotationHandler
         => CurrentUserId() is { } user ? Respond(await quotations.StartPaymentOnSiteAsync(user, quotationId, body.Method, cancellationToken)) : UnauthorizedFailure();
 
     [HttpGet("{quotationId:guid}/payment")]
+    [ProducesResponseType(typeof(Contracts.ApiResponse<ServiceQuotationPaymentView>), StatusCodes.Status200OK)]
     [EnableRateLimiting(RateLimitingExtensions.PaymentStatusPolicy)]
     public async Task<IActionResult> GetPayment(Guid quotationId, CancellationToken cancellationToken)
         => CurrentUserId() is { } user ? Respond(await quotations.GetPaymentOnSiteAsync(user, quotationId, cancellationToken)) : UnauthorizedFailure();

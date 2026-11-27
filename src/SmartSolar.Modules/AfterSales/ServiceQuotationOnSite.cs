@@ -15,8 +15,11 @@ public static class ServiceOnSiteDecisions
 /// <summary>Payment of an after-sales quotation as the technician sees it on site.</summary>
 /// <param name="Current">The live or verified attempt (null = nothing opened; also when nothing is due).</param>
 /// <param name="NothingToPay">Fully covered (customer amount 0): the work is authorized without any checkout.</param>
+/// <param name="CurrentCashReceipt">The latest technician cash receipt of the current CASH payment (SUBMITTED first, else ACCEPTED, else the latest — e.g.
+/// REJECTED with its reviewReason). Null when none was sent.</param>
+/// <param name="CashReceipts">Every receipt sent for this quotation (oldest first): the review history.</param>
 public sealed record ServiceQuotationPaymentView(Guid QuotationId, int Version, string QuotationStatus, decimal CustomerAmount, bool NothingToPay,
-    PaymentAttemptView? Current);
+    PaymentAttemptView? Current, CashReceiptView? CurrentCashReceipt = null, IReadOnlyList<CashReceiptView>? CashReceipts = null);
 
 /// <summary>
 /// Technician-led after-sales quotations (2026-11-18). The technician who inspected the equipment prices the chargeable items
@@ -87,9 +90,62 @@ public sealed partial class ServiceQuotationHandlers
         var current = quotation.CurrentPaymentAttemptId is { } attemptId
             ? await payments.GetAttemptForCustomerAsync(request.CustomerUserId, attemptId, reconcile: true, cancellationToken)
             : null;
-        quotation = (await data.FindQuotationAsync(quotationId, false, cancellationToken))!;
-        return OperationResult<ServiceQuotationPaymentView>.Ok(new ServiceQuotationPaymentView(quotation.Id, quotation.Version, quotation.Status, quotation.CustomerAmount,
-            quotation.CustomerAmount == 0, current));
+        return OperationResult<ServiceQuotationPaymentView>.Ok(await PaymentViewAsync(quotationId, current, cancellationToken));
+    }
+
+    private async Task<ServiceQuotationPaymentView> PaymentViewAsync(Guid quotationId, PaymentAttemptView? current, CancellationToken cancellationToken)
+    {
+        var quotation = (await data.FindQuotationAsync(quotationId, false, cancellationToken))!;
+        var receipts = (await payments.ListCashReceiptsForQuotationAsync(quotationId, cancellationToken)).Select(CashReceiptView.From).ToList();
+        var ofCurrent = current is null ? [] : receipts.Where(r => r.PaymentAttemptId == current.PaymentAttemptId).ToList();
+        var currentReceipt = ofCurrent.LastOrDefault(r => r.Status == CashReceiptStatuses.Submitted) ?? ofCurrent.LastOrDefault(r => r.Status == CashReceiptStatuses.Accepted)
+            ?? ofCurrent.LastOrDefault();
+        return new ServiceQuotationPaymentView(quotation.Id, quotation.Version, quotation.Status, quotation.CustomerAmount, quotation.CustomerAmount == 0, current,
+            currentReceipt, receipts);
+    }
+
+    /// <summary>
+    /// The assigned technician sends the photographed physical receipt of the cash they took for the quotation's open CASH payment (2026-11-27,
+    /// unified with the installment receipts). Nothing is paid: the quotation stays ACCEPTED and the payment PENDING until a Manager/Admin accepts
+    /// the receipt in the shared queue (the existing after-sales settlement then marks the quotation PAID and authorizes the work). Nothing due
+    /// (fully covered) → no payment and no receipt. Anyone without a live visit on the request gets 404.
+    /// </summary>
+    public async Task<OperationResult<ServiceQuotationPaymentView>> SubmitCashReceiptOnSiteAsync(Guid technicianUserId, Guid quotationId, CashReceiptInput input,
+        CancellationToken cancellationToken)
+    {
+        var (quotation, request) = await OwnedForTechnicianAsync(technicianUserId, quotationId, cancellationToken);
+        if (quotation is null || request is null)
+            return OperationResult<ServiceQuotationPaymentView>.Fail(AfterSalesErrorCodes.QuotationNotFound, "Quotation was not found.");
+        if (quotation.Status == QuotationStatuses.Paid)
+            return OperationResult<ServiceQuotationPaymentView>.Fail(PaymentErrorCodes.AlreadyPaid, "This quotation is already paid.");
+        if (quotation.CustomerAmount == 0)
+            return OperationResult<ServiceQuotationPaymentView>.Fail(AfterSalesErrorCodes.InvalidState, "Nothing is due for this quotation: no payment and no receipt.");
+        var live = quotation.CurrentPaymentAttemptId is { } attemptId
+            ? await payments.GetAttemptForCustomerAsync(request.CustomerUserId, attemptId, reconcile: false, cancellationToken)
+            : null;
+        if (live is null || live.Method != PaymentMethods.Cash || !PaymentStatuses.Payable.Contains(live.Status))
+            return OperationResult<ServiceQuotationPaymentView>.Fail(PaymentErrorCodes.CashNotSelected,
+                "Cash was not chosen for this quotation: choose CASH before sending the receipt.");
+        var sent = await payments.SubmitCashReceiptAsync(technicianUserId, CashReceiptContext.ForServiceQuotation(quotation.Id, request.Id), live.PaymentAttemptId,
+            input, cancellationToken);
+        if (!sent.Succeeded) return sent.As<ServiceQuotationPaymentView>();
+        AfterSalesHistory.Record(data, EventSubjects.Request, request.Id, "CASH_RECEIPT_SUBMITTED", technicianUserId,
+            $"v{quotation.Version}: receipt {sent.Value!.ReceiptNumber}, {sent.Value.Amount:0} VND (waiting for a Manager)", time.GetUtcNow());
+        await data.SaveChangesAsync(cancellationToken);
+        var current = await payments.GetAttemptForCustomerAsync(request.CustomerUserId, live.PaymentAttemptId, reconcile: false, cancellationToken);
+        return OperationResult<ServiceQuotationPaymentView>.Ok(await PaymentViewAsync(quotationId, current, cancellationToken));
+    }
+
+    /// <summary>The receipt <paramref name="receiptId"/> of this quotation as the assigned technician sees it (for the photo URL); otherwise 404.</summary>
+    public async Task<OperationResult<CashReceiptSubmission>> FindCashReceiptForTechnicianAsync(Guid technicianUserId, Guid quotationId, Guid receiptId,
+        CancellationToken cancellationToken)
+    {
+        var (quotation, _) = await OwnedForTechnicianAsync(technicianUserId, quotationId, cancellationToken);
+        if (quotation is null) return OperationResult<CashReceiptSubmission>.Fail(AfterSalesErrorCodes.QuotationNotFound, "Quotation was not found.");
+        var receipt = await payments.FindCashReceiptAsync(receiptId, cancellationToken);
+        return receipt is null || receipt.ServiceQuotationId != quotation.Id
+            ? OperationResult<CashReceiptSubmission>.Fail(CashReceiptErrorCodes.NotFound, "The cash receipt was not found.")
+            : OperationResult<CashReceiptSubmission>.Ok(receipt);
     }
 
     /// <summary>Cancels the open payment of the quotation on site (switch method, or the customer stopped). One the provider reports paid stays paid.</summary>
@@ -101,11 +157,17 @@ public sealed partial class ServiceQuotationHandlers
             || await payments.GetAttemptForCustomerAsync(request.CustomerUserId, current, reconcile: false, cancellationToken) is not { } live
             || !PaymentStatuses.Payable.Contains(live.Status))
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AttemptNotFound, "There is no open payment for this quotation.");
+        if (await payments.HasCashReceiptUnderReviewAsync(current, cancellationToken)) return UnderReview<PaymentAttemptView>();
         var ended = await payments.CancelAttemptAsync(current, "cancelled on site by the technician", cancellationToken);
+        if (ended is not null && ended.Provider == PaymentProviders.Cash && PaymentStatuses.Payable.Contains(ended.Status)) return UnderReview<PaymentAttemptView>();
         return ended?.Status == PaymentStatuses.Paid
             ? OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.AlreadyPaid, "The payment was completed meanwhile; it cannot be cancelled.")
             : OperationResult<PaymentAttemptView>.Ok((await payments.GetAttemptForCustomerAsync(request.CustomerUserId, current, reconcile: false, cancellationToken))!);
     }
+
+    /// <summary>A technician cash receipt waits for review: cancelling, switching method, declining or replacing would lose track of collected cash.</summary>
+    private static OperationResult<T> UnderReview<T>() => OperationResult<T>.Fail(CashReceiptErrorCodes.UnderReview,
+        "The technician sent the cash receipt of this payment; a Manager/Admin must review it first (accept or reject).");
 
     private async Task<bool> AssignedAsync(Guid technicianUserId, Guid requestId, CancellationToken cancellationToken)
         => (await data.ListVisitsAsync(requestId, false, cancellationToken))

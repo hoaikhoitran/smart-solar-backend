@@ -91,21 +91,27 @@ public sealed record CashReceiptReviewRequest(int? Revision, string? Reason, str
 [Route("api/manager/payments")]
 [Authorize(Roles = $"{RoleCodes.Manager},{RoleCodes.Admin}")]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
-public sealed class StaffPaymentDeskController(PaymentService payments, SmartSolar.Modules.CustomerContracts.ContractDocumentHandlers documents)
-    : OperationResultControllerBase
+public sealed class StaffPaymentDeskController(PaymentService payments, SmartSolar.Modules.CustomerContracts.ContractDocumentHandlers documents,
+    SmartSolar.Modules.AfterSales.AfterSalesEvidenceUrlHandlers afterSalesUrls) : OperationResultControllerBase
 {
-    /// <summary>Technician cash receipts (2026-11-27): GET ?status=SUBMITTED|ACCEPTED|REJECTED|WITHDRAWN&amp;page=1&amp;pageSize=20 — newest first.</summary>
+    /// <summary>
+    /// Technician cash receipts (2026-11-27), one queue for installation installments and after-sales quotations:
+    /// GET ?status=SUBMITTED|ACCEPTED|REJECTED|WITHDRAWN&amp;kind=INSTALLMENT|SERVICE_QUOTATION&amp;page=1&amp;pageSize=20 — newest first.
+    /// </summary>
     [HttpGet("cash-receipts")]
     [ProducesResponseType(typeof(ApiResponse<SmartSolar.Modules.Common.Paging.PagedResult<StaffCashReceiptView>>), StatusCodes.Status200OK)]
     [EnableRateLimiting(RateLimitingExtensions.ContractReadPolicy)]
-    public async Task<IActionResult> CashReceipts([FromQuery] string? status, [FromQuery] int? page, [FromQuery] int? pageSize, CancellationToken cancellationToken)
+    public async Task<IActionResult> CashReceipts([FromQuery] string? status, [FromQuery] string? kind, [FromQuery] int? page, [FromQuery] int? pageSize,
+        CancellationToken cancellationToken)
     {
         var paging = SmartSolar.Modules.Common.Paging.PageRequest.Parse(page ?? 1, pageSize);
         if (!paging.Succeeded) return Respond(paging);
         var s = string.IsNullOrWhiteSpace(status) ? null : status.Trim().ToUpperInvariant();
         if (s is not null && !CashReceiptStatuses.All.Contains(s)) return Invalid("status", $"'status' must be one of {string.Join(", ", CashReceiptStatuses.All)}.");
+        var k = string.IsNullOrWhiteSpace(kind) ? null : kind.Trim().ToUpperInvariant();
+        if (k is not null && !CashReceiptKinds.All.Contains(k)) return Invalid("kind", $"'kind' must be one of {string.Join(", ", CashReceiptKinds.All)}.");
         return Ok(ApiResponse<SmartSolar.Modules.Common.Paging.PagedResult<StaffCashReceiptView>>.Success(
-            await payments.PageCashReceiptsAsync(s, paging.Value!, cancellationToken), HttpContext.GetTraceId()));
+            await payments.PageCashReceiptsAsync(s, paging.Value!, cancellationToken, k), HttpContext.GetTraceId()));
     }
 
     /// <summary>One receipt with its contract / installment / customer / technician context and every receipt sent for the same payment.</summary>
@@ -126,7 +132,9 @@ public sealed class StaffPaymentDeskController(PaymentService payments, SmartSol
         if (ParseDisposition(disposition) is not { } parsed) return Invalid("disposition", "'disposition' must be inline or attachment.");
         var receipt = await payments.FindCashReceiptAsync(receiptId, cancellationToken);
         if (receipt is null) return Respond(SmartSolar.Modules.Common.Results.OperationResult<bool>.Fail(CashReceiptErrorCodes.NotFound, "The cash receipt was not found."));
-        return Respond(await documents.CashReceiptEvidenceUrlAsync(user, User.IsInRole(RoleCodes.Admin) ? RoleCodes.Admin : RoleCodes.Manager, receipt, parsed, cancellationToken));
+        return receipt.Kind == CashReceiptKinds.ServiceQuotation
+            ? Respond(await afterSalesUrls.CashReceiptAsync(receipt, parsed, cancellationToken))
+            : Respond(await documents.CashReceiptEvidenceUrlAsync(user, User.IsInRole(RoleCodes.Admin) ? RoleCodes.Admin : RoleCodes.Manager, receipt, parsed, cancellationToken));
     }
 
     /// <summary>

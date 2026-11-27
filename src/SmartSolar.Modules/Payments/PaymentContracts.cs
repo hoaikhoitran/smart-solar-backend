@@ -108,6 +108,13 @@ public interface IPaymentUnitOfWork : ITransactionalUnitOfWork
     /// <summary>True when the file is already the evidence of another attempt (its confirmation or one of its non-rejected receipts).</summary>
     Task<bool> IsCashEvidenceUsedAsync(Guid fileId, Guid exceptAttemptId, CancellationToken cancellationToken);
     /// <summary>One page of receipts with their review context (status null = any), newest first, with the total.</summary>
-    Task<(IReadOnlyList<CashReceiptRow> Rows, int Total)> PageCashReceiptsAsync(string? status, int skip, int take, CancellationToken cancellationToken);
+    Task<(IReadOnlyList<CashReceiptRow> Rows, int Total)> PageCashReceiptsAsync(string? status, int skip, int take, CancellationToken cancellationToken, string? kind = null);
     Task<CashReceiptRow?> GetCashReceiptRowAsync(Guid receiptId, CancellationToken cancellationToken);
+    /// <summary>Every receipt sent for an after-sales quotation (any attempt, any status), oldest first.</summary>
+    Task<IReadOnlyList<CashReceiptSubmission>> ListCashReceiptsForQuotationAsync(Guid quotationId, CancellationToken cancellationToken);
+    /// <summary>
+    /// True when the technician reported the cash of this attempt as taken and it is not settled: a receipt is under review, or the latest one was
+    /// rejected for a collection made by <paramref name="deadline"/> (a corrected receipt is expected; the customer is not asked to pay again).
+    /// </summary>
+    Task<bool> IsCashReportedCollectedAsync(Guid attemptId, DateTimeOffset deadline, CancellationToken cancellationToken);
 }

@@ -48,7 +48,7 @@ public sealed class PostgresPerPanelPackageTests
         await using var database = await PostgresTestDatabase.CreateAsync(upToMigration: Previous);
         await using (var before = database.NewContext())
         {
-            Assert.Equal([Migration, "20261125094516_SchedulingEffectiveBusyAfterCompletion", "20261125104043_SchedulingOvertimeConflicts", "20261127021802_TechnicianCashReceipts"], await before.Database.GetPendingMigrationsAsync());
+            Assert.Equal([Migration, "20261125094516_SchedulingEffectiveBusyAfterCompletion", "20261125104043_SchedulingOvertimeConflicts", "20261127021802_TechnicianCashReceipts", "20261127124918_UnifiedCashReceipts"], await before.Database.GetPendingMigrationsAsync());
             // A package of the previous schema (no pricing unit column yet).
             await before.Database.ExecuteSqlRawAsync("""
                 INSERT INTO service_package (id, kind, name, price, duration_months, visit_months, is_active, created_at, updated_at, revision)

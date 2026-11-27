@@ -6371,17 +6371,25 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("collected_by_user_id");
 
-                    b.Property<Guid>("ContractId")
+                    b.Property<Guid?>("ContractId")
                         .HasColumnType("uuid")
                         .HasColumnName("contract_id");
 
-                    b.Property<Guid>("ContractInstallmentId")
+                    b.Property<Guid?>("ContractInstallmentId")
                         .HasColumnType("uuid")
                         .HasColumnName("contract_installment_id");
 
                     b.Property<Guid>("EvidenceFileId")
                         .HasColumnType("uuid")
                         .HasColumnName("evidence_file_id");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasDefaultValue("INSTALLMENT")
+                        .HasColumnName("kind");
 
                     b.Property<string>("Note")
                         .HasMaxLength(500)
@@ -6416,6 +6424,14 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("revision");
 
+                    b.Property<Guid?>("ServiceQuotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("service_quotation_id");
+
+                    b.Property<Guid?>("ServiceRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("service_request_id");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(20)
@@ -6449,10 +6465,16 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("ReviewedByUserId");
 
+                    b.HasIndex("ServiceQuotationId")
+                        .HasDatabaseName("ix_cash_receipt_submission_service_quotation");
+
                     b.HasIndex("PaymentAttemptId", "Status")
                         .IsUnique()
                         .HasDatabaseName("ux_cash_receipt_submission_one_accepted")
                         .HasFilter("status = 'ACCEPTED'");
+
+                    b.HasIndex("ServiceRequestId", "Status")
+                        .HasDatabaseName("ix_cash_receipt_submission_service_request_status");
 
                     b.HasIndex("Status", "SubmittedAt")
                         .HasDatabaseName("ix_cash_receipt_submission_status_submitted_at");
@@ -6460,6 +6482,8 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                     b.ToTable("cash_receipt_submission", null, t =>
                         {
                             t.HasCheckConstraint("ck_cash_receipt_submission_amount", "amount > 0");
+
+                            t.HasCheckConstraint("ck_cash_receipt_submission_context", "(kind = 'INSTALLMENT' AND contract_id IS NOT NULL AND contract_installment_id IS NOT NULL AND service_quotation_id IS NULL AND service_request_id IS NULL) OR (kind = 'SERVICE_QUOTATION' AND service_quotation_id IS NOT NULL AND service_request_id IS NOT NULL AND contract_id IS NULL AND contract_installment_id IS NULL)");
 
                             t.HasCheckConstraint("ck_cash_receipt_submission_number", "length(trim(receipt_number)) > 0");
 
@@ -10597,14 +10621,12 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("ContractId")
                         .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired()
                         .HasConstraintName("fk_cash_receipt_submission_contract");
 
                     b.HasOne("SmartSolar.Modules.CustomerContracts.ContractInstallment", null)
                         .WithMany()
                         .HasForeignKey("ContractInstallmentId")
                         .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired()
                         .HasConstraintName("fk_cash_receipt_submission_installment");
 
                     b.HasOne("SmartSolar.Modules.Files.StoredFile", null)
@@ -10626,6 +10648,18 @@ namespace SmartSolar.Infrastructure.Persistence.Migrations
                         .HasForeignKey("ReviewedByUserId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .HasConstraintName("fk_cash_receipt_submission_reviewed_by");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceQuotation", null)
+                        .WithMany()
+                        .HasForeignKey("ServiceQuotationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_cash_receipt_submission_service_quotation");
+
+                    b.HasOne("SmartSolar.Modules.AfterSales.ServiceRequest", null)
+                        .WithMany()
+                        .HasForeignKey("ServiceRequestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_cash_receipt_submission_service_request");
                 });
 
             modelBuilder.Entity("SmartSolar.Modules.Payments.PaymentAttempt", b =>

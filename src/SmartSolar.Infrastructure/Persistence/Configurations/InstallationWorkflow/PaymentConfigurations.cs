@@ -124,6 +124,10 @@ public sealed class CashReceiptSubmissionConfiguration : IEntityTypeConfiguratio
         {
             t.HasCheckConstraint("ck_cash_receipt_submission_status", $"status IN ({string.Join(", ", CashReceiptStatuses.All.Select(s => $"'{s}'"))})");
             t.HasCheckConstraint("ck_cash_receipt_submission_amount", "amount > 0");
+            // Exactly one context (2026-11-27 unified): an installment of a contract, or an after-sales quotation of a request.
+            t.HasCheckConstraint("ck_cash_receipt_submission_context",
+                $"(kind = '{CashReceiptKinds.Installment}' AND contract_id IS NOT NULL AND contract_installment_id IS NOT NULL AND service_quotation_id IS NULL AND service_request_id IS NULL)"
+                + $" OR (kind = '{CashReceiptKinds.ServiceQuotation}' AND service_quotation_id IS NOT NULL AND service_request_id IS NOT NULL AND contract_id IS NULL AND contract_installment_id IS NULL)");
             t.HasCheckConstraint("ck_cash_receipt_submission_number", "length(trim(receipt_number)) > 0");
             t.HasCheckConstraint("ck_cash_receipt_submission_review",
                 $"(status = '{CashReceiptStatuses.Submitted}') = (reviewed_at IS NULL)"
@@ -133,8 +137,12 @@ public sealed class CashReceiptSubmissionConfiguration : IEntityTypeConfiguratio
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.PaymentAttemptId).HasColumnName("payment_attempt_id").IsRequired();
-        builder.Property(x => x.ContractId).HasColumnName("contract_id").IsRequired();
-        builder.Property(x => x.ContractInstallmentId).HasColumnName("contract_installment_id").IsRequired();
+        // Existing rows are installment receipts: the column default keeps them valid when the kind column is added.
+        builder.Property(x => x.Kind).HasColumnName("kind").HasMaxLength(30).IsRequired().HasDefaultValue(CashReceiptKinds.Installment);
+        builder.Property(x => x.ContractId).HasColumnName("contract_id");
+        builder.Property(x => x.ContractInstallmentId).HasColumnName("contract_installment_id");
+        builder.Property(x => x.ServiceQuotationId).HasColumnName("service_quotation_id");
+        builder.Property(x => x.ServiceRequestId).HasColumnName("service_request_id");
         builder.Property(x => x.Amount).HasColumnName("amount").HasPrecision(18, 2).IsRequired();
         builder.Property(x => x.ReceiptNumber).HasColumnName("receipt_number").HasMaxLength(100).IsRequired();
         builder.Property(x => x.CollectedByUserId).HasColumnName("collected_by_user_id").IsRequired();
@@ -155,12 +163,18 @@ public sealed class CashReceiptSubmissionConfiguration : IEntityTypeConfiguratio
             .HasFilter($"status IN ('{CashReceiptStatuses.Submitted}', '{CashReceiptStatuses.Accepted}')").HasDatabaseName("ux_cash_receipt_submission_live_number");
         builder.HasIndex(x => new { x.Status, x.SubmittedAt }).HasDatabaseName("ix_cash_receipt_submission_status_submitted_at");
         builder.HasIndex(x => x.ContractInstallmentId).HasDatabaseName("ix_cash_receipt_submission_installment");
+        builder.HasIndex(x => x.ServiceQuotationId).HasDatabaseName("ix_cash_receipt_submission_service_quotation");
+        builder.HasIndex(x => new { x.ServiceRequestId, x.Status }).HasDatabaseName("ix_cash_receipt_submission_service_request_status");
         builder.HasOne<PaymentAttempt>().WithMany().HasForeignKey(x => x.PaymentAttemptId).OnDelete(DeleteBehavior.Restrict)
             .HasConstraintName("fk_cash_receipt_submission_attempt");
         builder.HasOne<CustomerContract>().WithMany().HasForeignKey(x => x.ContractId).OnDelete(DeleteBehavior.Restrict)
             .HasConstraintName("fk_cash_receipt_submission_contract");
         builder.HasOne<ContractInstallment>().WithMany().HasForeignKey(x => x.ContractInstallmentId).OnDelete(DeleteBehavior.Restrict)
             .HasConstraintName("fk_cash_receipt_submission_installment");
+        builder.HasOne<SmartSolar.Modules.AfterSales.ServiceQuotation>().WithMany().HasForeignKey(x => x.ServiceQuotationId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_cash_receipt_submission_service_quotation");
+        builder.HasOne<SmartSolar.Modules.AfterSales.ServiceRequest>().WithMany().HasForeignKey(x => x.ServiceRequestId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_cash_receipt_submission_service_request");
         builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.CollectedByUserId).OnDelete(DeleteBehavior.Restrict)
             .HasConstraintName("fk_cash_receipt_submission_collected_by");
         builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.ReviewedByUserId).OnDelete(DeleteBehavior.Restrict)

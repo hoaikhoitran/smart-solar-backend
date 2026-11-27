@@ -758,14 +758,20 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
                         return (OperationResult<PaymentAttempt>.Fail(CashReceiptErrorCodes.Stale, "The cash receipt changed meanwhile. Reload and review it again."), false);
                 }
                 var items = await unitOfWork.GetItemsAsync(tracked.Id, true, token);
-                if (await settlement!.CashSettlementProblemAsync(tracked, items, now, token) is { } problem)
+                // A technician receipt of an after-sales line is judged at the time the cash was taken (like a PayOS transaction time: a late review is
+                // not a late payment). If the line can no longer be applied the money is still recorded and goes to the unapplied-money review
+                // (line REVIEW_REQUIRED + refund request) instead of being lost; installment lines keep refusing (they never record unapplied money).
+                var afterSalesReceipt = receipt is not null && items.Count > 0 && items.All(i => i.ItemType != PaymentItemTypes.ContractInstallment);
+                string? unapplied = null;
+                if (await settlement!.CashSettlementProblemAsync(tracked, items, afterSalesReceipt ? receipt!.Value.CollectedAt : now, token) is { } problem)
                 {
                     // A concurrent confirmation of this same attempt may have committed between our read and this check (its item is now PAID):
                     // report that, not a misleading "not payable". Nothing is written either way.
                     var committed = await unitOfWork.FindAttemptAsync(attemptId, false, token);
-                    return (committed?.Status == PaymentStatuses.Paid
-                        ? OperationResult<PaymentAttempt>.Fail(PaymentErrorCodes.AlreadyPaid, "This cash payment was already confirmed.")
-                        : OperationResult<PaymentAttempt>.Fail(PaymentErrorCodes.CashItemNotPayable, problem), false);
+                    if (committed?.Status == PaymentStatuses.Paid)
+                        return (OperationResult<PaymentAttempt>.Fail(PaymentErrorCodes.AlreadyPaid, "This cash payment was already confirmed."), false);
+                    if (!afterSalesReceipt) return (OperationResult<PaymentAttempt>.Fail(PaymentErrorCodes.CashItemNotPayable, problem), false);
+                    unapplied = problem;
                 }
                 var paidAt = receipt?.CollectedAt ?? now;
                 var from = tracked.Status;
@@ -791,6 +797,8 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
                 }
                 await settlement.SettleAsync(tracked, items, paidAt, now, token);
                 AddEvent(tracked, "CASH_CONFIRMED", from, PaymentStatuses.Paid, PaymentSources.Staff, $"by {staffUserId}; receipt {receiptReference}; amount {amount:0}", now);
+                if (unapplied is not null)
+                    AddEvent(tracked, "CASH_RECEIPT_UNAPPLIED", PaymentStatuses.Paid, PaymentStatuses.Paid, PaymentSources.Staff, $"recorded, not applied: {unapplied}", now);
                 await unitOfWork.SaveChangesAsync(token);
                 return (OperationResult<PaymentAttempt>.Ok(tracked), true);
             }, cancellationToken);
@@ -821,7 +829,15 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
     /// accepting the receipt records the money. Refused: another attempt id, a payment no longer waiting for cash, a receipt already under review, a
     /// receipt number or a photo already used by another payment, a photo that is not the technician's own VERIFIED PAYMENT_EVIDENCE file.
     /// </summary>
-    public async Task<OperationResult<CashReceiptView>> SubmitCashReceiptAsync(Guid technicianUserId, Guid contractId, Guid installmentId, Guid liveAttemptId,
+    public Task<OperationResult<CashReceiptView>> SubmitCashReceiptAsync(Guid technicianUserId, Guid contractId, Guid installmentId, Guid liveAttemptId,
+        CashReceiptInput input, CancellationToken cancellationToken)
+        => SubmitCashReceiptAsync(technicianUserId, CashReceiptContext.ForInstallment(contractId, installmentId), liveAttemptId, input, cancellationToken);
+
+    /// <summary>
+    /// Unified receipt submission (2026-11-27): <paramref name="context"/> is the installment or the after-sales quotation the caller authorized the
+    /// technician for; the open CASH attempt's lines must pay exactly that target (never a receipt on another payment's money).
+    /// </summary>
+    public async Task<OperationResult<CashReceiptView>> SubmitCashReceiptAsync(Guid technicianUserId, CashReceiptContext context, Guid liveAttemptId,
         CashReceiptInput input, CancellationToken cancellationToken)
     {
         var now = time.GetUtcNow();
@@ -841,6 +857,12 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
             return OperationResult<CashReceiptView>.Fail(PaymentErrorCodes.CashNotSelected, "Cash was not chosen for this installment.");
         if (attempt.Status == PaymentStatuses.Paid) return OperationResult<CashReceiptView>.Fail(PaymentErrorCodes.AlreadyPaid, "This cash payment was already confirmed.");
         if (attempt.Status != PaymentStatuses.Pending) return OperationResult<CashReceiptView>.Fail(PaymentErrorCodes.CashNotSelected, "The cash choice was cancelled.");
+        var lines = await unitOfWork.GetItemsAsync(attempt.Id, false, cancellationToken);
+        var matches = context.Kind == CashReceiptKinds.Installment
+            ? lines.Count > 0 && lines.All(l => l.ContractInstallmentId == context.ContractInstallmentId)
+            : lines.Count > 0 && lines.All(l => l.QuotationId == context.ServiceQuotationId);
+        if (!matches)
+            return OperationResult<CashReceiptView>.Fail(CashReceiptErrorCodes.ContextMismatch, "This cash payment does not pay the item the receipt is sent for.");
         var collectedAt = (input.CollectedAt ?? now).ToUniversalTime();
         if (collectedAt > now) collectedAt = now;   // within the tolerated device clock skew
         if (collectedAt < attempt.CreatedAt)
@@ -868,7 +890,8 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
                 var at = time.GetUtcNow();
                 var receipt = new CashReceiptSubmission
                 {
-                    Id = Guid.NewGuid(), PaymentAttemptId = tracked.Id, ContractId = contractId, ContractInstallmentId = installmentId, Amount = tracked.Amount,
+                    Id = Guid.NewGuid(), PaymentAttemptId = tracked.Id, Kind = context.Kind, ContractId = context.ContractId, ContractInstallmentId = context.ContractInstallmentId,
+                    ServiceQuotationId = context.ServiceQuotationId, ServiceRequestId = context.ServiceRequestId, Amount = tracked.Amount,
                     ReceiptNumber = number!, CollectedByUserId = technicianUserId, CollectedAt = collectedAt, EvidenceFileId = input.EvidenceFileId,
                     Note = Truncate(input.Note?.Trim(), 500), Status = CashReceiptStatuses.Submitted, SubmittedAt = at, Revision = 1,
                 };
@@ -975,10 +998,23 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
     public Task<CashReceiptSubmission?> FindCashReceiptAsync(Guid receiptId, CancellationToken cancellationToken)
         => unitOfWork.FindCashReceiptAsync(receiptId, false, cancellationToken);
 
+    /// <summary>Every receipt sent for an after-sales quotation (oldest first).</summary>
+    public Task<IReadOnlyList<CashReceiptSubmission>> ListCashReceiptsForQuotationAsync(Guid quotationId, CancellationToken cancellationToken)
+        => unitOfWork.ListCashReceiptsForQuotationAsync(quotationId, cancellationToken);
+
+    /// <summary>The technician reported this cash as taken (receipt under review, or rejected for a collection made by <paramref name="deadline"/>).</summary>
+    public Task<bool> IsCashReportedCollectedAsync(Guid attemptId, DateTimeOffset deadline, CancellationToken cancellationToken)
+        => unitOfWork.IsCashReportedCollectedAsync(attemptId, deadline, cancellationToken);
+
+    /// <summary>True while a technician receipt of this attempt waits for review.</summary>
+    public Task<bool> HasCashReceiptUnderReviewAsync(Guid attemptId, CancellationToken cancellationToken)
+        => unitOfWork.HasOpenCashReceiptAsync(attemptId, cancellationToken);
+
     /// <summary>Manager/Admin queue (status null = any), newest first, with the review context of each row.</summary>
-    public async Task<Common.Paging.PagedResult<StaffCashReceiptView>> PageCashReceiptsAsync(string? status, Common.Paging.PageRequest page, CancellationToken cancellationToken)
+    public async Task<Common.Paging.PagedResult<StaffCashReceiptView>> PageCashReceiptsAsync(string? status, Common.Paging.PageRequest page, CancellationToken cancellationToken,
+        string? kind = null)
     {
-        var (rows, total) = await unitOfWork.PageCashReceiptsAsync(status, page.Skip, page.PageSize, cancellationToken);
+        var (rows, total) = await unitOfWork.PageCashReceiptsAsync(status, page.Skip, page.PageSize, cancellationToken, kind);
         return page.Result(rows.Select(StaffView).ToList(), total);
     }
 
@@ -987,11 +1023,17 @@ public sealed class PaymentService(IPaymentUnitOfWork unitOfWork, IPaymentGatewa
         var row = await unitOfWork.GetCashReceiptRowAsync(receiptId, cancellationToken);
         if (row is null) return OperationResult<StaffCashReceiptDetail>.Fail(CashReceiptErrorCodes.NotFound, "The cash receipt was not found.");
         var history = await unitOfWork.ListCashReceiptsAsync([row.Receipt.PaymentAttemptId], cancellationToken);
-        return OperationResult<StaffCashReceiptDetail>.Ok(new StaffCashReceiptDetail(StaffView(row), history.Select(CashReceiptView.From).ToList()));
+        var lines = (await unitOfWork.GetItemsAsync(row.Receipt.PaymentAttemptId, false, cancellationToken))
+            .Select(l => new PaymentLineView(l.ItemType, l.Amount, l.Status, l.ContractId, l.SubscriptionId, l.QuotationId, l.InstallationQuotationId, l.ContractInstallmentId))
+            .ToList();
+        return OperationResult<StaffCashReceiptDetail>.Ok(new StaffCashReceiptDetail(StaffView(row), history.Select(CashReceiptView.From).ToList(), lines));
     }
 
     private static StaffCashReceiptView StaffView(CashReceiptRow r) => new(CashReceiptView.From(r.Receipt), r.ContractNumber, r.InstallmentSequence, r.InstallmentKind,
-        r.CustomerUserId, r.CustomerName, r.CollectedByName, r.PaymentStatus);
+        r.CustomerUserId, r.CustomerName, r.CollectedByName, r.PaymentStatus,
+        r.Receipt.Kind == CashReceiptKinds.ServiceQuotation ? CashReceiptContexts.AfterSalesQuotation
+            : r.InstallmentKind == "BALANCE" ? CashReceiptContexts.InstallationBalance : CashReceiptContexts.InstallationDeposit,
+        r.Receipt.ServiceRequestId, r.ServiceRequestNumber, r.ServiceRequestKind, r.Receipt.ServiceQuotationId, r.QuotationVersion);
 
     /// <summary>
     /// Provider webhook. Invalid signatures are rejected; deliveries are deduplicated by payload hash;

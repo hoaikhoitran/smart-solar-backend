@@ -66,7 +66,7 @@ public sealed class ContractDocumentHandlers(IContractUnitOfWork contracts, IFil
     public async Task<OperationResult<AttachedFileUrlView>> CashReceiptEvidenceUrlAsync(Guid actorUserId, string actorRole, SmartSolar.Modules.Payments.CashReceiptSubmission receipt,
         StorageUrlDisposition disposition, CancellationToken cancellationToken)
     {
-        var contract = await contracts.FindAsync(receipt.ContractId, false, cancellationToken);
+        var contract = receipt.ContractId is { } contractId ? await contracts.FindAsync(contractId, false, cancellationToken) : null;
         if (contract is null) return NotFound();
         var signed = await SignAsync(contract, receipt.EvidenceFileId, FilePurposes.PaymentEvidence, disposition, cancellationToken);
         if (signed.Succeeded)

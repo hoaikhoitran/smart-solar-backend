@@ -50,7 +50,7 @@ public sealed class PostgresEarlyCompletionSchedulingTests
     {
         await using var database = await PostgresTestDatabase.CreateAsync(upToMigration: Previous);
         await using (var before = database.NewContext())
-            Assert.Equal([Migration, "20261125104043_SchedulingOvertimeConflicts", "20261127021802_TechnicianCashReceipts"], await before.Database.GetPendingMigrationsAsync());
+            Assert.Equal([Migration, "20261125104043_SchedulingOvertimeConflicts", "20261127021802_TechnicianCashReceipts", "20261127124918_UnifiedCashReceipts"], await before.Database.GetPendingMigrationsAsync());
         Assert.DoesNotContain("completed_at", await ConstraintAsync(database, "ex_technician_appointment_no_overlap"));
 
         await using (var up = database.NewContext()) await up.Database.MigrateAsync();

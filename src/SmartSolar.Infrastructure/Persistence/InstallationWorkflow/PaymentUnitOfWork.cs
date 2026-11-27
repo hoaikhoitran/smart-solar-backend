@@ -101,7 +101,7 @@ public sealed class PaymentUnitOfWork(AppDbContext db) : TransactionalUnitOfWork
         if (attemptIds.Count == 0) return [];
         var ids = attemptIds.Distinct().ToList();
         return (await Db.CashReceiptSubmissions.AsNoTracking().Where(r => ids.Contains(r.PaymentAttemptId)).ToListAsync(cancellationToken))
-            .OrderBy(r => r.SubmittedAt).ThenBy(r => r.ReviewedAt ?? DateTimeOffset.MaxValue).ThenBy(r => r.Id).ToList();   // a reviewed receipt precedes a newer open one
+            .OrderBy(r => r.SubmittedAt).ThenBy(r => LiveRank(r.Status)).ThenBy(r => r.ReviewedAt ?? DateTimeOffset.MaxValue).ThenBy(r => r.Id).ToList();
     }
 
     public Task<bool> HasOpenCashReceiptAsync(Guid attemptId, CancellationToken cancellationToken)
@@ -118,10 +118,12 @@ public sealed class PaymentUnitOfWork(AppDbContext db) : TransactionalUnitOfWork
            || await Db.CashReceiptSubmissions.AsNoTracking().AnyAsync(r => r.PaymentAttemptId != exceptAttemptId && r.EvidenceFileId == fileId
                && r.Status != CashReceiptStatuses.Rejected, cancellationToken);
 
-    public async Task<(IReadOnlyList<CashReceiptRow> Rows, int Total)> PageCashReceiptsAsync(string? status, int skip, int take, CancellationToken cancellationToken)
+    public async Task<(IReadOnlyList<CashReceiptRow> Rows, int Total)> PageCashReceiptsAsync(string? status, int skip, int take, CancellationToken cancellationToken,
+        string? kind = null)
     {
         var query = Db.CashReceiptSubmissions.AsNoTracking().AsQueryable();
         if (status is not null) query = query.Where(r => r.Status == status);
+        if (kind is not null) query = query.Where(r => r.Kind == kind);
         var total = await query.CountAsync(cancellationToken);
         var page = await query.OrderByDescending(r => r.SubmittedAt).ThenByDescending(r => r.Id).Skip(skip).Take(take).ToListAsync(cancellationToken);
         return (await RowsAsync(page, cancellationToken), total);
@@ -133,28 +135,57 @@ public sealed class PaymentUnitOfWork(AppDbContext db) : TransactionalUnitOfWork
         return receipt is null ? null : (await RowsAsync([receipt], cancellationToken)).Single();
     }
 
-    /// <summary>Context of a page of receipts in four batch queries (contracts, installments, users, attempts): no per-row query.</summary>
+    public async Task<IReadOnlyList<CashReceiptSubmission>> ListCashReceiptsForQuotationAsync(Guid quotationId, CancellationToken cancellationToken)
+        => (await Db.CashReceiptSubmissions.AsNoTracking().Where(r => r.ServiceQuotationId == quotationId).ToListAsync(cancellationToken))
+            .OrderBy(r => r.SubmittedAt).ThenBy(r => LiveRank(r.Status)).ThenBy(r => r.ReviewedAt ?? DateTimeOffset.MaxValue).ThenBy(r => r.Id).ToList();
+
+    public async Task<bool> IsCashReportedCollectedAsync(Guid attemptId, DateTimeOffset deadline, CancellationToken cancellationToken)
+    {
+        var receipts = await Db.CashReceiptSubmissions.AsNoTracking().Where(r => r.PaymentAttemptId == attemptId)
+            .Select(r => new { r.Status, r.CollectedAt, r.SubmittedAt, r.ReviewedAt }).ToListAsync(cancellationToken);
+        if (receipts.Any(r => r.Status == CashReceiptStatuses.Submitted)) return true;
+        var latest = receipts.OrderBy(r => r.SubmittedAt).ThenBy(r => LiveRank(r.Status)).ThenBy(r => r.ReviewedAt ?? DateTimeOffset.MaxValue).LastOrDefault();
+        return latest is not null && latest.Status == CashReceiptStatuses.Rejected && latest.CollectedAt <= deadline;
+    }
+
+    /// <summary>
+    /// History order tie-break: a payment has at most one live receipt (SUBMITTED / ACCEPTED) and it is always the newest one, so closed receipts
+    /// (REJECTED / WITHDRAWN) sort before it when timestamps are equal.
+    /// </summary>
+    private static int LiveRank(string status) => status is CashReceiptStatuses.Submitted or CashReceiptStatuses.Accepted ? 1 : 0;
+
+    /// <summary>Context of a page of receipts in batch queries (contracts, installments, quotations, requests, users, attempts): no per-row query.</summary>
     private async Task<IReadOnlyList<CashReceiptRow>> RowsAsync(IReadOnlyList<CashReceiptSubmission> receipts, CancellationToken cancellationToken)
     {
         if (receipts.Count == 0) return [];
-        var contractIds = receipts.Select(r => r.ContractId).Distinct().ToList();
-        var installmentIds = receipts.Select(r => r.ContractInstallmentId).Distinct().ToList();
+        var contractIds = receipts.Where(r => r.ContractId is not null).Select(r => r.ContractId!.Value).Distinct().ToList();
+        var installmentIds = receipts.Where(r => r.ContractInstallmentId is not null).Select(r => r.ContractInstallmentId!.Value).Distinct().ToList();
+        var quotationIds = receipts.Where(r => r.ServiceQuotationId is not null).Select(r => r.ServiceQuotationId!.Value).Distinct().ToList();
+        var requestIds = receipts.Where(r => r.ServiceRequestId is not null).Select(r => r.ServiceRequestId!.Value).Distinct().ToList();
         var attemptIds = receipts.Select(r => r.PaymentAttemptId).Distinct().ToList();
         var contracts = await Db.CustomerContracts.AsNoTracking().Where(c => contractIds.Contains(c.Id))
             .Select(c => new { c.Id, c.ContractNumber, c.CustomerUserId }).ToDictionaryAsync(c => c.Id, cancellationToken);
         var installments = await Db.ContractInstallments.AsNoTracking().Where(i => installmentIds.Contains(i.Id))
             .Select(i => new { i.Id, i.Sequence, i.Kind }).ToDictionaryAsync(i => i.Id, cancellationToken);
+        var quotations = await Db.ServiceQuotations.AsNoTracking().Where(q => quotationIds.Contains(q.Id))
+            .Select(q => new { q.Id, q.Version }).ToDictionaryAsync(q => q.Id, q => q.Version, cancellationToken);
+        var requests = await Db.ServiceRequests.AsNoTracking().Where(r => requestIds.Contains(r.Id))
+            .Select(r => new { r.Id, r.RequestNumber, r.Kind, r.CustomerUserId }).ToDictionaryAsync(r => r.Id, cancellationToken);
         var attempts = await Db.PaymentAttempts.AsNoTracking().Where(a => attemptIds.Contains(a.Id)).Select(a => new { a.Id, a.Status })
             .ToDictionaryAsync(a => a.Id, a => a.Status, cancellationToken);
-        var userIds = receipts.Select(r => r.CollectedByUserId).Concat(contracts.Values.Select(c => c.CustomerUserId)).Distinct().ToList();
+        var userIds = receipts.Select(r => r.CollectedByUserId).Concat(contracts.Values.Select(c => c.CustomerUserId))
+            .Concat(requests.Values.Select(r => r.CustomerUserId)).Distinct().ToList();
         var names = await Db.UserAccounts.AsNoTracking().Where(u => userIds.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.FullName, cancellationToken);
         return receipts.Select(r =>
         {
-            var contract = contracts.GetValueOrDefault(r.ContractId);
-            var installment = installments.GetValueOrDefault(r.ContractInstallmentId);
-            return new CashReceiptRow(r, contract?.ContractNumber ?? "", installment?.Sequence ?? 0, installment?.Kind ?? "", contract?.CustomerUserId ?? Guid.Empty,
-                contract is null ? "" : names.GetValueOrDefault(contract.CustomerUserId) ?? "", names.GetValueOrDefault(r.CollectedByUserId) ?? "",
-                attempts.GetValueOrDefault(r.PaymentAttemptId) ?? "");
+            var contract = r.ContractId is { } c ? contracts.GetValueOrDefault(c) : null;
+            var installment = r.ContractInstallmentId is { } i ? installments.GetValueOrDefault(i) : null;
+            var request = r.ServiceRequestId is { } q ? requests.GetValueOrDefault(q) : null;
+            var customer = contract?.CustomerUserId ?? request?.CustomerUserId ?? Guid.Empty;
+            return new CashReceiptRow(r, contract?.ContractNumber ?? "", installment?.Sequence, installment?.Kind, customer,
+                customer == Guid.Empty ? "" : names.GetValueOrDefault(customer) ?? "", names.GetValueOrDefault(r.CollectedByUserId) ?? "",
+                attempts.GetValueOrDefault(r.PaymentAttemptId) ?? "", request?.RequestNumber, request?.Kind,
+                r.ServiceQuotationId is { } sq && quotations.TryGetValue(sq, out var version) ? version : null);
         }).ToList();
     }
 }

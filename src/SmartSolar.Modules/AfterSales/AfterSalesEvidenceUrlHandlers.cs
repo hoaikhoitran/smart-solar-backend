@@ -36,6 +36,24 @@ public sealed class AfterSalesEvidenceUrlHandlers(IAfterSalesUnitOfWork data, IF
         return await SignAsync(requestId, evidenceId, disposition, cancellationToken);
     }
 
+    /// <summary>
+    /// Short-lived URL of the photo of a technician cash receipt of an after-sales quotation (2026-11-27). The caller already authorized the reader for
+    /// <paramref name="receipt"/> (Manager/Admin, or the technician with a live visit on the request). Only the receipt's own PAYMENT_EVIDENCE file is
+    /// signed.
+    /// </summary>
+    public async Task<OperationResult<AttachedFileUrlView>> CashReceiptAsync(Payments.CashReceiptSubmission receipt, StorageUrlDisposition disposition,
+        CancellationToken cancellationToken)
+    {
+        if (receipt.ServiceRequestId is not { } requestId || await data.FindRequestAsync(requestId, false, cancellationToken) is null)
+            return OperationResult<AttachedFileUrlView>.Fail(AfterSalesErrorCodes.RequestNotFound, "Service request was not found.");
+        var file = await files.FindAsync(receipt.EvidenceFileId, cancellationToken);
+        if (file is null) return OperationResult<AttachedFileUrlView>.Fail(FileErrorCodes.NotFound, "The receipt photo was not found.");
+        var signed = await urls.CreateAsync(file, FilePurposes.PaymentEvidence, disposition, null, cancellationToken);
+        return signed.Succeeded
+            ? OperationResult<AttachedFileUrlView>.Ok(AttachedFileUrlView.From(receipt.EvidenceFileId, signed.Value!))
+            : signed.As<AttachedFileUrlView>();
+    }
+
     private async Task<OperationResult<AttachedFileUrlView>> SignAsync(Guid requestId, Guid evidenceId, StorageUrlDisposition disposition,
         CancellationToken cancellationToken)
     {

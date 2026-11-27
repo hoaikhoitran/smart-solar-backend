@@ -24,7 +24,7 @@ public sealed class PostgresPaymentPlanTests
     private const string Previous = "20261118102011_TechnicianLedOnSiteSales";
     private const string Migration = "20261118202100_PaymentPlan3070PaperSignatureCollection";
     /// <summary>The latest migration (a clean database is fully migrated).</summary>
-    private const string Latest = "20261127021802_TechnicianCashReceipts";
+    private const string Latest = "20261127124918_UnifiedCashReceipts";
     private static readonly CancellationToken None = CancellationToken.None;
 
     private static async Task<string?> SqlStateAsync(PostgresTestDatabase database, string sql)
