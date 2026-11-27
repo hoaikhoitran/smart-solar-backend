@@ -96,4 +96,25 @@ public interface IPaymentUnitOfWork : ITransactionalUnitOfWork
     void AddAttempt(PaymentAttempt attempt);
     void AddEvent(PaymentEvent paymentEvent);
     void AddWebhookEvent(PaymentWebhookEvent webhookEvent);
+
+    // ---- Technician cash receipts (2026-11-27) ----
+    void AddCashReceipt(CashReceiptSubmission receipt);
+    Task<CashReceiptSubmission?> FindCashReceiptAsync(Guid receiptId, bool track, CancellationToken cancellationToken);
+    /// <summary>Every submission of these attempts (any status).</summary>
+    Task<IReadOnlyList<CashReceiptSubmission>> ListCashReceiptsAsync(IReadOnlyCollection<Guid> attemptIds, CancellationToken cancellationToken);
+    Task<bool> HasOpenCashReceiptAsync(Guid attemptId, CancellationToken cancellationToken);
+    /// <summary>True when another attempt already uses the receipt number (a CASH confirmation, or a SUBMITTED / ACCEPTED receipt).</summary>
+    Task<bool> IsCashReceiptNumberUsedAsync(string receiptNumber, Guid exceptAttemptId, CancellationToken cancellationToken);
+    /// <summary>True when the file is already the evidence of another attempt (its confirmation or one of its non-rejected receipts).</summary>
+    Task<bool> IsCashEvidenceUsedAsync(Guid fileId, Guid exceptAttemptId, CancellationToken cancellationToken);
+    /// <summary>One page of receipts with their review context (status null = any), newest first, with the total.</summary>
+    Task<(IReadOnlyList<CashReceiptRow> Rows, int Total)> PageCashReceiptsAsync(string? status, int skip, int take, CancellationToken cancellationToken, string? kind = null);
+    Task<CashReceiptRow?> GetCashReceiptRowAsync(Guid receiptId, CancellationToken cancellationToken);
+    /// <summary>Every receipt sent for an after-sales quotation (any attempt, any status), oldest first.</summary>
+    Task<IReadOnlyList<CashReceiptSubmission>> ListCashReceiptsForQuotationAsync(Guid quotationId, CancellationToken cancellationToken);
+    /// <summary>
+    /// True when the technician reported the cash of this attempt as taken and it is not settled: a receipt is under review, or the latest one was
+    /// rejected for a collection made by <paramref name="deadline"/> (a corrected receipt is expected; the customer is not asked to pay again).
+    /// </summary>
+    Task<bool> IsCashReportedCollectedAsync(Guid attemptId, DateTimeOffset deadline, CancellationToken cancellationToken);
 }

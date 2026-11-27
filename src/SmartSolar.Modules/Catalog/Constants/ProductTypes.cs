@@ -22,6 +22,15 @@ public static class ProductTypes
     public static bool IsService(string? productType)
         => productType is not null && ServiceTypes.Contains(Normalize(productType));
 
+    /// <summary>
+    /// Physical equipment sold by whole units (2026-11-25): a quotation line of these types must have a positive integer quantity. Other types keep the
+    /// existing decimal precision (services; equipment types not listed here need a catalog decision before being restricted).
+    /// </summary>
+    public static readonly IReadOnlyList<string> WholeUnitTypes = [SolarPanel, Inverter];
+
+    public static bool RequiresWholeQuantity(string? productType)
+        => productType is not null && WholeUnitTypes.Contains(Normalize(productType));
+
     /// <summary>Product types are compared and stored upper-cased.</summary>
     public static string Normalize(string productType) => productType.Trim().ToUpperInvariant();
 }

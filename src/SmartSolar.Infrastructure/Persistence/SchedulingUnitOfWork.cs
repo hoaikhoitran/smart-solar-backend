@@ -27,6 +27,7 @@ namespace SmartSolar.Infrastructure.Persistence;
 /// </summary>
 public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
 {
+
     private const string ExclusionViolation = "23P01";
     private const string UniqueViolation = "23505";
     private const string ActiveSurveyRequestIndex = "ux_technician_appointment_active_survey_request";
@@ -162,11 +163,29 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
         var userIds = technicians.Select(t => t.Id).ToList();
         var profiles = await _db.TechnicianProfiles.AsNoTracking().Where(p => userIds.Contains(p.UserId)).ToDictionaryAsync(p => p.UserId, cancellationToken);
 
-        var appointments = await Active.AsNoTracking()
+        var now = _time.GetUtcNow();
+        // A survey is IN EXECUTION only on authoritative evidence: its on-site report is IN_PROGRESS (the technician started it on site), never because
+        // the appointment is ACCEPTED and its start passed. Work in execution is loaded even when its reserved interval ended before the window (overtime).
+        var surveyRows = Active.AsNoTracking()
             .Where(a => a.ReservedTechnicianUserId != null && userIds.Contains(a.ReservedTechnicianUserId.Value)
-                        && a.StartsAt < windowEndUtc && a.EndsAt > windowStartUtc)
-            .Select(a => new { a.Id, Technician = a.ReservedTechnicianUserId!.Value, a.StartsAt, a.EndsAt, a.Status })
-            .ToListAsync(cancellationToken);
+                        // reserved interval touches the window, or (early) the real completion falls in it — the completion point keeps its buffer
+                        && (a.StartsAt < windowEndUtc
+                            || (a.Status == AppointmentStatuses.Completed && a.CompletedAt != null && a.CompletedAt >= windowStartUtc && a.CompletedAt < windowEndUtc)));
+        var appointments = _includeInstallationAssignments
+            ? await surveyRows
+                .Select(a => new
+                {
+                    a.Id, Technician = a.ReservedTechnicianUserId!.Value, a.StartsAt, a.EndsAt, a.Status, a.CompletedAt,
+                    InExecution = (a.Status == AppointmentStatuses.Accepted || a.Status == AppointmentStatuses.Assigned)
+                                  && _db.OnSiteSurveyReports.Any(r => r.AppointmentId == a.Id && r.Status == SmartSolar.Modules.OnSiteSurveys.OnSiteSurveyStatuses.InProgress),
+                })
+                .Where(a => (a.StartsAt < windowEndUtc && (a.EndsAt > windowStartUtc || a.InExecution))
+                            || (a.Status == AppointmentStatuses.Completed && a.CompletedAt != null && a.CompletedAt >= windowStartUtc && a.CompletedAt < windowEndUtc))
+                .ToListAsync(cancellationToken)
+            : await surveyRows.Where(a => (a.StartsAt < windowEndUtc && a.EndsAt > windowStartUtc)
+                                          || (a.Status == AppointmentStatuses.Completed && a.CompletedAt != null && a.CompletedAt >= windowStartUtc && a.CompletedAt < windowEndUtc))
+                .Select(a => new { a.Id, Technician = a.ReservedTechnicianUserId!.Value, a.StartsAt, a.EndsAt, a.Status, a.CompletedAt, InExecution = false })
+                .ToListAsync(cancellationToken);
 
         var blocked = await _db.TechnicianUnavailablePeriods.AsNoTracking()
             .Where(b => userIds.Contains(b.TechnicianUserId) && b.StartsAt < windowEndUtc && b.EndsAt > windowStartUtc)
@@ -177,8 +196,19 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
         var installation = !_includeInstallationAssignments
             ? []
             : await CurrentInstallationAssignments.AsNoTracking()
-                .Where(s => userIds.Contains(s.TechnicianUserId) && s.StartsAt < windowEndUtc && s.EndsAt > windowStartUtc)
-                .Select(s => new { s.Id, s.TechnicianUserId, s.StartsAt, s.EndsAt })
+                .Where(s => userIds.Contains(s.TechnicianUserId) && s.StartsAt < windowEndUtc)
+                // In execution: the accepted, unreported assignment of a project IN_PROGRESS, or in REWORK_REQUIRED with evidence of the current round
+                // (rework actually performed on this assignment). PENDING_CUSTOMER_ACCEPTANCE (reported), COMPLETED and CANCELLED never are.
+                .Select(s => new
+                {
+                    s.Id, s.TechnicianUserId, s.StartsAt, s.EndsAt, s.WorkReportedAt,
+                    InExecution = s.WorkReportedAt == null && s.Status == SmartSolar.Modules.Installations.AssignmentStatuses.Accepted
+                                  && _db.InstallationProjects.Any(p => p.Id == s.ProjectId
+                                      && (p.Status == SmartSolar.Modules.Installations.InstallationStatuses.InProgress
+                                          || (p.Status == SmartSolar.Modules.Installations.InstallationStatuses.ReworkRequired
+                                              && _db.InstallationEvidence.Any(e => e.ProjectId == p.Id && e.Round == p.AcceptanceRound + 1)))),
+                })
+                .Where(s => s.EndsAt > windowStartUtc || s.InExecution)
                 .ToListAsync(cancellationToken);
 
         var customIds = profiles.Values.Where(p => p.HasCustomWorkingSchedule).Select(p => p.UserId).ToList();
@@ -195,10 +225,28 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
             return new TechnicianDayState(
                 t.Id,
                 t.FullName,
+                // Effective busy intervals (EffectiveBusy): a COMPLETED survey and a reported-complete installation assignment no longer hold the
+                // unused rest of their reserved interval. A completed survey still counts toward the daily survey limit (the limit caps surveys per
+                // day, see SchedulingOptions.MaxAppointmentsPerTechnicianPerDay).
+                // Overtime: work in execution past its reserved end keeps occupying the technician (stop marked InExecution, end = now; the day
+                // loader extends it to the end of that local day). StartsAt/EndsAt are never rewritten.
                 appointments.Where(a => a.Technician == t.Id)
-                    .Select(a => new ScheduledStop(a.Id, a.StartsAt, a.EndsAt, IsPendingHold: AppointmentStatuses.IsOpen(a.Status)))
+                    .Select(a =>
+                    {
+                        if (a.InExecution && now > a.EndsAt)
+                            return new ScheduledStop(a.Id, a.StartsAt, now, InExecution: true, ReservedStartsAtUtc: a.StartsAt, ReservedEndsAtUtc: a.EndsAt);
+                        var (start, end) = EffectiveBusy.Of(a.StartsAt, a.EndsAt, a.Status == AppointmentStatuses.Completed ? a.CompletedAt : null);
+                        return new ScheduledStop(a.Id, start, end, IsPendingHold: AppointmentStatuses.IsOpen(a.Status),
+                            ReservedStartsAtUtc: a.StartsAt, ReservedEndsAtUtc: a.EndsAt);
+                    })
                     .Concat(installation.Where(s => s.TechnicianUserId == t.Id)
-                        .Select(s => new ScheduledStop(s.Id, s.StartsAt, s.EndsAt, CountsTowardDailyLimit: false)))
+                        .Select(s =>
+                        {
+                            if (s.InExecution && now > s.EndsAt)
+                                return new ScheduledStop(s.Id, s.StartsAt, now, CountsTowardDailyLimit: false, InExecution: true, IsInstallation: true);
+                            var (start, end) = EffectiveBusy.Of(s.StartsAt, s.EndsAt, s.WorkReportedAt);
+                            return new ScheduledStop(s.Id, start, end, CountsTowardDailyLimit: false, IsInstallation: true);
+                        }))
                     .OrderBy(a => a.StartsAtUtc)
                     .ToList(),
                 blocked.Where(b => b.TechnicianUserId == t.Id).Select(b => new BlockedPeriod(b.StartsAt, b.EndsAt)).ToList(),
@@ -681,7 +729,8 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
         => !_includeInstallationAssignments
             ? []
             : (await CurrentInstallationAssignments.AsNoTracking()
-                    .Where(a => a.TechnicianUserId == technicianUserId && a.EndsAt > fromUtc)
+                    // A reported-complete assignment no longer holds future time (its rest is released; see EffectiveBusy).
+                    .Where(a => a.TechnicianUserId == technicianUserId && a.EndsAt > fromUtc && a.WorkReportedAt == null)
                     .Join(_db.InstallationProjects, a => a.ProjectId, p => p.Id, (a, p) => new { a.Id, a.StartsAt, a.EndsAt, p.PropertySiteId })
                     .ToListAsync(cancellationToken))
                 .OrderBy(a => a.StartsAt)
@@ -870,6 +919,50 @@ public sealed class SchedulingUnitOfWork : ISchedulingUnitOfWork
             .ToListAsync(cancellationToken);
         return rows.OrderBy(r => r.FullName, StringComparer.Ordinal).ThenBy(r => r.TechnicianUserId)
             .Select(r => new ZoneMemberRow(r.TechnicianUserId, r.FullName, r.IsActive, r.HasRole, r.Scheduling, r.AssignedAt)).ToList();
+    }
+
+    public async Task<IReadOnlyList<Guid>> ListTechniciansToCheckForOvertimeAsync(DateTimeOffset nowUtc, int limit, CancellationToken cancellationToken)
+    {
+        var open = await _db.TechnicianScheduleConflicts.AsNoTracking().Where(c => c.Status == ScheduleConflictStatuses.Open)
+            .Select(c => c.TechnicianUserId).Distinct().Take(limit).ToListAsync(cancellationToken);
+        if (!_includeInstallationAssignments) return open;
+        // Candidates in SQL, overrun (reserved end passed) in memory: SQLite (tests) cannot compare DateTimeOffset columns with a parameter reliably
+        // inside these subqueries; the candidate sets are the technicians currently on site.
+        var surveys = await _db.TechnicianAppointments.AsNoTracking()
+            .Where(a => (a.Status == AppointmentStatuses.Accepted || a.Status == AppointmentStatuses.Assigned) && a.ReservedTechnicianUserId != null
+                        && _db.OnSiteSurveyReports.Any(r => r.AppointmentId == a.Id && r.Status == SmartSolar.Modules.OnSiteSurveys.OnSiteSurveyStatuses.InProgress))
+            .Select(a => new { Technician = a.ReservedTechnicianUserId!.Value, a.EndsAt }).ToListAsync(cancellationToken);
+        var installations = await CurrentInstallationAssignments.AsNoTracking()
+            .Where(s => s.WorkReportedAt == null && s.Status == SmartSolar.Modules.Installations.AssignmentStatuses.Accepted
+                        && _db.InstallationProjects.Any(p => p.Id == s.ProjectId
+                            && (p.Status == SmartSolar.Modules.Installations.InstallationStatuses.InProgress
+                                || (p.Status == SmartSolar.Modules.Installations.InstallationStatuses.ReworkRequired
+                                    && _db.InstallationEvidence.Any(e => e.ProjectId == p.Id && e.Round == p.AcceptanceRound + 1)))))
+            .Select(s => new { Technician = s.TechnicianUserId, s.EndsAt }).ToListAsync(cancellationToken);
+        return surveys.Where(x => x.EndsAt < nowUtc).Select(x => x.Technician)
+            .Concat(installations.Where(x => x.EndsAt < nowUtc).Select(x => x.Technician))
+            .Concat(open).Distinct().OrderBy(id => id).Take(limit).ToList();
+    }
+
+    public async Task<IReadOnlyList<TechnicianScheduleConflict>> ListScheduleConflictsAsync(Guid? technicianUserId, string? status, bool track,
+        CancellationToken cancellationToken)
+        => (await (track ? _db.TechnicianScheduleConflicts : _db.TechnicianScheduleConflicts.AsNoTracking())
+                .Where(c => (technicianUserId == null || c.TechnicianUserId == technicianUserId) && (status == null || c.Status == status))
+                .ToListAsync(cancellationToken))
+            .OrderByDescending(c => c.DetectedAt).ThenBy(c => c.Id).ToList();
+
+    public void AddScheduleConflict(TechnicianScheduleConflict conflict) => _db.TechnicianScheduleConflicts.Add(conflict);
+
+    public async Task<DateTimeOffset?> GetInstallationAssignmentEndAsync(Guid assignmentId, CancellationToken cancellationToken)
+        => !_includeInstallationAssignments ? null
+            : await _db.InstallationAssignments.AsNoTracking().Where(a => a.Id == assignmentId).Select(a => (DateTimeOffset?)a.EndsAt).FirstOrDefaultAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<Guid>> ListActiveUserIdsWithRolesAsync(IReadOnlyCollection<string> roleCodes, CancellationToken cancellationToken)
+    {
+        var codes = roleCodes.ToList();
+        return await _db.UserAccounts.AsNoTracking()
+            .Where(u => u.DeletedAt == null && u.Status == UserStatus.Active && u.UserRoles.Any(r => codes.Contains(r.Role.Code)))
+            .OrderBy(u => u.Id).Select(u => u.Id).ToListAsync(cancellationToken);
     }
 
     public Task<bool> IsActiveUserWithRoleAsync(Guid userId, IReadOnlyCollection<string> roleCodes, CancellationToken cancellationToken)

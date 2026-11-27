@@ -91,6 +91,14 @@ public sealed class InstallationAssignment
     public DateTimeOffset? ClosedAt { get; set; }
 
     /// <summary>
+    /// Server time at which the responsible technician reported the work complete on this assignment (2026-11-25). The assignment stays ACCEPTED
+    /// while the customer decides (workflow unchanged), but from this instant the unused rest of [<see cref="StartsAt"/>, <see cref="EndsAt"/>) is no
+    /// longer busy for scheduling (<see cref="SmartSolar.Modules.Scheduling.Domain.EffectiveBusy"/>). <see cref="StartsAt"/>/<see cref="EndsAt"/> are never
+    /// changed. A rework round needs a new assignment (Manager/Admin) before on-site work resumes.
+    /// </summary>
+    public DateTimeOffset? WorkReportedAt { get; set; }
+
+    /// <summary>
     /// Set for an after-sales visit (Flow 3) of the handed-over project; null for the installation itself. Sharing this table
     /// gives after-sales visits the same overlap constraint, technician locks and busy-interval checks as installation work.
     /// </summary>
@@ -414,6 +422,11 @@ public static class InstallationErrorCodes
     public const string ReasonRequired = "INSTALLATION_REASON_REQUIRED";
     public const string AssignmentNotPending = "INSTALLATION_ASSIGNMENT_NOT_PENDING";
     public const string AssignmentNotAccepted = "INSTALLATION_ASSIGNMENT_NOT_ACCEPTED";
+    /// <summary>
+    /// Rework was requested after the technician reported completion: the time of the reported assignment was released, so renewed on-site work
+    /// needs a new assignment (Manager/Admin assign / reschedule, then the technician accepts) (409).
+    /// </summary>
+    public const string ReworkScheduleRequired = "INSTALLATION_REWORK_SCHEDULE_REQUIRED";
     /// <summary>No longer returned since 2026-11-17 (starting is not tied to the scheduled dates); kept so clients that map it still compile.</summary>
     public const string TooEarlyToStart = "INSTALLATION_TOO_EARLY_TO_START";
 

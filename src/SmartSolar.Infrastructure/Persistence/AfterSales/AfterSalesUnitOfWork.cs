@@ -258,6 +258,9 @@ public sealed class AfterSalesUnitOfWork(AppDbContext db) : TransactionalUnitOfW
         => (track ? Db.AfterSalesNotifications : Db.AfterSalesNotifications.AsNoTracking())
             .FirstOrDefaultAsync(n => n.Id == notificationId && n.RecipientUserId == recipientUserId, cancellationToken);
 
+    public Task<bool> HasCashReceiptUnderReviewAsync(Guid requestId, CancellationToken cancellationToken)
+        => Db.CashReceiptSubmissions.AsNoTracking().AnyAsync(r => r.ServiceRequestId == requestId && r.Status == CashReceiptStatuses.Submitted, cancellationToken);
+
     public Task<PaymentAttempt?> FindPaymentAttemptAsync(Guid attemptId, CancellationToken cancellationToken)
         => Db.PaymentAttempts.AsNoTracking().FirstOrDefaultAsync(a => a.Id == attemptId, cancellationToken);
 

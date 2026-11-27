@@ -73,6 +73,8 @@ public sealed class AppDbContext : DbContext
 
     public DbSet<TechnicianAppointmentEvent> TechnicianAppointmentEvents => Set<TechnicianAppointmentEvent>();
 
+    public DbSet<TechnicianScheduleConflict> TechnicianScheduleConflicts => Set<TechnicianScheduleConflict>();
+
     public DbSet<SchedulingNotification> SchedulingNotifications => Set<SchedulingNotification>();
 
     public DbSet<UserAccountAuditEntry> UserAccountAuditEntries => Set<UserAccountAuditEntry>();
@@ -124,6 +126,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<SmartSolar.Modules.Payments.PaymentWebhookEvent> PaymentWebhookEvents => Set<SmartSolar.Modules.Payments.PaymentWebhookEvent>();
 
     public DbSet<SmartSolar.Modules.Payments.PaymentEvent> PaymentEvents => Set<SmartSolar.Modules.Payments.PaymentEvent>();
+    public DbSet<SmartSolar.Modules.Payments.CashReceiptSubmission> CashReceiptSubmissions => Set<SmartSolar.Modules.Payments.CashReceiptSubmission>();
 
     public DbSet<SmartSolar.Modules.Installations.InstallationProject> InstallationProjects => Set<SmartSolar.Modules.Installations.InstallationProject>();
     public DbSet<SmartSolar.Modules.Installations.InstallationScheduleProposal> InstallationScheduleProposals => Set<SmartSolar.Modules.Installations.InstallationScheduleProposal>();

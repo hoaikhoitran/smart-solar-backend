@@ -127,6 +127,8 @@ public sealed class InstallationReworkAndZoneLockTests
         Assert.Equal(AcceptanceDeciders.Staff, Assert.Single(customerView.Acceptances).DecidedBy);
         Assert.DoesNotContain(paid.ManagerId.ToString(), JsonSerializer.Serialize(customerView));
 
+        // Rework needs a new schedule first (the reported assignment's time was released).
+        await ReworkScheduledAsync(ctx, project.ProjectId, tech, paid.ManagerId);
         // Round-1 evidence does not count; new evidence → report → the internal acceptance completes.
         Assert.Equal(InstallationErrorCodes.EvidenceRequired, (await installs.ReportCompletionAsync(tech, project.ProjectId, "Fixed", null, None)).ErrorCode);
         await AddCompletionEvidenceAsync(ctx, project.ProjectId, tech);

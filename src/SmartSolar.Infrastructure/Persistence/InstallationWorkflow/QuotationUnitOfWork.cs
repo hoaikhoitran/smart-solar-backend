@@ -85,6 +85,17 @@ public sealed class QuotationUnitOfWork(AppDbContext db) : TransactionalUnitOfWo
     public async Task<int> GetSurveyVersionAsync(Guid surveyRequestId, CancellationToken cancellationToken)
         => await Db.OnSiteSurveyReports.AsNoTracking().Where(r => r.SurveyRequestId == surveyRequestId).Select(r => r.Version).FirstOrDefaultAsync(cancellationToken);
 
+    public async Task<IReadOnlyDictionary<Guid, Guid>> GetLiveContractIdsAsync(IReadOnlyCollection<Guid> quotationIds, CancellationToken cancellationToken)
+    {
+        if (quotationIds.Count == 0) return new Dictionary<Guid, Guid>();
+        var ids = quotationIds.Distinct().ToList();
+        var rows = await Db.CustomerContracts.AsNoTracking()
+            .Where(c => ids.Contains(c.QuotationId) && c.Status != SmartSolar.Modules.CustomerContracts.ContractStatuses.Superseded
+                        && c.Status != SmartSolar.Modules.CustomerContracts.ContractStatuses.Discarded)
+            .Select(c => new { c.QuotationId, c.Id, c.Version }).ToListAsync(cancellationToken);
+        return rows.GroupBy(r => r.QuotationId).ToDictionary(g => g.Key, g => g.MaxBy(r => r.Version)!.Id);
+    }
+
     public Task<bool> HasLiveContractAsync(Guid quotationId, CancellationToken cancellationToken)
         => Db.CustomerContracts.AsNoTracking().AnyAsync(c => c.QuotationId == quotationId && c.Status != SmartSolar.Modules.CustomerContracts.ContractStatuses.Superseded && c.Status != SmartSolar.Modules.CustomerContracts.ContractStatuses.Discarded, cancellationToken);
 

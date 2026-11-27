@@ -68,6 +68,12 @@ public interface IQuotationUnitOfWork : ITransactionalUnitOfWork, IInAppNotifica
     /// <summary>True when a contract that is not SUPERSEDED exists for the quotation.</summary>
     Task<bool> HasLiveContractAsync(Guid quotationId, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// The live contract of each quotation (one query): the persisted contract whose quotation_id is the quotation, neither DISCARDED nor SUPERSEDED;
+    /// the latest version when an amendment exists. Quotations without one are absent.
+    /// </summary>
+    Task<IReadOnlyDictionary<Guid, Guid>> GetLiveContractIdsAsync(IReadOnlyCollection<Guid> quotationIds, CancellationToken cancellationToken);
+
     /// <summary>True when a payment of the installation quotation is open (PENDING/PROCESSING) or verified (PAID / settled).</summary>
     Task<bool> HasPaymentInProgressOrPaidAsync(Guid quotationId, CancellationToken cancellationToken);
 

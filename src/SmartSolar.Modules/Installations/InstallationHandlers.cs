@@ -168,10 +168,14 @@ public sealed partial class InstallationHandlers(
 
     private async Task<IReadOnlyList<InstallationProjectSummary>> SummariesAsync(IReadOnlyList<InstallationProject> projects, CancellationToken cancellationToken)
     {
-        var names = await unitOfWork.GetUserNamesAsync(projects.Where(p => p.ResponsibleTechnicianUserId is not null).Select(p => p.ResponsibleTechnicianUserId!.Value).Distinct().ToList(), cancellationToken);
+        if (projects.Count == 0) return [];
+        // One lookup for the whole list / page: responsible technicians and customers together (no per-row query).
+        var names = await unitOfWork.GetUserNamesAsync(projects.Where(p => p.ResponsibleTechnicianUserId is not null).Select(p => p.ResponsibleTechnicianUserId!.Value)
+            .Concat(projects.Select(p => p.CustomerUserId)).Distinct().ToList(), cancellationToken);
         return projects.Select(p => new InstallationProjectSummary(p.Id, p.ContractId, p.Status, p.ResponsibleTechnicianUserId,
             p.ResponsibleTechnicianUserId is { } t ? names.GetValueOrDefault(t) : null, p.TechnicianAcceptedAt is not null,
-            Local(p.ScheduledStartsAt), Local(p.ScheduledEndsAt), p.OperationalZoneId, p.CreatedAt, p.Revision)).ToList();
+            Local(p.ScheduledStartsAt), Local(p.ScheduledEndsAt), p.OperationalZoneId, p.CreatedAt, p.Revision,
+            names.GetValueOrDefault(p.CustomerUserId) ?? "")).ToList();
     }
 
     public async Task<OperationResult<InstallationStaffView>> GetForManagerAsync(Guid projectId, CancellationToken cancellationToken)
@@ -225,8 +229,10 @@ public sealed partial class InstallationHandlers(
         var reason = Trim(input.Reason, 500);
         if ((current is not null || InstallationStatuses.IsStarted(project.Status)) && reason is null)
             return OperationResult<InstallationStaffView>.Fail(InstallationErrorCodes.ReasonRequired, "A reason is required to reassign or reschedule.");
-        if (current is not null && current.TechnicianUserId == input.TechnicianUserId && current.StartsAt == startsAt && current.EndsAt == endsAt)
-            return OperationResult<InstallationStaffView>.Ok(await StaffViewAsync(projectId, cancellationToken));   // nothing to change
+        // Nothing to change — unless the current assignment's time was released by a completion report (rework needs a fresh assignment).
+        if (current is not null && current.TechnicianUserId == input.TechnicianUserId && current.StartsAt == startsAt && current.EndsAt == endsAt
+            && current.WorkReportedAt is null)
+            return OperationResult<InstallationStaffView>.Ok(await StaffViewAsync(projectId, cancellationToken));
 
         var coverage = await CoverageAsync(project, cancellationToken, allowNoZone: true);
         if (!coverage.Succeeded) return coverage.As<InstallationStaffView>();
@@ -710,7 +716,7 @@ public sealed partial class InstallationHandlers(
     {
         if (string.IsNullOrWhiteSpace(completionReport) || completionReport.Trim().Length > 8000)
             return OperationResult<InstallationTechnicianView>.Fail(CommonErrorCodes.ValidationFailed, "A completion report (≤ 8000 characters) is required.");
-        return await TechnicianActionAsync(technicianUserId, projectId, expectedRevision, requireAccepted: true, async (p, _, now, token) =>
+        return await TechnicianActionAsync(technicianUserId, projectId, expectedRevision, requireAccepted: true, async (p, assignment, now, token) =>
         {
             if (!InstallationStatuses.IsStarted(p.Status))
                 return Fail(InstallationErrorCodes.InvalidState, "Completion is reported for a project in progress or in rework.");
@@ -736,7 +742,11 @@ public sealed partial class InstallationHandlers(
             });
             p.Status = InstallationStatuses.PendingCustomerAcceptance;
             p.AcceptanceRequestedAt = now;
-            Event(projectId, InstallationEventTypes.CompletionReported, technicianUserId, from, p.Status, $"round {round}", now);
+            // The technician's execution is finished: the unused rest of the reserved interval is released for scheduling (EffectiveBusy). The
+            // assignment stays ACCEPTED and the project waits for the customer: nothing about acceptance, handover or the 70 % balance changes here.
+            assignment.WorkReportedAt = now;
+            Event(projectId, InstallationEventTypes.CompletionReported, technicianUserId, from, p.Status,
+                now < assignment.EndsAt ? $"round {round}; technician time released from {now:O} (reserved until {assignment.EndsAt:O})" : $"round {round}", now);
             // 2026-11-19: the customer accepts or requests rework in the app (the technician never accepts for the customer).
             unitOfWork.AddNotification(p.CustomerUserId, CustomerNotificationTypes.InstallationAcceptanceRequested,
                 $"Đội thi công đã báo cáo hoàn thành (lượt {round}). Vui lòng kiểm tra và nghiệm thu, hoặc yêu cầu sửa chữa kèm lý do, trong ứng dụng.", now);
@@ -838,6 +848,10 @@ public sealed partial class InstallationHandlers(
             if (current is null || current.TechnicianUserId != technicianUserId) return Fail(InstallationErrorCodes.ProjectNotFound, "Project was not found.");
             if (requireAccepted && current.Status != AssignmentStatuses.Accepted)
                 return Fail(InstallationErrorCodes.AssignmentNotAccepted, "Accept the assignment first.");
+            // Rework after a reported completion: that assignment's time was released, so on-site work needs a new assignment first.
+            if (requireAccepted && p.Status == InstallationStatuses.ReworkRequired && current.WorkReportedAt is not null)
+                return Fail(InstallationErrorCodes.ReworkScheduleRequired,
+                    "Rework needs a new installation schedule: a Manager/Admin assigns the rework interval and the technician accepts it before work resumes.");
             return await change(p, current, now, token);
         }, cancellationToken);
     }
@@ -947,7 +961,9 @@ public sealed partial class InstallationHandlers(
             Local(p.CompletedAt), Local(p.HandoverAt), Local(p.CancelledAt), p.CancellationReason, p.DisplayRound, p.Revision,
             await unitOfWork.GetSiteAsync(p.PropertySiteId, p.CustomerUserId, cancellationToken),
             assignments.Select(a => new AssignmentView(a.Id, a.TechnicianUserId, names.GetValueOrDefault(a.TechnicianUserId, ""), Local(a.StartsAt)!.Value, Local(a.EndsAt)!.Value,
-                a.Status, a.AssignedByUserId, Local(a.AssignedAt)!.Value, a.AssignmentReason, Local(a.RespondedAt), a.ResponseReason, Local(a.ClosedAt))).ToList(),
+                a.Status, a.AssignedByUserId, Local(a.AssignedAt)!.Value, a.AssignmentReason, Local(a.RespondedAt), a.ResponseReason, Local(a.ClosedAt),
+                // HoldsSchedule: the assignment still reserves technician time (current and its work not reported); history rows never do.
+                Local(a.WorkReportedAt), AssignmentStatuses.IsCurrent(a.Status) && a.WorkReportedAt is null)).ToList(),
             await EvidenceAsync(projectId, cancellationToken), await AssetsAsync(projectId, cancellationToken), await AcceptancesAsync(projectId, cancellationToken),
             (await unitOfWork.GetChecklistAsync(projectId, false, cancellationToken))
                 .Select(i => new ChecklistItemView(i.Id, i.Code, i.Title, i.IsRequired, i.Status, i.EvidenceFileId, i.Note, Local(i.VerifiedAt))).ToList(),
@@ -972,7 +988,9 @@ public sealed partial class InstallationHandlers(
             involved ? await EvidenceAsync(projectId, cancellationToken) : [],
             involved ? await AssetsAsync(projectId, cancellationToken) : [],
             involved ? await AcceptancesAsync(projectId, cancellationToken) : [],
-            involved ? LocalSteps(await EquipmentComparisonAsync(p, cancellationToken)) : null, options.RequirePanelAndInverterAssets);
+            involved ? LocalSteps(await EquipmentComparisonAsync(p, cancellationToken)) : null, options.RequirePanelAndInverterAssets,
+            Local(assignment.WorkReportedAt),
+            p.Status == InstallationStatuses.ReworkRequired && AssignmentStatuses.IsCurrent(assignment.Status) && assignment.WorkReportedAt is not null);
     }
 
     private async Task<InstallationCustomerView> CustomerViewAsync(Guid projectId, CancellationToken cancellationToken)

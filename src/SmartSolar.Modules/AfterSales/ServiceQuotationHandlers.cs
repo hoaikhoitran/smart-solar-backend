@@ -57,6 +57,8 @@ public sealed partial class ServiceQuotationHandlers(
         if (open?.CurrentPaymentAttemptId is { } liveAttempt && await data.FindPaymentAttemptAsync(liveAttempt, cancellationToken) is { } attempt
             && PaymentStatuses.Payable.Contains(attempt.Status) && attempt.ExpiresAt > time.GetUtcNow())
             return Fail(PaymentErrorCodes.CheckoutInProgress, "The customer is paying the current version; it cannot be replaced now.");
+        // Cash a technician reported as taken for the current version is reviewed first: replacing it would detach the receipt from its quotation.
+        if (await data.HasCashReceiptUnderReviewAsync(requestId, cancellationToken)) return UnderReview<ServiceRequestView>();
 
         // ---- validate the lines
         if (input.Lines.Count is 0 or > 50) return Invalid("lines", "Give between 1 and 50 lines.");
@@ -95,6 +97,7 @@ public sealed partial class ServiceQuotationHandlers(
             var result = await data.ExecuteInTransactionAsync<OperationResult<bool>>(async token =>
             {
                 var tracked = (await data.FindRequestAsync(requestId, true, token))!;
+                if (await data.HasCashReceiptUnderReviewAsync(requestId, token)) return (UnderReview<bool>(), false);
                 var now = time.GetUtcNow();
                 var quotations = await data.ListQuotationsAsync(requestId, true, token);
                 foreach (var previous in quotations.Where(q => QuotationStatuses.IsOpen(q.Status)))
@@ -228,7 +231,9 @@ public sealed partial class ServiceQuotationHandlers(
     private async Task<OperationResult<ServiceRequestView>?> CancelLinkBeforeRejectAsync(ServiceQuotation? quotation, string why, CancellationToken cancellationToken)
     {
         if (quotation?.CurrentPaymentAttemptId is not { } attemptId) return null;
+        if (await payments.HasCashReceiptUnderReviewAsync(attemptId, cancellationToken)) return UnderReview<ServiceRequestView>();
         var attempt = await payments.CancelAttemptAsync(attemptId, why, cancellationToken);
+        if (attempt is not null && attempt.Provider == PaymentProviders.Cash && PaymentStatuses.Payable.Contains(attempt.Status)) return UnderReview<ServiceRequestView>();
         return attempt?.Status == PaymentStatuses.Paid ? Fail(AfterSalesErrorCodes.InvalidState, "This quotation has already been paid.") : null;
     }
 
@@ -352,7 +357,9 @@ public sealed partial class ServiceQuotationHandlers(
             || await payments.GetAttemptForCustomerAsync(customerUserId, current, reconcile: false, cancellationToken) is not { Method: PaymentMethods.Cash } cash
             || !PaymentStatuses.Payable.Contains(cash.Status))
             return OperationResult<PaymentAttemptView>.Fail(PaymentErrorCodes.CashNotSelected, "There is no pending cash choice for this quotation.");
-        await payments.CancelAttemptAsync(current, "cash choice cancelled by customer", cancellationToken);
+        if (await payments.HasCashReceiptUnderReviewAsync(current, cancellationToken)) return UnderReview<PaymentAttemptView>();
+        var ended = await payments.CancelAttemptAsync(current, "cash choice cancelled by customer", cancellationToken);
+        if (ended is not null && PaymentStatuses.Payable.Contains(ended.Status)) return UnderReview<PaymentAttemptView>();
         return OperationResult<PaymentAttemptView>.Ok((await payments.GetAttemptForCustomerAsync(customerUserId, current, reconcile: false, cancellationToken))!);
     }
 

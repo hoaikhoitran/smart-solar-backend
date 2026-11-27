@@ -101,6 +101,27 @@ public sealed class TechnicianScheduleController(TechnicianScheduleHandler sched
         => Ok(await schedules.HandleAsync(technicianUserId, date ?? calendar.LocalDateOf(time.GetUtcNow()), includeHolds: true, cancellationToken));
 }
 
+/// <summary>
+/// Manager/Admin dispatch queue of overtime schedule conflicts (2026-11-25): work in execution past its reserved end that collides with another
+/// commitment of the same technician. Read-only; resolve with the existing override / reassign / reschedule actions (nothing is changed automatically).
+/// </summary>
+[ApiController]
+[Route("api/manager/scheduling/schedule-conflicts")]
+[Authorize(Roles = $"{RoleCodes.Manager},{RoleCodes.Admin}")]
+public sealed class ScheduleConflictsController(SmartSolar.Modules.Scheduling.Services.OvertimeConflictService conflicts) : SchedulingControllerBase
+{
+    [HttpGet]
+    [EnableRateLimiting(RateLimitingExtensions.SchedulingReadPolicy)]
+    public async Task<IActionResult> List([FromQuery] string? status, [FromQuery] Guid? technicianUserId, CancellationToken cancellationToken)
+    {
+        var normalized = string.IsNullOrWhiteSpace(status) ? SmartSolar.Modules.Scheduling.Entities.ScheduleConflictStatuses.Open : status.Trim().ToUpperInvariant();
+        if (!SmartSolar.Modules.Scheduling.Entities.ScheduleConflictStatuses.All.Contains(normalized))
+            return BadRequest(SmartSolar.Api.Contracts.ApiResponse<object>.Failure(new SmartSolar.Api.Contracts.ApiError("VALIDATION_FAILED", "One or more fields are invalid.",
+                new Dictionary<string, string[]> { ["status"] = ["'status' must be OPEN or RESOLVED."] }), HttpContext.GetTraceId()));
+        return Ok(await conflicts.ListAsync(technicianUserId, normalized, cancellationToken));
+    }
+}
+
 /// <summary>Technician scheduling setup: profile, service areas, working schedule, leave (ADMIN/MANAGER).</summary>
 [ApiController]
 [Route("api/admin/technicians")]

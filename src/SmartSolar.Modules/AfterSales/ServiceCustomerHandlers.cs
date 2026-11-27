@@ -194,6 +194,9 @@ public sealed class ServiceCustomerHandlers(
                 var now = time.GetUtcNow();
                 if (ServiceRequestStatuses.IsFinal(request.Status)) return (Bad("The request is already closed."), false);
                 if (request.CancellationRequestedAt is not null) return (Bad("A cancellation request is already waiting for a Manager."), false);
+                if (await data.HasCashReceiptUnderReviewAsync(requestId, token))
+                    return (OperationResult<bool>.Fail(Payments.CashReceiptErrorCodes.UnderReview,
+                        "The technician sent the receipt of the cash you paid; it is being checked. Please contact us to cancel."), false);
                 var visits = await data.ListVisitsAsync(requestId, false, token);
                 if (visits.Any(v => v.Status is VisitStatuses.InProgress) || request.Status is ServiceRequestStatuses.InProgress
                         or ServiceRequestStatuses.PendingCustomerAcceptance or ServiceRequestStatuses.Disputed or ServiceRequestStatuses.ReworkRequired)

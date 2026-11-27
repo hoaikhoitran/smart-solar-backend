@@ -64,12 +64,14 @@ public sealed partial class QuotationHandlers
         var product = await unitOfWork.GetProductAsync(productId, cancellationToken);
         if (PriceProblem(product) is { } problem)
             return OperationResult<QuotationView>.Fail(problem.Code, problem.Message, new { productId });
+        if (WholeUnitProblem(product!.ProductType, quantity) is { } whole) return Invalid(new() { ["quantity"] = [whole] });
 
         return await MutateCartAsync(technicianUserId, quotationId, revision, (q, lines) =>
         {
             if (lines.FirstOrDefault(l => l.ProductId == productId) is { } same)
             {
                 if (!ValidQuantity(same.Quantity + quantity)) return "The quantity of one item must be at most 100,000.";
+                if (WholeUnitProblem(product.ProductType, same.Quantity + quantity) is { } wholeTotal) return wholeTotal;
                 same.Quantity += quantity;
                 Snapshot(same, product!);
                 return null;
@@ -96,6 +98,7 @@ public sealed partial class QuotationHandlers
         var product = current?.ProductId is { } productId ? await unitOfWork.GetProductAsync(productId, cancellationToken) : null;
         if (current is not null && PriceProblem(product) is { } problem)
             return OperationResult<QuotationView>.Fail(problem.Code, problem.Message, new { productId = current.ProductId });
+        if (current is not null && WholeUnitProblem(product!.ProductType, quantity) is { } whole) return Invalid(new() { ["quantity"] = [whole] });
 
         return await MutateCartAsync(technicianUserId, quotationId, revision, (_, lines) =>
         {
@@ -147,6 +150,12 @@ public sealed partial class QuotationHandlers
             }
             if (problems.Count > 0)
                 return OperationResult<bool>.Fail(QuotationErrorCodes.PriceMissing, "Some items cannot be priced from the catalog; remove or replace them.", new { items = problems });
+            // A draft saved before the whole-unit rule may hold fractional equipment: it cannot be issued until the quantity is corrected.
+            var fractional = lines.Where(l => WholeUnitProblem(l.Description, l.Quantity) is not null)
+                .Select(l => $"Line {l.LineNumber} ({l.Sku}): {WholeUnitProblem(l.Description, l.Quantity)}").ToList();
+            if (fractional.Count > 0)
+                return OperationResult<bool>.Fail(CommonErrorCodes.ValidationFailed, "One or more fields are invalid.",
+                    new Dictionary<string, string[]> { ["quantity"] = [.. fractional] });
             q.DiscountAmount = 0m;
             q.LaborCost = q.TransportCost = q.OtherServiceCost = 0m;
             q.TaxRatePercent = options.DefaultTaxRatePercent;
@@ -245,10 +254,7 @@ public sealed partial class QuotationHandlers
     {
         if ((await unitOfWork.GetSurveyBasisAsync(surveyRequestId, cancellationToken))?.TechnicianUserId != technicianUserId)
             return OperationResult<IReadOnlyList<QuotationView>>.Fail(QuotationErrorCodes.NotAssignedTechnician, "Survey request was not found.");
-        var list = new List<QuotationView>();
-        foreach (var q in await unitOfWork.ListBySurveyRequestAsync(surveyRequestId, cancellationToken))
-            list.Add(await ViewAsync(q, includeEvents: false, cancellationToken));
-        return OperationResult<IReadOnlyList<QuotationView>>.Ok(list);
+        return OperationResult<IReadOnlyList<QuotationView>>.Ok(await ViewsAsync(await unitOfWork.ListBySurveyRequestAsync(surveyRequestId, cancellationToken), false, cancellationToken));
     }
 
     // ------------------------------------------------------------------ internals
@@ -328,6 +334,12 @@ public sealed partial class QuotationHandlers
             : null;
 
     private static bool ValidQuantity(decimal quantity) => quantity > 0 && quantity <= 100_000 && decimal.Round(quantity, 3) == quantity;
+
+    /// <summary>Why <paramref name="quantity"/> is not allowed for equipment sold by whole units (SOLAR_PANEL, INVERTER); null when it is.</summary>
+    private static string? WholeUnitProblem(string? productType, decimal quantity)
+        => ProductTypes.RequiresWholeQuantity(productType) && decimal.Truncate(quantity) != quantity
+            ? $"{ProductTypes.Normalize(productType!)} is sold by whole units: the quantity must be a positive whole number (got {quantity})."
+            : null;
 
     private static OperationResult<QuotationView> InvalidQuantity()
         => Invalid(new() { ["quantity"] = ["Must be greater than 0 and at most 100,000 (up to 3 decimals)."] });

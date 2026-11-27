@@ -244,12 +244,19 @@ public sealed class PerPanelServicePackageTests
         await AddAsync(w, w.Cart.Catalog.Inverter.Id, 1m);
         var noPanels = await SetAsync(w, ServicePackageKinds.DisasterProtection, w.Disaster.Id);
         Assert.Equal(QuotationErrorCodes.NoEligiblePanels, noPanels.ErrorCode);
-        await AddAsync(w, w.Cart.Catalog.Panel.Id, 2.5m);
-        var fractional = await SetAsync(w, ServicePackageKinds.DisasterProtection, w.Disaster.Id);
+        // 2026-11-25 (FE BUG-03): a fractional panel quantity is refused when the line is added (panels are sold by whole units).
+        Assert.Equal(CommonErrorCodes.ValidationFailed, (await w.Ctx.Quotations().AddCartLineAsync(w.TechnicianId, w.QuotationId, (await CurrentAsync(w)).Revision,
+            w.Cart.Catalog.Panel.Id, 2.5m, None)).ErrorCode);
+        // A draft stored before that rule (synthetic legacy row: 2.5 panels) still cannot get a per-panel package.
+        var view = await AddAsync(w, w.Cart.Catalog.Panel.Id, 2m);
+        var line = await w.Ctx.Db.QuotationLines.SingleAsync(l => l.QuotationId == w.QuotationId && l.ProductId == w.Cart.Catalog.Panel.Id);
+        line.Quantity = 2.5m;
+        line.LineTotal = 7_500_000m;
+        await w.Ctx.Db.SaveChangesAsync();
+        w.Ctx.Db.ChangeTracker.Clear();
+        var fractional = await SetAsync(w, ServicePackageKinds.DisasterProtection, w.Disaster.Id, view.Revision);
         Assert.Equal(QuotationErrorCodes.InvalidPanelQuantity, fractional.ErrorCode);
         Assert.Empty(await w.Ctx.Db.QuotationServicePackages.AsNoTracking().ToListAsync());
-        // Without packages a fractional line stays possible (the existing cart rule is unchanged).
-        Assert.Null((await CurrentAsync(w)).PanelQuantity);
     }
 
     [Fact]
@@ -267,8 +274,8 @@ public sealed class PerPanelServicePackageTests
             eight.Value.ServicePackagesTotal, eight.Value.Revision));
         Assert.Equal(eight.Value.TotalAmount + 5_600_000m, eight.Value.GrandTotal);
 
-        // A fractional panel count or removing every panel is refused while a per-panel package is selected (nothing is changed).
-        Assert.Equal(QuotationErrorCodes.InvalidPanelQuantity, (await w.Ctx.Quotations().UpdateCartLineAsync(w.TechnicianId, w.QuotationId, panelLine.LineId,
+        // A fractional panel count (refused for any panel line since 2026-11-25) or removing every panel is refused (nothing is changed).
+        Assert.Equal(CommonErrorCodes.ValidationFailed, (await w.Ctx.Quotations().UpdateCartLineAsync(w.TechnicianId, w.QuotationId, panelLine.LineId,
             eight.Value.Revision, 7.5m, None)).ErrorCode);
         var removed = await w.Ctx.Quotations().RemoveCartLineAsync(w.TechnicianId, w.QuotationId, panelLine.LineId, eight.Value.Revision, None);
         Assert.Equal(QuotationErrorCodes.NoEligiblePanels, removed.ErrorCode);
@@ -558,6 +565,7 @@ public sealed class PerPanelServicePackageTests
         Assert.Equal(PaymentPlanErrorCodes.InstallmentNotPayable,
             (await ctx.InstallmentPayments().StartAsync(InstallmentPayer.Customer, flow.CustomerId, flow.ContractId, 2, "ONLINE", None)).ErrorCode);
 
+        await InstallationTests.ReworkScheduledAsync(ctx, projectId, flow.TechnicianId, flow.Manager.Id);
         await InstallationTests.AddCompletionEvidenceAsync(ctx, projectId, flow.TechnicianId);
         Assert.True((await ctx.Installations().ReportCompletionAsync(flow.TechnicianId, projectId, "Panel replaced.", null, None)).Succeeded);
         await AcceptAsync(ctx, flow, projectId);

@@ -59,6 +59,21 @@ public sealed class ContractDocumentHandlers(IContractUnitOfWork contracts, IFil
         return signed;
     }
 
+    /// <summary>
+    /// Short-lived URL of the photo of a technician cash receipt. The caller already authorized the reader for <paramref name="receipt"/> (Manager/Admin
+    /// read-all, or the technician assigned to the contract). Audited on the contract like the signed pages.
+    /// </summary>
+    public async Task<OperationResult<AttachedFileUrlView>> CashReceiptEvidenceUrlAsync(Guid actorUserId, string actorRole, SmartSolar.Modules.Payments.CashReceiptSubmission receipt,
+        StorageUrlDisposition disposition, CancellationToken cancellationToken)
+    {
+        var contract = receipt.ContractId is { } contractId ? await contracts.FindAsync(contractId, false, cancellationToken) : null;
+        if (contract is null) return NotFound();
+        var signed = await SignAsync(contract, receipt.EvidenceFileId, FilePurposes.PaymentEvidence, disposition, cancellationToken);
+        if (signed.Succeeded)
+            await AuditAsync(contract.Id, actorUserId, actorRole, ContractAccessActions.CashReceiptUrl, $"receipt {receipt.Id} file {receipt.EvidenceFileId}", cancellationToken);
+        return signed;
+    }
+
     /// <summary>Records one read in the contract access audit (own short transaction; the read itself never fails because of it).</summary>
     public async Task AuditAsync(Guid? contractId, Guid actorUserId, string actorRole, string action, string? detail, CancellationToken cancellationToken)
     {

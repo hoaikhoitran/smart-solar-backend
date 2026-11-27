@@ -59,6 +59,12 @@ public sealed record InstallationScheduleChangeRequest(string? Note);
 /// <summary>30/70 plan: ONLINE (PayOS QR / link) or CASH (a Manager/Admin confirms the receipt).</summary>
 public sealed record InstallmentPaymentRequest(string? Method);
 
+/// <summary>
+/// Technician cash receipt (2026-11-27): the open CASH payment it belongs to, the number on the physical receipt, the technician's VERIFIED
+/// PAYMENT_EVIDENCE photo, when the cash was taken (optional, default now; never in the future) and an optional note.
+/// </summary>
+public sealed record CashReceiptRequest(Guid? PaymentAttemptId, string? ReceiptNumber, Guid? EvidenceFileId, DateTimeOffset? CollectedAt, string? Note);
+
 /// <summary>Number of pages of the printed contract (1–50), optional local signing date and note.</summary>
 public sealed record StartSignatureSetRequest(int? ExpectedPageCount, DateOnly? SignedOn, string? Note);
 

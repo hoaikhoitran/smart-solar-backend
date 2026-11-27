@@ -105,6 +105,8 @@ public interface IAfterSalesUnitOfWork : ITransactionalUnitOfWork
 
     // ---- payments seen from after-sales
     Task<PaymentAttempt?> FindPaymentAttemptAsync(Guid attemptId, CancellationToken cancellationToken);
+    /// <summary>True while a technician cash receipt of one of the request's quotations waits for a Manager/Admin review (2026-11-27).</summary>
+    Task<bool> HasCashReceiptUnderReviewAsync(Guid requestId, CancellationToken cancellationToken);
 
     // ---- users
     Task<bool> IsActiveUserWithRoleAsync(Guid userId, string roleCode, CancellationToken cancellationToken);

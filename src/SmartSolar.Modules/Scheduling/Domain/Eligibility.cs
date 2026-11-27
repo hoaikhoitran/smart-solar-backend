@@ -5,7 +5,43 @@ namespace SmartSolar.Modules.Scheduling.Domain;
 /// job) or, with Installation Flow enabled, an installation assignment. Every commitment blocks
 /// overlapping work including the buffer; only survey appointments count toward the per-day limit.
 /// </summary>
-public sealed record ScheduledStop(Guid AppointmentId, DateTimeOffset StartsAtUtc, DateTimeOffset EndsAtUtc, bool CountsTowardDailyLimit = true, bool IsPendingHold = false);
+/// <param name="InExecution">The work is being performed now (survey report IN_PROGRESS; installation IN_PROGRESS, or rework with current-round
+/// evidence) and has run past its reserved end (overtime): the unit of work sets <see cref="EndsAtUtc"/> to the current time and the day loader extends
+/// it to the end of that local day (<see cref="EffectiveBusy.OvertimeHoldUntil"/>). False for every other stop.</param>
+/// <param name="IsInstallation">An installation (or after-sales) assignment rather than a survey appointment.</param>
+/// <param name="ReservedStartsAtUtc">The reserved (historical) interval when it differs from the effective one; null = same as the effective interval.
+/// The daily survey limit is charged to the local day of the reserved start (a survey completed a day early still counts on its scheduled day).</param>
+public sealed record ScheduledStop(Guid AppointmentId, DateTimeOffset StartsAtUtc, DateTimeOffset EndsAtUtc, bool CountsTowardDailyLimit = true, bool IsPendingHold = false,
+    bool InExecution = false, bool IsInstallation = false, DateTimeOffset? ReservedStartsAtUtc = null, DateTimeOffset? ReservedEndsAtUtc = null)
+{
+    public DateTimeOffset ReservedStart => ReservedStartsAtUtc ?? StartsAtUtc;
+    public DateTimeOffset ReservedEnd => ReservedEndsAtUtc ?? EndsAtUtc;
+}
+
+/// <summary>
+/// Effective busy interval of a commitment for FUTURE scheduling (2026-11-25). The reserved interval [startsAt, endsAt) stays the historical
+/// schedule. Once the work is finished (a survey appointment COMPLETED, an installation assignment whose completion was reported) the busy interval
+/// ends at the confirmed finish time: early → the unused rest is released (zero-length point [finishedAt, finishedAt) when it finished before the
+/// reserved start); late (overtime) → it lasts until the real finish, so the buffer is kept after the real end. The configured buffer is applied
+/// around this interval by <see cref="EligibilityRules.Conflicts"/> (never added here).
+/// <para>While the work is still being performed past its reserved end (see <see cref="ScheduledStop.InExecution"/>) it keeps occupying the technician
+/// until the end of that local day (<see cref="OvertimeHoldUntil"/>), re-evaluated at every decision.</para>
+/// <para>The PostgreSQL exclusion constraints are a backstop that is never stricter than this rule: they use the reserved end cut at an early finish
+/// (an empty range when the work finished before the reserved start) and ignore overtime, which only ever concerns time already in the past
+/// for them (a time-dependent "now" cannot be part of an index).</para>
+/// </summary>
+public static class EffectiveBusy
+{
+    public static (DateTimeOffset StartsAt, DateTimeOffset EndsAt) Of(DateTimeOffset startsAt, DateTimeOffset endsAt, DateTimeOffset? finishedAt)
+    {
+        if (finishedAt is not { } finished) return (startsAt, endsAt);
+        return finished <= startsAt ? (finished, finished) : (startsAt, finished);
+    }
+
+    /// <summary>Overtime hold: an overrunning job occupies its technician until the end of the local day in which it is observed running.</summary>
+    public static DateTimeOffset OvertimeHoldUntil(DateTimeOffset observedAtUtc, WorkingCalendar calendar)
+        => calendar.DayBoundsUtc(calendar.LocalDateOf(observedAtUtc)).EndUtc;
+}
 
 /// <summary>Leave or other time the technician cannot work.</summary>
 public sealed record BlockedPeriod(DateTimeOffset StartsAtUtc, DateTimeOffset EndsAtUtc);

@@ -37,7 +37,7 @@ public sealed class CustomerDispatchRequestsController(DispatchService service) 
     }
 
     [HttpGet]
-    [EnableRateLimiting(RateLimitingExtensions.SchedulingReadPolicy)]
+    [EnableRateLimiting(RateLimitingExtensions.DispatchReadPolicy)]
     public async Task<IActionResult> Get(Guid surveyRequestId, CancellationToken cancellationToken)
         => CurrentUserId() is { } userId ? Respond(await service.GetForCustomerAsync(userId, surveyRequestId, cancellationToken)) : UnauthorizedFailure();
 
@@ -74,7 +74,7 @@ public sealed class AdminDispatchRequestsController(DispatchService service) : S
 {
     /// <summary>GET ?status=&amp;reason=&amp;overdue=&amp;page=1&amp;pageSize=20 — oldest review deadline first.</summary>
     [HttpGet]
-    [EnableRateLimiting(RateLimitingExtensions.SchedulingReadPolicy)]
+    [EnableRateLimiting(RateLimitingExtensions.DispatchReadPolicy)]
     public async Task<IActionResult> List([FromQuery] string? status, [FromQuery] string? reason, [FromQuery] bool? overdue, [FromQuery] int page = 1,
         [FromQuery] int pageSize = 20, CancellationToken cancellationToken = default)
     {
@@ -88,7 +88,7 @@ public sealed class AdminDispatchRequestsController(DispatchService service) : S
     }
 
     [HttpGet("{dispatchRequestId:guid}")]
-    [EnableRateLimiting(RateLimitingExtensions.SchedulingReadPolicy)]
+    [EnableRateLimiting(RateLimitingExtensions.DispatchReadPolicy)]
     public async Task<IActionResult> Get(Guid dispatchRequestId, CancellationToken cancellationToken)
         => Respond(await service.GetAsync(dispatchRequestId, cancellationToken));
 

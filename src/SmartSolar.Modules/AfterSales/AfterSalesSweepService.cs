@@ -117,6 +117,10 @@ public sealed class AfterSalesSweepService(
                 && (attempt.Status == PaymentStatuses.Paid || PaymentStatuses.Payable.Contains(attempt.Status)))
             {
                 if (attempt.Provider != PaymentProviders.Cash || attempt.Status == PaymentStatuses.Paid) continue;
+                // Cash the technician reported as taken (receipt under review, or rejected for a collection made before the expiry) is money
+                // already in hand (2026-11-27): the quotation is held until the receipt is reviewed / corrected — withdrawing it would lose track
+                // of the cash and ask the customer to pay again. A Manager can still cancel the request explicitly after a rejection.
+                if (await payments.IsCashReportedCollectedAsync(attemptId, quotation.ExpiresAt, cancellationToken)) continue;
                 var withdrawn = await payments.CancelAttemptAsync(attemptId, "quotation expired before the cash receipt was confirmed", cancellationToken);
                 if (withdrawn is null || withdrawn.Status != PaymentStatuses.Cancelled) continue;
             }

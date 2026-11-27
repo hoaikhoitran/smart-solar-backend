@@ -332,6 +332,7 @@ public sealed class ServiceManagerHandlers(
             if (request.ProjectId != original.ProjectId) return Bad("A duplicate must belong to the same installation.");
             if ((await data.ListQuotationsAsync(requestId, false, token)).Any(q => q.Status == QuotationStatuses.Paid))
                 return Bad("A request with a paid quotation cannot be closed as a duplicate.");
+            if (await data.HasCashReceiptUnderReviewAsync(request.Id, token)) return CashUnderReview();
             await CloseEverythingAsync(request, managerUserId, "duplicate", now, token);
             request.DuplicateOfRequestId = originalRequestId;
             AfterSalesWorkflow.Move(data, request, ServiceRequestStatuses.ClosedDuplicate, managerUserId, $"duplicate of {original.RequestNumber}: {Text.Trim(reason, 500)}", now);
@@ -386,6 +387,7 @@ public sealed class ServiceManagerHandlers(
             if (paid > 0)
                 return OperationResult<bool>.Fail(AfterSalesErrorCodes.PaidCancellationUnsupported,
                     $"The customer paid {paid:0} VND for this work; cancelling it would owe a refund, which this system does not handle. Reject the request, or settle the money outside the system first.");
+            if (await data.HasCashReceiptUnderReviewAsync(request.Id, token)) return CashUnderReview();
             await CloseEverythingAsync(request, managerUserId, "cancelled", now, token);
             request.CancelledAt = now;
             AfterSalesWorkflow.Move(data, request, ServiceRequestStatuses.Cancelled, managerUserId, Text.Trim(note, 500), now);
@@ -404,6 +406,7 @@ public sealed class ServiceManagerHandlers(
         return await MutateAsync(requestId, null, async (request, now, token) =>
         {
             if (ServiceRequestStatuses.IsFinal(request.Status)) return Bad("The request is already closed.");
+            if (await data.HasCashReceiptUnderReviewAsync(request.Id, token)) return CashUnderReview();
             await CloseEverythingAsync(request, managerUserId, "work stopped", now, token);
             request.CancelledAt = now;
             request.CancellationReason ??= why;
@@ -432,6 +435,7 @@ public sealed class ServiceManagerHandlers(
             if (paid > 0)
                 return OperationResult<bool>.Fail(AfterSalesErrorCodes.PaidCancellationUnsupported,
                     $"The customer paid {paid:0} VND for this maintenance; closing it would owe a refund, which this system does not handle. Settle the money outside the system first.");
+            if (await data.HasCashReceiptUnderReviewAsync(request.Id, token)) return CashUnderReview();
             await CloseEverythingAsync(request, managerUserId, "not fulfilled", now, token);
             request.CancelledAt = now;
             request.CancellationReason ??= why;
@@ -586,6 +590,9 @@ public sealed class ServiceManagerHandlers(
         => OperationResult<ServiceRequestView>.Ok(await views.RequestAsync((await data.FindRequestAsync(requestId, false, token))!, forStaff: true, token));
 
     private static OperationResult<bool> Bad(string message) => OperationResult<bool>.Fail(AfterSalesErrorCodes.InvalidState, message);
+    /// <summary>A technician cash receipt of this request waits for review (2026-11-27): review it first, the collected cash must not be lost.</summary>
+    private static OperationResult<bool> CashUnderReview() => OperationResult<bool>.Fail(Payments.CashReceiptErrorCodes.UnderReview,
+        "A technician cash receipt of this request waits for review: accept or reject it in the cash receipt queue first.");
     private static OperationResult<T> Stale<T>(int revision)
         => OperationResult<T>.Fail(AfterSalesErrorCodes.StaleRevision, "The request changed meanwhile. Reload and try again.", new { currentRevision = revision });
     private static OperationResult<ServiceRequestView> Fail(string code, string message, object? details = null) => OperationResult<ServiceRequestView>.Fail(code, message, details);

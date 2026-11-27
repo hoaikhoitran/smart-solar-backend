@@ -423,7 +423,8 @@ public sealed class PaymentPlanWorkflowTests
         Assert.Equal((AcceptanceDecisions.ReworkRequested, "Inverter display shows an error"), (round1.Decision, round1.Reason));
         Assert.Contains(photo.ToString(), round1.EvidenceFileIds);
 
-        // Round 2: new evidence, new report, accepted.
+        // Round 2: a new schedule (Manager + technician acceptance), new evidence, new report, accepted.
+        await InstallationTests.ReworkScheduledAsync(ctx, projectId, flow.TechnicianId, flow.Manager.Id);
         await InstallationTests.AddCompletionEvidenceAsync(ctx, projectId, flow.TechnicianId);
         Assert.True((await installs.ReportCompletionAsync(flow.TechnicianId, projectId, "Inverter replaced and tested.", null, None)).Succeeded);
         await AcceptAsync(ctx, flow, projectId);

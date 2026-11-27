@@ -48,7 +48,7 @@ public sealed class PostgresPerPanelPackageTests
         await using var database = await PostgresTestDatabase.CreateAsync(upToMigration: Previous);
         await using (var before = database.NewContext())
         {
-            Assert.Equal([Migration], await before.Database.GetPendingMigrationsAsync());
+            Assert.Equal([Migration, "20261125094516_SchedulingEffectiveBusyAfterCompletion", "20261125104043_SchedulingOvertimeConflicts", "20261127021802_TechnicianCashReceipts", "20261127124918_UnifiedCashReceipts"], await before.Database.GetPendingMigrationsAsync());
             // A package of the previous schema (no pricing unit column yet).
             await before.Database.ExecuteSqlRawAsync("""
                 INSERT INTO service_package (id, kind, name, price, duration_months, visit_months, is_active, created_at, updated_at, revision)
@@ -77,7 +77,8 @@ public sealed class PostgresPerPanelPackageTests
             "SELECT pg_get_constraintdef(oid) AS \"Value\" FROM pg_constraint WHERE conname = 'ex_service_subscription_no_overlap'"));
         Assert.Equal("Legacy care", await ScalarAsync<string>(db, "SELECT name AS \"Value\" FROM service_package"));
         await using (var again = database.NewContext()) await again.Database.MigrateAsync();
-        Assert.Equal(Migration, (await database.NewContext().Database.GetAppliedMigrationsAsync()).Last());
+        Assert.Contains(Migration, await database.NewContext().Database.GetAppliedMigrationsAsync());
+        Assert.Empty(await database.NewContext().Database.GetPendingMigrationsAsync());
         Assert.Equal("PER_INSTALLATION_LEGACY", await ScalarAsync<string>(db, "SELECT pricing_unit AS \"Value\" FROM service_package"));
     }
 

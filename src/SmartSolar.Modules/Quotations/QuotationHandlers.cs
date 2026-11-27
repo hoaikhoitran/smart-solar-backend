@@ -393,10 +393,7 @@ public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, F
         var source = await unitOfWork.GetSourceAsync(surveyRequestId, cancellationToken);
         if (source is null || (!isManager && source.AssignedSaleId != salesUserId))
             return OperationResult<IReadOnlyList<QuotationView>>.Fail(QuotationErrorCodes.NotFound, "Survey request was not found.");
-        var list = new List<QuotationView>();
-        foreach (var q in await unitOfWork.ListBySurveyRequestAsync(surveyRequestId, cancellationToken))
-            list.Add(await ViewAsync(q, includeEvents: false, cancellationToken));
-        return OperationResult<IReadOnlyList<QuotationView>>.Ok(list);
+        return OperationResult<IReadOnlyList<QuotationView>>.Ok(await ViewsAsync(await unitOfWork.ListBySurveyRequestAsync(surveyRequestId, cancellationToken), false, cancellationToken));
     }
 
     // ------------------------------------------------------------------ Customer
@@ -546,8 +543,13 @@ public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, F
     }
 
     /// <param name="forCustomer">The customer's view: no internal pricing diagnostics (pricing basis, review state).</param>
-    private async Task<QuotationView> ViewAsync(Quotation q, bool includeEvents, CancellationToken cancellationToken, bool forCustomer = false)
+    /// <param name="contracts">Live contract ids prefetched for a list (one query for the whole list); null = looked up for this quotation.</param>
+    private async Task<QuotationView> ViewAsync(Quotation q, bool includeEvents, CancellationToken cancellationToken, bool forCustomer = false,
+        IReadOnlyDictionary<Guid, Guid>? contracts = null)
     {
+        // The persisted quotation → contract link (2026-11-25): every response carries the live contract, not only the AGREED decision response.
+        contracts ??= q.Status == QuotationStatuses.Draft ? new Dictionary<Guid, Guid>() : await unitOfWork.GetLiveContractIdsAsync([q.Id], cancellationToken);
+        Guid? contractId = contracts.TryGetValue(q.Id, out var id) ? id : null;
         var lines = await unitOfWork.GetLinesAsync(q.Id, false, cancellationToken);
         var packages = await unitOfWork.GetServicePackagesAsync(q.Id, false, cancellationToken);
         var now = time.GetUtcNow();
@@ -570,7 +572,17 @@ public sealed partial class QuotationHandlers(IQuotationUnitOfWork unitOfWork, F
             InstallationTotal: q.TotalAmount, PanelQuantity: q.PanelQuantity, ServicePackages: packages.Select(QuotationPackageRules.View).ToList(),
             MaintenancePackagesTotal: packages.Where(p => p.Kind == QuotationPackageRules.Maintenance).Sum(p => p.TotalAmount),
             DisasterPackagesTotal: packages.Where(p => p.Kind == QuotationPackageRules.DisasterProtection).Sum(p => p.TotalAmount),
-            ServicePackagesTotal: q.ServicePackagesTotal, GrandTotal: q.GrandTotal);
+            ServicePackagesTotal: q.ServicePackagesTotal, GrandTotal: q.GrandTotal, ContractId: contractId);
+    }
+
+    /// <summary>Views of a list with ONE contract lookup for all of them.</summary>
+    private async Task<IReadOnlyList<QuotationView>> ViewsAsync(IEnumerable<Quotation> quotations, bool includeEvents, CancellationToken cancellationToken)
+    {
+        var all = quotations.ToList();
+        var contracts = await unitOfWork.GetLiveContractIdsAsync(all.Select(q => q.Id).ToList(), cancellationToken);
+        var list = new List<QuotationView>();
+        foreach (var q in all) list.Add(await ViewAsync(q, includeEvents, cancellationToken, contracts: contracts));
+        return list;
     }
 
     private static PricingBasis? BasisOf(Quotation q) => q.PricingBasisJson is null ? null : JsonSerializer.Deserialize<PricingBasis>(q.PricingBasisJson, Json);

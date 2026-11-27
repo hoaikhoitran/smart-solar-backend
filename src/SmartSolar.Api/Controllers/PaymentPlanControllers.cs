@@ -21,8 +21,37 @@ namespace SmartSolar.Api.Controllers;
 [Route("api/technician/contracts/{contractId:guid}")]
 [Authorize(Roles = RoleCodes.Technician)]
 [RequireFeature(FeatureOptions.InstallationWorkflow)]
-public sealed class TechnicianContractPaymentPlanController(InstallmentPaymentHandlers installments, PaperSignatureHandlers signatures) : OperationResultControllerBase
+public sealed class TechnicianContractPaymentPlanController(InstallmentPaymentHandlers installments, PaperSignatureHandlers signatures, ContractDocumentHandlers documents)
+    : OperationResultControllerBase
 {
+    /// <summary>
+    /// Sends the photo of the physical receipt for the installment's open CASH payment (after the technician took the cash). The installment stays DUE
+    /// and the payment AWAITING_CASH_CONFIRMATION (<c>currentCashReceipt.status</c> = SUBMITTED) until a Manager/Admin accepts it; after a rejection send
+    /// a new one. 400 VALIDATION_FAILED (missing photo / number), 409 PAYMENT_CASH_RECEIPT_* / PAYMENT_CASH_NOT_SELECTED, FILE_* for the photo.
+    /// </summary>
+    [HttpPost("installments/{sequence:int}/payment/cash-receipt")]
+    [ProducesResponseType(typeof(ApiResponse<InstallmentPaymentView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.PaymentCreatePolicy)]
+    public async Task<IActionResult> SubmitCashReceipt(Guid contractId, int sequence, [FromBody] CashReceiptRequest request, CancellationToken cancellationToken)
+        => CurrentUserId() is { } user
+            ? Respond(await installments.SubmitCashReceiptAsync(user, contractId, sequence, new SmartSolar.Modules.Payments.CashReceiptInput(request.PaymentAttemptId ?? Guid.Empty,
+                request.ReceiptNumber, request.EvidenceFileId ?? Guid.Empty, request.CollectedAt, request.Note), cancellationToken))
+            : UnauthorizedFailure();
+
+    /// <summary>Short-lived URL of the photo of one of this installment's receipts (<c>disposition</c> inline | attachment). Audited; <c>Cache-Control: no-store</c>.</summary>
+    [HttpGet("installments/{sequence:int}/payment/cash-receipts/{receiptId:guid}/evidence/url")]
+    [ProducesResponseType(typeof(ApiResponse<AttachedFileUrlView>), StatusCodes.Status200OK)]
+    [EnableRateLimiting(RateLimitingExtensions.ContractReadPolicy)]
+    public async Task<IActionResult> CashReceiptEvidenceUrl(Guid contractId, int sequence, Guid receiptId, [FromQuery] string? disposition, CancellationToken cancellationToken)
+    {
+        NoStore();
+        if (CurrentUserId() is not { } user) return UnauthorizedFailure();
+        if (ParseDisposition(disposition) is not { } parsed) return Invalid("disposition", "'disposition' must be inline or attachment.");
+        var receipt = await installments.FindCashReceiptForTechnicianAsync(user, contractId, sequence, receiptId, cancellationToken);
+        if (!receipt.Succeeded) return Respond(receipt);
+        return Respond(await documents.CashReceiptEvidenceUrlAsync(user, RoleCodes.Technician, receipt.Value!, parsed, cancellationToken));
+    }
+
     /// <summary>ONLINE returns the PayOS <c>qrCode</c> / <c>checkoutUrl</c> to show on the device; CASH records a pending cash choice. Same method again → same payment.</summary>
     [HttpPost("installments/{sequence:int}/payment")]
     [ProducesResponseType(typeof(ApiResponse<InstallmentPaymentView>), StatusCodes.Status200OK)]
