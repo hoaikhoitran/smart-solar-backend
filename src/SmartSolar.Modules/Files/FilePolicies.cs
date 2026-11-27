@@ -127,7 +127,9 @@ public static partial class FilePolicies
         // The roles that manage the catalog (AdminProductsController) and the package catalog (AdminAfterSalesController).
         [FilePurposes.ProductImage] = [RoleCodes.Admin, RoleCodes.Manager],
         [FilePurposes.PackageImage] = [RoleCodes.Admin],
-        [FilePurposes.PaymentEvidence] = [RoleCodes.Manager, RoleCodes.Admin],
+        // Cash receipts (2026-11-27): the assigned technician photographs the physical receipt; attaching checks the uploader, the open CASH payment
+        // of the installment the technician is assigned to and its state. Manager/Admin keep uploading their own evidence for direct confirmations.
+        [FilePurposes.PaymentEvidence] = [RoleCodes.Manager, RoleCodes.Admin, RoleCodes.Technician],
         [FilePurposes.SignedContractPage] = [RoleCodes.Technician, RoleCodes.Manager, RoleCodes.Admin],
         [FilePurposes.AcceptanceEvidence] = [RoleCodes.Customer],
         [FilePurposes.CollectionEvidence] = [RoleCodes.Sales, RoleCodes.Manager, RoleCodes.Admin],

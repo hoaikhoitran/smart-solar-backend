@@ -33,6 +33,7 @@ public sealed class PostgresCustomerToInstallationTests
     private const string PerPanel = "20261124173442_PerPanelServicePackages";
     private const string Scheduling = "20261125094516_SchedulingEffectiveBusyAfterCompletion";
     private const string Overtime = "20261125104043_SchedulingOvertimeConflicts";
+    private const string CashReceipts = "20261127021802_TechnicianCashReceipts";
 
     private static async Task<string?> SqlStateAsync(PostgresTestDatabase database, string sql)
     {
@@ -172,7 +173,7 @@ public sealed class PostgresCustomerToInstallationTests
         await db.GetService<IMigrator>().MigrateAsync(Previous);
         Assert.False(await db.Database.SqlQueryRaw<bool>(
             "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'survey_request' AND column_name = 'property_site_id') AS \"Value\"").SingleAsync());
-        Assert.Equal([Migration, Compatibility, CostControl, SlotOffers, TechnicianQuotation, OnSiteSales, PaymentPlan, SharedKnowledge, PerPanel, Scheduling, Overtime], await db.Database.GetPendingMigrationsAsync());
+        Assert.Equal([Migration, Compatibility, CostControl, SlotOffers, TechnicianQuotation, OnSiteSales, PaymentPlan, SharedKnowledge, PerPanel, Scheduling, Overtime, CashReceipts], await db.Database.GetPendingMigrationsAsync());
 
         await db.Database.MigrateAsync();
         await using (var check = database.NewContext())

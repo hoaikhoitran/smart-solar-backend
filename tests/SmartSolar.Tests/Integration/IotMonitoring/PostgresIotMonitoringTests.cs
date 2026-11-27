@@ -31,6 +31,7 @@ public sealed class PostgresIotMonitoringTests
     private const string PerPanelMigration = "20261124173442_PerPanelServicePackages";
     private const string SchedulingMigration = "20261125094516_SchedulingEffectiveBusyAfterCompletion";
     private const string OvertimeMigration = "20261125104043_SchedulingOvertimeConflicts";
+    private const string CashReceiptMigration = "20261127021802_TechnicianCashReceipts";
 
     /// <summary>Two real handed-over-style journeys (paid contract + project) for two different customers.</summary>
     private static async Task<(Guid ProjectA, Guid CustomerA, Guid ProjectB, Guid CustomerB, Guid Manager)> TwoProjectsAsync(InstallationWorkflowTestContext w)
@@ -125,13 +126,13 @@ public sealed class PostgresIotMonitoringTests
         Assert.False(await TableExistsAsync(database, "iot_device_binding"));
         Assert.False(await TableExistsAsync(database, "iot_telemetry_reading"));
         Assert.False(await TableExistsAsync(database, "password_reset_dispatch"));
-        Assert.Equal([IotMigration, OutboxMigration, CommercialMigration, BookingMigration, CompatibilityMigration, CostMigration, SlotOfferMigration, TechnicianQuotationMigration, OnSiteSalesMigration, PaymentPlanMigration, SharedKnowledgeMigration, PerPanelMigration, SchedulingMigration, OvertimeMigration], await db.Database.GetPendingMigrationsAsync());
+        Assert.Equal([IotMigration, OutboxMigration, CommercialMigration, BookingMigration, CompatibilityMigration, CostMigration, SlotOfferMigration, TechnicianQuotationMigration, OnSiteSalesMigration, PaymentPlanMigration, SharedKnowledgeMigration, PerPanelMigration, SchedulingMigration, OvertimeMigration, CashReceiptMigration], await db.Database.GetPendingMigrationsAsync());
 
         await db.Database.MigrateAsync();
         Assert.Empty(await db.Database.GetPendingMigrationsAsync());
         Assert.True(await TableExistsAsync(database, "iot_telemetry_reading"));
         Assert.True(await TableExistsAsync(database, "password_reset_dispatch"));
-        Assert.Equal(OvertimeMigration, (await db.Database.GetAppliedMigrationsAsync()).Last());
+        Assert.Equal(CashReceiptMigration, (await db.Database.GetAppliedMigrationsAsync()).Last());
     }
 
     private static async Task<string?> SqlStateAsync(PostgresTestDatabase database, string sql)

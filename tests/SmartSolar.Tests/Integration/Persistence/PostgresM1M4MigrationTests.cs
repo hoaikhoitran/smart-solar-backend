@@ -63,8 +63,8 @@ public sealed class PostgresM1M4MigrationTests
         // Down to the schema before M-1 (disposable database only).
         await db.GetService<IMigrator>().MigrateAsync(BeforeM1);
         // Readiness reports exactly the missing migrations: M-1..M-4 and the later M-7.
-        Assert.Equal(M1ToM4.Append(M7).Append(M8).Append(M9).Append(M10).Append(M11).Append(M12).Append(M13).Append(M14).Append(M15).Append(M16).Append(M17).Append(M18).Append(M19).Append(M20).Append(M21).Append(M22), await db.Database.GetPendingMigrationsAsync());
-        Assert.Equal(M1ToM4.Append(M7).Append(M8).Append(M9).Append(M10).Append(M11).Append(M12).Append(M13).Append(M14).Append(M15).Append(M16).Append(M17).Append(M18).Append(M19).Append(M20).Append(M21).Append(M22), await ProbeAsync(database));
+        Assert.Equal(M1ToM4.Append(M7).Append(M8).Append(M9).Append(M10).Append(M11).Append(M12).Append(M13).Append(M14).Append(M15).Append(M16).Append(M17).Append(M18).Append(M19).Append(M20).Append(M21).Append(M22).Append(M23), await db.Database.GetPendingMigrationsAsync());
+        Assert.Equal(M1ToM4.Append(M7).Append(M8).Append(M9).Append(M10).Append(M11).Append(M12).Append(M13).Append(M14).Append(M15).Append(M16).Append(M17).Append(M18).Append(M19).Append(M20).Append(M21).Append(M22).Append(M23), await ProbeAsync(database));
         Assert.False(await db.Database.SqlQueryRaw<bool>(
             "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'knowledge_document' AND column_name = 'audience') AS \"Value\"").SingleAsync());
 
@@ -176,6 +176,7 @@ public sealed class PostgresM1M4MigrationTests
     private const string M21 = "20261125094516_SchedulingEffectiveBusyAfterCompletion";
     /// <summary>2026-11-25: overtime schedule conflicts (dispatch queue table).</summary>
     private const string M22 = "20261125104043_SchedulingOvertimeConflicts";
+    private const string M23 = "20261127021802_TechnicianCashReceipts";
 
     [PostgresFact]
     public async Task M7_goes_down_and_up_over_draft_issued_signed_and_paid_contracts_without_changing_them()
@@ -203,12 +204,12 @@ public sealed class PostgresM1M4MigrationTests
 
         // Down to M-4: the readiness probe reports exactly M-7; Up restores it; history lists all seven pending-era migrations in order.
         await db.GetService<IMigrator>().MigrateAsync(M1ToM4[^1]);
-        Assert.Equal([M7, M8, M9, M10, M11, M12, M13, M14, M15, M16, M17, M18, M19, M20, M21, M22], await ProbeAsync(database));
+        Assert.Equal([M7, M8, M9, M10, M11, M12, M13, M14, M15, M16, M17, M18, M19, M20, M21, M22, M23], await ProbeAsync(database));
         await db.Database.MigrateAsync();
         Assert.Empty((await ProbeAsync(database))!);
         var applied = (await db.Database.GetAppliedMigrationsAsync()).ToList();
-        Assert.Equal(M22, applied[^1]);
-        Assert.Equal(new[] { "20261021164225_AddCommuneReferencePoints", "20261030122441_AutomatedInstallationQuotation" }.Concat(M1ToM4).Append(M7).Append(M8).Append(M9).Append(M10).Append(M11).Append(M12).Append(M13).Append(M14).Append(M15).Append(M16).Append(M17).Append(M18).Append(M19).Append(M20).Append(M21).Append(M22),
+        Assert.Equal(M23, applied[^1]);
+        Assert.Equal(new[] { "20261021164225_AddCommuneReferencePoints", "20261030122441_AutomatedInstallationQuotation" }.Concat(M1ToM4).Append(M7).Append(M8).Append(M9).Append(M10).Append(M11).Append(M12).Append(M13).Append(M14).Append(M15).Append(M16).Append(M17).Append(M18).Append(M19).Append(M20).Append(M21).Append(M22).Append(M23),
             applied.SkipWhile(m => m != "20261021164225_AddCommuneReferencePoints"));
 
         // Every existing contract is unchanged; none became DISCARDED or got discard data.
@@ -234,7 +235,7 @@ public sealed class PostgresM1M4MigrationTests
         await using var check = database.NewContext();
         // M-10, M-9 and M-8 (no lots yet) went down first; M-7 refused, so the schema stays at M-7 and M-8..M-10 are pending again.
         Assert.Equal(M7, (await check.Database.GetAppliedMigrationsAsync()).Last());
-        Assert.Equal([M8, M9, M10, M11, M12, M13, M14, M15, M16, M17, M18, M19, M20, M21, M22], await ProbeAsync(database));
+        Assert.Equal([M8, M9, M10, M11, M12, M13, M14, M15, M16, M17, M18, M19, M20, M21, M22, M23], await ProbeAsync(database));
         Assert.Equal("DISCARDED", await check.Database.SqlQuery<string>($"SELECT status AS \"Value\" FROM customer_contract WHERE id = {draftId}").SingleAsync());
     }
 }

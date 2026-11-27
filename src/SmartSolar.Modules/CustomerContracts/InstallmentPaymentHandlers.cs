@@ -27,10 +27,13 @@ public enum InstallmentPayer
 }
 
 /// <param name="Overdue">DUE and past its deadline (derived).</param>
+/// <param name="CurrentCashReceipt">Technician / staff only: the latest receipt of the open (or settling) CASH payment — SUBMITTED (waiting for a Manager),
+/// REJECTED (send a new one; see its reviewReason) or ACCEPTED. Null when none was sent, and always null for the customer.</param>
+/// <param name="CashReceipts">Technician / staff only: every receipt sent for this installment's payments, oldest first (review history). Null for the customer.</param>
 public sealed record InstallmentPaymentView(Guid ContractId, string ContractNumber, Guid InstallmentId, int Sequence, string Kind, decimal Amount, string Currency,
     string InstallmentStatus, DateTimeOffset? DueAt, bool Overdue, DateTimeOffset? PaidAt, bool PaidLate, string PaymentState, PaymentAttemptView? Current,
     IReadOnlyList<PaymentAttemptView> Attempts, decimal ContractTotal = 0, decimal? InstallationTotal = null, decimal? ServicePackagesTotal = null,
-    InstallmentAllocation? Allocation = null);
+    InstallmentAllocation? Allocation = null, CashReceiptView? CurrentCashReceipt = null, IReadOnlyList<CashReceiptView>? CashReceipts = null);
 
 /// <summary>
 /// Opening, reading and cancelling the payment of one installment of a 30/70 contract (2026-11-19):
@@ -68,7 +71,7 @@ public sealed class InstallmentPaymentHandlers(IContractUnitOfWork contracts, Pa
                 : attempt;
             if (!PaymentStatuses.Payable.Contains(current.Status)) continue;
             var view = PaymentService.View(current);
-            if (view.Method == chosen) return OperationResult<InstallmentPaymentView>.Ok(await ViewAsync(c.Id, i.Id, cancellationToken));
+            if (view.Method == chosen) return OperationResult<InstallmentPaymentView>.Ok(await ViewAsync(c.Id, i.Id, cancellationToken, payer != InstallmentPayer.Customer));
             return view.Method == PaymentMethods.Cash
                 ? Fail(PaymentErrorCodes.CashSelected, "Cash was chosen for this installment. Cancel the cash choice first to show a QR code.")
                 : Fail(PaymentErrorCodes.CheckoutInProgress, "An online payment is open for this installment. Cancel it first to take cash.");
@@ -98,7 +101,7 @@ public sealed class InstallmentPaymentHandlers(IContractUnitOfWork contracts, Pa
             : await payments.CreateCheckoutAsync(c.CustomerUserId, null, [item],
                 time.GetUtcNow().AddMinutes(Math.Clamp(paymentOptions.LinkExpiryMinutes, 5, 1440)), Reserve, cancellationToken, source);
         if (!created.Succeeded) return created.As<InstallmentPaymentView>();
-        return OperationResult<InstallmentPaymentView>.Ok(await ViewAsync(c.Id, i.Id, cancellationToken));
+        return OperationResult<InstallmentPaymentView>.Ok(await ViewAsync(c.Id, i.Id, cancellationToken, payer != InstallmentPayer.Customer));
     }
 
     /// <summary>The installment's payment (an open online link is checked with the provider, throttled).</summary>
@@ -109,7 +112,7 @@ public sealed class InstallmentPaymentHandlers(IContractUnitOfWork contracts, Pa
         if (error is not null) return error;
         foreach (var live in (await payments.ListInstallmentAttemptsAsync(installment!.Id, cancellationToken)).Where(a => PaymentStatuses.Payable.Contains(a.Status)))
             await payments.ReconcileAsync(live.Id, force: false, cancellationToken);
-        return OperationResult<InstallmentPaymentView>.Ok(await ViewAsync(contract!.Id, installment.Id, cancellationToken));
+        return OperationResult<InstallmentPaymentView>.Ok(await ViewAsync(contract!.Id, installment.Id, cancellationToken, payer != InstallmentPayer.Customer));
     }
 
     /// <summary>Cancels the open payment (switch method / customer stopped). A payment the provider reports paid is confirmed instead.</summary>
@@ -121,10 +124,45 @@ public sealed class InstallmentPaymentHandlers(IContractUnitOfWork contracts, Pa
         if (error is not null) return error;
         var live = (await payments.ListInstallmentAttemptsAsync(installment!.Id, cancellationToken)).FirstOrDefault(a => PaymentStatuses.Payable.Contains(a.Status));
         if (live is null) return Fail(PaymentErrorCodes.AttemptNotFound, "There is no open payment for this installment.");
+        if (live.Provider == PaymentProviders.Cash && (await payments.ListCashReceiptsAsync([live.Id], cancellationToken)).Any(r => r.Status == CashReceiptStatuses.Submitted))
+            return Fail(CashReceiptErrorCodes.UnderReview, "The technician sent the cash receipt of this payment; a Manager must review it before the cash choice can be cancelled.");
         var ended = await payments.CancelAttemptAsync(live.Id, payer == InstallmentPayer.Technician ? "cancelled on site by the technician" : "cancelled by the customer",
             cancellationToken);
         if (ended?.Status == PaymentStatuses.Paid) return Fail(PaymentErrorCodes.AlreadyPaid, "The payment was completed meanwhile; it cannot be cancelled.");
-        return OperationResult<InstallmentPaymentView>.Ok(await ViewAsync(contract!.Id, installment.Id, cancellationToken));
+        if (ended is not null && PaymentStatuses.Payable.Contains(ended.Status) && ended.Provider == PaymentProviders.Cash)
+            return Fail(CashReceiptErrorCodes.UnderReview, "The technician sent the cash receipt of this payment meanwhile; a Manager must review it first.");
+        return OperationResult<InstallmentPaymentView>.Ok(await ViewAsync(contract!.Id, installment.Id, cancellationToken, payer != InstallmentPayer.Customer));
+    }
+
+    /// <summary>
+    /// The assigned technician sends the photographed physical receipt of the cash they took for the installment's open CASH payment
+    /// (<paramref name="input"/>.PaymentAttemptId must be that payment). Nothing is paid: the installment stays DUE and the payment
+    /// AWAITING_CASH_CONFIRMATION until a Manager/Admin accepts the receipt. Another technician gets 404 (as for every installment read).
+    /// </summary>
+    public async Task<OperationResult<InstallmentPaymentView>> SubmitCashReceiptAsync(Guid technicianUserId, Guid contractId, int sequence, CashReceiptInput input,
+        CancellationToken cancellationToken)
+    {
+        var (contract, installment, error) = await ResolveAsync(InstallmentPayer.Technician, technicianUserId, contractId, sequence, cancellationToken);
+        if (error is not null) return error;
+        if (installment!.Status == InstallmentStatuses.Paid) return Fail(PaymentPlanErrorCodes.InstallmentPaid, $"Installment {installment.Sequence} is already paid.");
+        var live = (await payments.ListInstallmentAttemptsAsync(installment.Id, cancellationToken)).FirstOrDefault(a => PaymentStatuses.Payable.Contains(a.Status));
+        if (live is null || live.Provider != PaymentProviders.Cash)
+            return Fail(PaymentErrorCodes.CashNotSelected, "Cash was not chosen for this installment: choose CASH before sending the receipt.");
+        var sent = await payments.SubmitCashReceiptAsync(technicianUserId, contract!.Id, installment.Id, live.Id, input, cancellationToken);
+        if (!sent.Succeeded) return sent.As<InstallmentPaymentView>();
+        return OperationResult<InstallmentPaymentView>.Ok(await ViewAsync(contract.Id, installment.Id, cancellationToken));
+    }
+
+    /// <summary>The receipt <paramref name="receiptId"/> of this installment as the assigned technician sees it (for the photo URL); null = 404.</summary>
+    public async Task<OperationResult<CashReceiptSubmission>> FindCashReceiptForTechnicianAsync(Guid technicianUserId, Guid contractId, int sequence, Guid receiptId,
+        CancellationToken cancellationToken)
+    {
+        var (_, installment, error) = await ResolveAsync(InstallmentPayer.Technician, technicianUserId, contractId, sequence, cancellationToken);
+        if (error is not null) return error.As<CashReceiptSubmission>();
+        var receipt = await payments.FindCashReceiptAsync(receiptId, cancellationToken);
+        return receipt is null || receipt.ContractInstallmentId != installment!.Id
+            ? OperationResult<CashReceiptSubmission>.Fail(CashReceiptErrorCodes.NotFound, "The cash receipt was not found.")
+            : OperationResult<CashReceiptSubmission>.Ok(receipt);
     }
 
     /// <summary>Why the installment cannot be paid now (null = payable).</summary>
@@ -160,7 +198,7 @@ public sealed class InstallmentPaymentHandlers(IContractUnitOfWork contracts, Pa
             : (contract, installment, null);
     }
 
-    private async Task<InstallmentPaymentView> ViewAsync(Guid contractId, Guid installmentId, CancellationToken cancellationToken)
+    private async Task<InstallmentPaymentView> ViewAsync(Guid contractId, Guid installmentId, CancellationToken cancellationToken, bool withReceipts = true)
     {
         var c = (await contracts.FindAsync(contractId, false, cancellationToken))!;
         var i = (await contracts.FindInstallmentAsync(installmentId, false, cancellationToken))!;
@@ -172,10 +210,15 @@ public sealed class InstallmentPaymentHandlers(IContractUnitOfWork contracts, Pa
             : PayableProblem(c, i) is null ? InstallmentPaymentStates.AwaitingPayment
             : InstallmentPaymentStates.NotPayable;
         var current = paid ?? live;
+        var receipts = withReceipts ? (await payments.ListCashReceiptsAsync(attempts.Select(a => a.Id).ToList(), cancellationToken)).Select(CashReceiptView.From).ToList() : null;
+        var ofCurrent = current is null ? [] : receipts?.Where(r => r.PaymentAttemptId == current.Id).ToList() ?? [];
+        // The open one first (waiting for review), then the accepted one, else the latest reviewed (e.g. REJECTED → send again).
+        var currentReceipt = ofCurrent.LastOrDefault(r => r.Status == CashReceiptStatuses.Submitted) ?? ofCurrent.LastOrDefault(r => r.Status == CashReceiptStatuses.Accepted)
+            ?? ofCurrent.LastOrDefault();
         return new InstallmentPaymentView(c.Id, c.ContractNumber, i.Id, i.Sequence, i.Kind, i.Amount, c.Currency, i.Status, i.DueAt,
             PaymentPlanCalculator.IsOverdue(i, time.GetUtcNow()), i.PaidAt, i.PaidLate, state, current is null ? null : PaymentService.View(current),
             attempts.Select(a => PaymentService.View(a)).ToList(), c.TotalAmount, c.InstallationTotal, c.ServicePackagesTotal,
-            PaymentPlanViews.Allocation(i, await contracts.GetServicePackagesAsync(c.Id, false, cancellationToken)));
+            PaymentPlanViews.Allocation(i, await contracts.GetServicePackagesAsync(c.Id, false, cancellationToken)), currentReceipt, receipts);
     }
 
     private static OperationResult<InstallmentPaymentView> Fail(string code, string message) => OperationResult<InstallmentPaymentView>.Fail(code, message);

@@ -90,4 +90,71 @@ public sealed class PaymentUnitOfWork(AppDbContext db) : TransactionalUnitOfWork
     public void AddAttempt(PaymentAttempt attempt) => Db.PaymentAttempts.Add(attempt);
     public void AddEvent(PaymentEvent paymentEvent) => Db.PaymentEvents.Add(paymentEvent);
     public void AddWebhookEvent(PaymentWebhookEvent webhookEvent) => Db.PaymentWebhookEvents.Add(webhookEvent);
+
+    public void AddCashReceipt(CashReceiptSubmission receipt) => Db.CashReceiptSubmissions.Add(receipt);
+
+    public Task<CashReceiptSubmission?> FindCashReceiptAsync(Guid receiptId, bool track, CancellationToken cancellationToken)
+        => (track ? Db.CashReceiptSubmissions : Db.CashReceiptSubmissions.AsNoTracking()).FirstOrDefaultAsync(r => r.Id == receiptId, cancellationToken);
+
+    public async Task<IReadOnlyList<CashReceiptSubmission>> ListCashReceiptsAsync(IReadOnlyCollection<Guid> attemptIds, CancellationToken cancellationToken)
+    {
+        if (attemptIds.Count == 0) return [];
+        var ids = attemptIds.Distinct().ToList();
+        return (await Db.CashReceiptSubmissions.AsNoTracking().Where(r => ids.Contains(r.PaymentAttemptId)).ToListAsync(cancellationToken))
+            .OrderBy(r => r.SubmittedAt).ThenBy(r => r.ReviewedAt ?? DateTimeOffset.MaxValue).ThenBy(r => r.Id).ToList();   // a reviewed receipt precedes a newer open one
+    }
+
+    public Task<bool> HasOpenCashReceiptAsync(Guid attemptId, CancellationToken cancellationToken)
+        => Db.CashReceiptSubmissions.AsNoTracking().AnyAsync(r => r.PaymentAttemptId == attemptId && r.Status == CashReceiptStatuses.Submitted, cancellationToken);
+
+    public async Task<bool> IsCashReceiptNumberUsedAsync(string receiptNumber, Guid exceptAttemptId, CancellationToken cancellationToken)
+        => await Db.PaymentAttempts.AsNoTracking().AnyAsync(a => a.Id != exceptAttemptId && a.Provider == PaymentProviders.Cash && a.ProviderReference == receiptNumber,
+               cancellationToken)
+           || await Db.CashReceiptSubmissions.AsNoTracking().AnyAsync(r => r.PaymentAttemptId != exceptAttemptId && r.ReceiptNumber == receiptNumber
+               && (r.Status == CashReceiptStatuses.Submitted || r.Status == CashReceiptStatuses.Accepted), cancellationToken);
+
+    public async Task<bool> IsCashEvidenceUsedAsync(Guid fileId, Guid exceptAttemptId, CancellationToken cancellationToken)
+        => await Db.PaymentAttempts.AsNoTracking().AnyAsync(a => a.Id != exceptAttemptId && a.EvidenceFileId == fileId, cancellationToken)
+           || await Db.CashReceiptSubmissions.AsNoTracking().AnyAsync(r => r.PaymentAttemptId != exceptAttemptId && r.EvidenceFileId == fileId
+               && r.Status != CashReceiptStatuses.Rejected, cancellationToken);
+
+    public async Task<(IReadOnlyList<CashReceiptRow> Rows, int Total)> PageCashReceiptsAsync(string? status, int skip, int take, CancellationToken cancellationToken)
+    {
+        var query = Db.CashReceiptSubmissions.AsNoTracking().AsQueryable();
+        if (status is not null) query = query.Where(r => r.Status == status);
+        var total = await query.CountAsync(cancellationToken);
+        var page = await query.OrderByDescending(r => r.SubmittedAt).ThenByDescending(r => r.Id).Skip(skip).Take(take).ToListAsync(cancellationToken);
+        return (await RowsAsync(page, cancellationToken), total);
+    }
+
+    public async Task<CashReceiptRow?> GetCashReceiptRowAsync(Guid receiptId, CancellationToken cancellationToken)
+    {
+        var receipt = await Db.CashReceiptSubmissions.AsNoTracking().FirstOrDefaultAsync(r => r.Id == receiptId, cancellationToken);
+        return receipt is null ? null : (await RowsAsync([receipt], cancellationToken)).Single();
+    }
+
+    /// <summary>Context of a page of receipts in four batch queries (contracts, installments, users, attempts): no per-row query.</summary>
+    private async Task<IReadOnlyList<CashReceiptRow>> RowsAsync(IReadOnlyList<CashReceiptSubmission> receipts, CancellationToken cancellationToken)
+    {
+        if (receipts.Count == 0) return [];
+        var contractIds = receipts.Select(r => r.ContractId).Distinct().ToList();
+        var installmentIds = receipts.Select(r => r.ContractInstallmentId).Distinct().ToList();
+        var attemptIds = receipts.Select(r => r.PaymentAttemptId).Distinct().ToList();
+        var contracts = await Db.CustomerContracts.AsNoTracking().Where(c => contractIds.Contains(c.Id))
+            .Select(c => new { c.Id, c.ContractNumber, c.CustomerUserId }).ToDictionaryAsync(c => c.Id, cancellationToken);
+        var installments = await Db.ContractInstallments.AsNoTracking().Where(i => installmentIds.Contains(i.Id))
+            .Select(i => new { i.Id, i.Sequence, i.Kind }).ToDictionaryAsync(i => i.Id, cancellationToken);
+        var attempts = await Db.PaymentAttempts.AsNoTracking().Where(a => attemptIds.Contains(a.Id)).Select(a => new { a.Id, a.Status })
+            .ToDictionaryAsync(a => a.Id, a => a.Status, cancellationToken);
+        var userIds = receipts.Select(r => r.CollectedByUserId).Concat(contracts.Values.Select(c => c.CustomerUserId)).Distinct().ToList();
+        var names = await Db.UserAccounts.AsNoTracking().Where(u => userIds.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.FullName, cancellationToken);
+        return receipts.Select(r =>
+        {
+            var contract = contracts.GetValueOrDefault(r.ContractId);
+            var installment = installments.GetValueOrDefault(r.ContractInstallmentId);
+            return new CashReceiptRow(r, contract?.ContractNumber ?? "", installment?.Sequence ?? 0, installment?.Kind ?? "", contract?.CustomerUserId ?? Guid.Empty,
+                contract is null ? "" : names.GetValueOrDefault(contract.CustomerUserId) ?? "", names.GetValueOrDefault(r.CollectedByUserId) ?? "",
+                attempts.GetValueOrDefault(r.PaymentAttemptId) ?? "");
+        }).ToList();
+    }
 }

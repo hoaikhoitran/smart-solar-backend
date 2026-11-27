@@ -202,6 +202,8 @@ public static class ContractAccessActions
     public const string Detail = "DETAIL";
     public const string PageUrl = "PAGE_URL";
     public const string DocumentUrl = "DOCUMENT_URL";
+    /// <summary>Photo of a technician cash receipt (2026-11-27).</summary>
+    public const string CashReceiptUrl = "CASH_RECEIPT_URL";
 }
 
 public static class PaymentPlanErrorCodes

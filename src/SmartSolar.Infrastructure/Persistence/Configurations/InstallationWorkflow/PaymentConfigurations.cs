@@ -112,6 +112,64 @@ public sealed class PaymentEventConfiguration : IEntityTypeConfiguration<Payment
     }
 }
 
+/// <summary>
+/// Technician cash receipts (2026-11-27): the review history of each CASH attempt. At most one SUBMITTED and one ACCEPTED per attempt, a receipt number
+/// used by one live receipt only, a reviewed receipt always carries who / when, a rejected one its reason.
+/// </summary>
+public sealed class CashReceiptSubmissionConfiguration : IEntityTypeConfiguration<CashReceiptSubmission>
+{
+    public void Configure(EntityTypeBuilder<CashReceiptSubmission> builder)
+    {
+        builder.ToTable("cash_receipt_submission", t =>
+        {
+            t.HasCheckConstraint("ck_cash_receipt_submission_status", $"status IN ({string.Join(", ", CashReceiptStatuses.All.Select(s => $"'{s}'"))})");
+            t.HasCheckConstraint("ck_cash_receipt_submission_amount", "amount > 0");
+            t.HasCheckConstraint("ck_cash_receipt_submission_number", "length(trim(receipt_number)) > 0");
+            t.HasCheckConstraint("ck_cash_receipt_submission_review",
+                $"(status = '{CashReceiptStatuses.Submitted}') = (reviewed_at IS NULL)"
+                + $" AND (status NOT IN ('{CashReceiptStatuses.Accepted}', '{CashReceiptStatuses.Rejected}') OR reviewed_by_user_id IS NOT NULL)"
+                + $" AND (status <> '{CashReceiptStatuses.Rejected}' OR length(trim(coalesce(review_reason, ''))) > 0)");
+        });
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.PaymentAttemptId).HasColumnName("payment_attempt_id").IsRequired();
+        builder.Property(x => x.ContractId).HasColumnName("contract_id").IsRequired();
+        builder.Property(x => x.ContractInstallmentId).HasColumnName("contract_installment_id").IsRequired();
+        builder.Property(x => x.Amount).HasColumnName("amount").HasPrecision(18, 2).IsRequired();
+        builder.Property(x => x.ReceiptNumber).HasColumnName("receipt_number").HasMaxLength(100).IsRequired();
+        builder.Property(x => x.CollectedByUserId).HasColumnName("collected_by_user_id").IsRequired();
+        builder.Property(x => x.CollectedAt).HasColumnName("collected_at").IsRequired();
+        builder.Property(x => x.EvidenceFileId).HasColumnName("evidence_file_id").IsRequired();
+        builder.Property(x => x.Note).HasColumnName("note").HasMaxLength(500);
+        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(20).IsRequired();
+        builder.Property(x => x.SubmittedAt).HasColumnName("submitted_at").IsRequired();
+        builder.Property(x => x.ReviewedByUserId).HasColumnName("reviewed_by_user_id");
+        builder.Property(x => x.ReviewedAt).HasColumnName("reviewed_at");
+        builder.Property(x => x.ReviewReason).HasColumnName("review_reason").HasMaxLength(500);
+        builder.Property(x => x.Revision).HasColumnName("revision").IsConcurrencyToken().IsRequired();
+        builder.HasIndex(x => x.PaymentAttemptId).IsUnique().HasFilter($"status = '{CashReceiptStatuses.Submitted}'")
+            .HasDatabaseName("ux_cash_receipt_submission_one_open");
+        builder.HasIndex(x => new { x.PaymentAttemptId, x.Status }).IsUnique().HasFilter($"status = '{CashReceiptStatuses.Accepted}'")
+            .HasDatabaseName("ux_cash_receipt_submission_one_accepted");
+        builder.HasIndex(x => x.ReceiptNumber).IsUnique()
+            .HasFilter($"status IN ('{CashReceiptStatuses.Submitted}', '{CashReceiptStatuses.Accepted}')").HasDatabaseName("ux_cash_receipt_submission_live_number");
+        builder.HasIndex(x => new { x.Status, x.SubmittedAt }).HasDatabaseName("ix_cash_receipt_submission_status_submitted_at");
+        builder.HasIndex(x => x.ContractInstallmentId).HasDatabaseName("ix_cash_receipt_submission_installment");
+        builder.HasOne<PaymentAttempt>().WithMany().HasForeignKey(x => x.PaymentAttemptId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_cash_receipt_submission_attempt");
+        builder.HasOne<CustomerContract>().WithMany().HasForeignKey(x => x.ContractId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_cash_receipt_submission_contract");
+        builder.HasOne<ContractInstallment>().WithMany().HasForeignKey(x => x.ContractInstallmentId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_cash_receipt_submission_installment");
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.CollectedByUserId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_cash_receipt_submission_collected_by");
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.ReviewedByUserId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_cash_receipt_submission_reviewed_by");
+        builder.HasOne<SmartSolar.Modules.Files.StoredFile>().WithMany().HasForeignKey(x => x.EvidenceFileId).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_cash_receipt_submission_evidence_file");
+    }
+}
+
 /// <summary>Allocation lines of a checkout: exactly one target per line, amounts are whole VND.</summary>
 public sealed class PaymentAttemptItemConfiguration : IEntityTypeConfiguration<PaymentAttemptItem>
 {
