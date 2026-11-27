@@ -492,3 +492,6 @@ $RECYCLE.BIN/
 .vscode/
 docs/
 .claude/
+# Temporary migration scripts
+/unified_cash_receipts.sql
+/technician_cash_receipts.sql
