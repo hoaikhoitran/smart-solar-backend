@@ -171,12 +171,16 @@ public static class DependencyInjection
                 "Set the 'ConnectionStrings__DefaultConnection' environment variable.");
         }
 
-        services.AddDbContext<AppDbContext>(options =>
+        services.AddDbContext<AppDbContext>((provider, options) =>
+        {
             options.UseNpgsql(connectionString, npgsql =>
                 npgsql.EnableRetryOnFailure(
                     maxRetryCount: 3,
                     maxRetryDelay: TimeSpan.FromSeconds(5),
-                    errorCodesToAdd: null)));
+                    errorCodesToAdd: null));
+            // Optional post-commit realtime hook (registered only when Realtime:Enabled; observes committed notification rows, changes nothing).
+            if (provider.GetService<Persistence.Realtime.RealtimeNotificationInterceptor>() is { } realtime) options.AddInterceptors(realtime);
+        });
     }
 
     /// <summary>

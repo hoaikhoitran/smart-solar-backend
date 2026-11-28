@@ -56,6 +56,9 @@ services:
 
       Rag__ServiceBaseUrl: http://rag-service:8000
 
+      # Optional SignalR realtime notifications (hub /hubs/realtime, same container and port). Off unless REALTIME_ENABLED=true in .env.
+      Realtime__Enabled: "${REALTIME_ENABLED:-false}"
+
     ports:
       - "8080:8080"
 

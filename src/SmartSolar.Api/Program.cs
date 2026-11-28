@@ -53,6 +53,8 @@ builder.Services.AddKnowledgeBaseRateLimiting(builder.Configuration);
 builder.Services.AddSystemSettingsModule(builder.Configuration);
 builder.Services.AddSystemSettingsRateLimiting(builder.Configuration);
 builder.Services.AddForwardedHeaders(builder.Configuration);
+// Optional SignalR realtime notifications (Realtime:Enabled, default false): no hub and no interceptor when disabled.
+builder.Services.AddRealtime(builder.Configuration);
 // Enums are written as stable UPPER_SNAKE_CASE strings (e.g. "PENDING", "ROOFTOP"), like the other status codes of the API.
 // Reading still accepts the numeric values older clients send, so requests stay backwards compatible.
 builder.Services.AddControllers().AddJsonOptions(options =>
@@ -141,6 +143,7 @@ app.UseRateLimiter();
 app.UseAuthorization();
 
 app.MapControllers();
+app.MapRealtime();
 
 app.Run();
 

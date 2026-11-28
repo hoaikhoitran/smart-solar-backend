@@ -41,6 +41,17 @@ public static class JwtAuthenticationExtensions
                 // role changes and soft deletes bump that version, so stale tokens stop working at once.
                 options.Events = new JwtBearerEvents
                 {
+                    // Browsers cannot set the Authorization header on a WebSocket: the SignalR client sends the access token as the
+                    // access_token query parameter. Accepted ONLY on the realtime hub path (never on REST endpoints); the same validation
+                    // and account re-check below apply. The query string is not logged (Microsoft.AspNetCore logs at Warning).
+                    OnMessageReceived = context =>
+                    {
+                        if (string.IsNullOrEmpty(context.Token)
+                            && context.HttpContext.Request.Path.StartsWithSegments(SmartSolar.Api.Realtime.RealtimeHub.Path)
+                            && context.Request.Query.TryGetValue("access_token", out var token) && !string.IsNullOrEmpty(token))
+                            context.Token = token;
+                        return Task.CompletedTask;
+                    },
                     OnTokenValidated = async context =>
                     {
                         var principal = context.Principal;

@@ -63,6 +63,10 @@ services:
 
       Rag__ServiceBaseUrl: http://rag-service:8000
 
+      # Optional SignalR realtime notifications (hub /hubs/realtime in this container, through the same TLS proxy: WebSockets pass through
+      # Caddy unchanged). Off unless REALTIME_ENABLED=true in .env; switching needs an API container recreate.
+      Realtime__Enabled: "${REALTIME_ENABLED:-false}"
+
     # Loopback only (audit SEC-02): plain HTTP 8080 is never reachable from the Internet (Docker-published ports bypass UFW). Clients
     # reach the API through the TLS proxy: the "edge" service (docker compose --profile tls up) or a reverse proxy on the host.
     ports:

@@ -114,10 +114,16 @@ public sealed class AuthApiFactory : WebApplicationFactory<Program>
         {
             services.RemoveAll<DbContextOptions<AppDbContext>>();
             services.RemoveAll<AppDbContext>();
-            services.AddDbContext<AppDbContext>(options => options
-                .UseSqlite(_connection, sqlite => sqlite
-                    .ExecutionStrategy(dependencies => new TestRetryingExecutionStrategy(dependencies)))
-                .ReplaceService<IModelCustomizer, SqliteCatalogModelCustomizer>());
+            services.AddDbContext<AppDbContext>((provider, options) =>
+            {
+                options
+                    .UseSqlite(_connection, sqlite => sqlite
+                        .ExecutionStrategy(dependencies => new TestRetryingExecutionStrategy(dependencies)))
+                    .ReplaceService<IModelCustomizer, SqliteCatalogModelCustomizer>();
+                // Same optional post-commit realtime hook as production (only when Realtime:Enabled registered it).
+                if (provider.GetService<SmartSolar.Infrastructure.Persistence.Realtime.RealtimeNotificationInterceptor>() is { } realtime)
+                    options.AddInterceptors(realtime);
+            });
 
             services.RemoveAll<IIntegrationEventPublisher>();
             services.AddSingleton<IIntegrationEventPublisher>(Publisher);
